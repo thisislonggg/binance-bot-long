@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import {
@@ -7,7 +7,10 @@ import {
   ArrowUpRight,
   Gauge,
   Layers,
+  Lock,
+  LogOut,
   Newspaper,
+  NotebookPen,
   RefreshCw,
   Scale,
   Signal,
@@ -19,10 +22,12 @@ import { Area, AreaChart, ResponsiveContainer, Tooltip, YAxis } from "recharts";
 
 import { AdsTable } from "@/components/p2p/AdsTable";
 import { StatCard } from "@/components/p2p/StatCard";
+import { TradesTable } from "@/components/p2p/TradesTable";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -35,7 +40,9 @@ import {
   type HistoryPoint,
   type Snapshot,
 } from "@/lib/p2p-engine";
+import { login } from "@/lib/auth";
 import { getMarketSnapshot } from "@/lib/p2p.functions";
+import { deleteTrade, getPnlSummary, logTrade, updateTrade, type Trade, type TradeSide } from "@/lib/pnl";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -60,6 +67,7 @@ export const Route = createFileRoute("/")({
 });
 
 const HISTORY_KEY = "p2p_price_history";
+const SESSION_KEY = "p2p_session_token";
 const POLL_SECONDS = 90;
 
 function loadHistory(): HistoryPoint[] {
@@ -73,6 +81,68 @@ function loadHistory(): HistoryPoint[] {
 }
 
 function Dashboard() {
+  // --- Login gerbang password tunggal (lihat src/lib/auth.ts) ---
+  const loginFn = useServerFn(login);
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const [sessionChecked, setSessionChecked] = useState(false);
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(SESSION_KEY);
+      if (saved) setSessionToken(saved);
+    } catch {
+      /* storage diblokir: abaikan, minta login manual */
+    }
+    setSessionChecked(true);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    setSessionToken(null);
+    try {
+      localStorage.removeItem(SESSION_KEY);
+    } catch {
+      /* abaikan */
+    }
+  }, []);
+
+  // Dipakai sebagai onError di semua mutation/query yang butuh login — kalau
+  // token basi/tidak valid, server melempar Error("unauthorized") dan kita
+  // balik ke layar login otomatis.
+  const handleAuthError = useCallback(
+    (err: unknown) => {
+      if (err instanceof Error && err.message.includes("unauthorized")) handleLogout();
+    },
+    [handleLogout],
+  );
+
+  const loginMutation = useMutation({
+    mutationFn: (password: string) => loginFn({ data: { password } }),
+    onSuccess: (res) => {
+      if (res.ok && res.token) {
+        setSessionToken(res.token);
+        try {
+          localStorage.setItem(SESSION_KEY, res.token);
+        } catch {
+          /* abaikan */
+        }
+        setLoginError(null);
+        setLoginPassword("");
+      } else if (res.reason === "server_not_configured") {
+        setLoginError("Password login belum di-set di server (DASHBOARD_PASSWORD).");
+      } else {
+        setLoginError("Password salah.");
+      }
+    },
+    onError: () => setLoginError("Gagal menghubungi server."),
+  });
+
+  const handleLogin = () => {
+    if (!loginPassword) return;
+    loginMutation.mutate(loginPassword);
+  };
+
   const snapshotFn = useServerFn(getMarketSnapshot);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [capital, setCapital] = useState(10000);
@@ -82,9 +152,106 @@ function Dashboard() {
   const historyRef = useRef<HistoryPoint[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
+  // --- Pencatatan/edit/hapus transaksi & profit harian/mingguan ---
+  const logTradeFn = useServerFn(logTrade);
+  const updateTradeFn = useServerFn(updateTrade);
+  const deleteTradeFn = useServerFn(deleteTrade);
+  const pnlFn = useServerFn(getPnlSummary);
+  const [tradeSide, setTradeSide] = useState<TradeSide>("buy");
+  const [tradePrice, setTradePrice] = useState("");
+  const [tradeAmount, setTradeAmount] = useState("");
+  const [tradeNote, setTradeNote] = useState("");
+  const [editingTradeId, setEditingTradeId] = useState<number | null>(null);
+  const [deletingTradeId, setDeletingTradeId] = useState<number | null>(null);
+
+  const pnlQuery = useQuery({
+    queryKey: ["pnl-summary"],
+    queryFn: () => pnlFn({ data: { sessionToken: sessionToken ?? undefined } }),
+    refetchInterval: 60_000,
+    enabled: Boolean(sessionToken),
+  });
+
+  useEffect(() => {
+    if (pnlQuery.error) handleAuthError(pnlQuery.error);
+  }, [pnlQuery.error, handleAuthError]);
+
+  const resetTradeForm = () => {
+    setEditingTradeId(null);
+    setTradeSide("buy");
+    setTradePrice("");
+    setTradeAmount("");
+    setTradeNote("");
+  };
+
+  const logMutation = useMutation({
+    mutationFn: (vars: { side: TradeSide; price: number; amountUsdt: number; note?: string }) =>
+      logTradeFn({ data: { ...vars, sessionToken: sessionToken ?? undefined } }),
+    onSuccess: () => {
+      resetTradeForm();
+      pnlQuery.refetch();
+    },
+    onError: handleAuthError,
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: (vars: {
+      id: number;
+      side: TradeSide;
+      price: number;
+      amountUsdt: number;
+      note?: string;
+    }) => updateTradeFn({ data: { ...vars, sessionToken: sessionToken ?? undefined } }),
+    onSuccess: () => {
+      resetTradeForm();
+      pnlQuery.refetch();
+    },
+    onError: handleAuthError,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => deleteTradeFn({ data: { id, sessionToken: sessionToken ?? undefined } }),
+    onMutate: (id) => setDeletingTradeId(id),
+    onSuccess: (_res, id) => {
+      if (editingTradeId === id) resetTradeForm();
+      pnlQuery.refetch();
+    },
+    onError: handleAuthError,
+    onSettled: () => setDeletingTradeId(null),
+  });
+
+  const handleSubmitTrade = () => {
+    const price = Number(tradePrice);
+    const amount = Number(tradeAmount);
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(amount) || amount <= 0) return;
+    if (editingTradeId != null) {
+      updateMutation.mutate({
+        id: editingTradeId,
+        side: tradeSide,
+        price,
+        amountUsdt: amount,
+        note: tradeNote || undefined,
+      });
+    } else {
+      logMutation.mutate({ side: tradeSide, price, amountUsdt: amount, note: tradeNote || undefined });
+    }
+  };
+
+  const handleEditTrade = (t: Trade) => {
+    setEditingTradeId(t.id);
+    setTradeSide(t.side);
+    setTradePrice(String(t.price));
+    setTradeAmount(String(t.amount_usdt));
+    setTradeNote(t.note ?? "");
+  };
+
+  const handleDeleteTrade = (t: Trade) => {
+    if (!window.confirm(`Hapus transaksi ${t.side === "buy" ? "beli" : "jual"} ${fmtRp2(t.price)}?`)) return;
+    deleteMutation.mutate(t.id);
+  };
+
   const mutation = useMutation({
     mutationFn: (vars: { capitalUsdt: number; buyFeeIdr: number }) =>
-      snapshotFn({ data: { ...vars, history: historyRef.current } }),
+      snapshotFn({ data: { ...vars, sessionToken: sessionToken ?? undefined, history: historyRef.current } }),
     onSuccess: (data) => {
       historyRef.current = data.history;
       try {
@@ -95,6 +262,7 @@ function Dashboard() {
       setSnapshot(data);
       setCountdown(POLL_SECONDS);
     },
+    onError: handleAuthError,
   });
 
   const refresh = useCallback(() => {
@@ -105,13 +273,14 @@ function Dashboard() {
   refreshRef.current = refresh;
 
   useEffect(() => {
+    if (!sessionToken) return;
     historyRef.current = loadHistory();
     setHydrated(true);
     refreshRef.current();
-  }, []);
+  }, [sessionToken]);
 
   useEffect(() => {
-    if (!auto) return;
+    if (!auto || !sessionToken) return;
     const id = setInterval(() => {
       setCountdown((c) => {
         if (c <= 1) {
@@ -122,7 +291,7 @@ function Dashboard() {
       });
     }, 1000);
     return () => clearInterval(id);
-  }, [auto]);
+  }, [auto, sessionToken]);
 
   const chartData = useMemo(
     () =>
@@ -135,6 +304,52 @@ function Dashboard() {
 
   const s = snapshot;
   const loading = mutation.isPending && !s;
+
+  // Belum selesai baca localStorage — hindari kedip layar login sebentar.
+  if (!sessionChecked) {
+    return <main className="min-h-screen bg-background" />;
+  }
+
+  if (!sessionToken) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-background bg-grid px-4 [background-size:44px_44px]">
+        <div className="panel w-full max-w-sm p-6">
+          <div className="flex items-center gap-2 text-primary">
+            <Lock className="size-5" />
+            <span className="text-[0.7rem] font-medium tracking-[0.2em] uppercase">Akses terbatas</span>
+          </div>
+          <h1 className="mt-2 text-2xl font-semibold">Radar Harga Merchant</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Masukkan password untuk membuka dashboard.</p>
+          <div className="mt-5 space-y-3">
+            <div>
+              <Label htmlFor="login-password" className="text-[0.7rem] tracking-[0.14em] text-muted-foreground uppercase">
+                Password
+              </Label>
+              <Input
+                id="login-password"
+                type="password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleLogin();
+                }}
+                autoFocus
+                className="mt-2 border-0 bg-surface-2"
+              />
+            </div>
+            <Button
+              onClick={handleLogin}
+              disabled={loginMutation.isPending || !loginPassword}
+              className="w-full font-semibold"
+            >
+              {loginMutation.isPending ? "Memeriksa…" : "Masuk"}
+            </Button>
+            {loginError ? <p className="text-xs text-destructive-foreground">{loginError}</p> : null}
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-background bg-grid [background-size:44px_44px]">
@@ -156,6 +371,13 @@ function Dashboard() {
               <strong className="text-foreground/90">jual</strong> Anda — dihitung dari order book
               kompetitor, kedalaman stok, dan margin minimum dinamis.
             </p>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="mt-3 inline-flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <LogOut className="size-3.5" /> Keluar
+            </button>
           </div>
 
           <div className="flex flex-col items-start gap-3 sm:items-end">
@@ -484,12 +706,169 @@ function Dashboard() {
               </section>
             ) : null}
 
-            <footer className="mt-8 border-t border-border pt-5 text-xs leading-relaxed text-muted-foreground">
-              Data iklan diambil langsung dari endpoint publik Binance P2P. Semua angka rekomendasi
-              adalah hasil hitungan heuristik atas data tersebut, bukan nasihat keuangan.
-            </footer>
           </>
         ) : null}
+
+        {/* Catat transaksi & profit harian/mingguan */}
+        <section className="mt-4 grid gap-4 lg:grid-cols-[1fr_1.55fr]">
+          <div className="panel p-5">
+            <h2 className="flex items-center gap-2 text-sm font-semibold tracking-[0.1em] uppercase">
+              <NotebookPen className="size-4 text-primary" />
+              {editingTradeId != null ? "Edit transaksi" : "Catat transaksi"}
+            </h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {editingTradeId != null
+                ? "Ubah detail transaksi yang salah input, lalu simpan."
+                : "Catat harga eksekusi transaksi yang benar-benar terjadi (bukan rekomendasi bot) untuk menghitung profit riil."}
+            </p>
+            <div className="mt-4 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-[0.7rem] tracking-[0.14em] text-muted-foreground uppercase">
+                    Sisi
+                  </Label>
+                  <Select value={tradeSide} onValueChange={(v) => setTradeSide(v as TradeSide)}>
+                    <SelectTrigger className="mt-2 border-0 bg-surface-2">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="buy">Beli</SelectItem>
+                      <SelectItem value="sell">Jual</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-[0.7rem] tracking-[0.14em] text-muted-foreground uppercase">
+                    Harga eksekusi (Rp)
+                  </Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={tradePrice}
+                    onChange={(e) => setTradePrice(e.target.value)}
+                    placeholder="mis. 16250"
+                    className="num mt-2 border-0 bg-surface-2"
+                  />
+                </div>
+              </div>
+              <div>
+                <Label className="text-[0.7rem] tracking-[0.14em] text-muted-foreground uppercase">
+                  Jumlah (USDT)
+                </Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={tradeAmount}
+                  onChange={(e) => setTradeAmount(e.target.value)}
+                  placeholder="mis. 500"
+                  className="num mt-2 border-0 bg-surface-2"
+                />
+              </div>
+              <div>
+                <Label className="text-[0.7rem] tracking-[0.14em] text-muted-foreground uppercase">
+                  Catatan (opsional)
+                </Label>
+                <Input
+                  value={tradeNote}
+                  onChange={(e) => setTradeNote(e.target.value)}
+                  placeholder="mis. counterparty / metode bayar"
+                  className="mt-2 border-0 bg-surface-2"
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  onClick={handleSubmitTrade}
+                  disabled={
+                    logMutation.isPending || updateMutation.isPending || !tradePrice || !tradeAmount
+                  }
+                  className="w-full font-semibold"
+                >
+                  {logMutation.isPending || updateMutation.isPending
+                    ? "Menyimpan…"
+                    : editingTradeId != null
+                      ? "Simpan perubahan"
+                      : "Catat transaksi"}
+                </Button>
+                {editingTradeId != null ? (
+                  <Button variant="outline" onClick={resetTradeForm} className="shrink-0">
+                    Batal
+                  </Button>
+                ) : null}
+              </div>
+              {(logMutation.isSuccess && logMutation.data && !logMutation.data.ok) ||
+              (updateMutation.isSuccess && updateMutation.data && !updateMutation.data.ok) ? (
+                <p className="text-xs text-destructive-foreground">
+                  Supabase belum dikonfigurasi di server — transaksi tidak tersimpan.
+                </p>
+              ) : null}
+              {logMutation.isError || updateMutation.isError ? (
+                <p className="text-xs text-destructive-foreground">Gagal menyimpan transaksi.</p>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-3">
+              <StatCard
+                label="Profit hari ini"
+                tone={(pnlQuery.data?.today_profit_idr ?? 0) >= 0 ? "bid" : "ask"}
+                icon={<TrendingUp className="size-4" />}
+                value={fmtRp2(pnlQuery.data?.today_profit_idr ?? 0)}
+              />
+              <StatCard
+                label="Profit 7 hari terakhir"
+                tone={(pnlQuery.data?.week_profit_idr ?? 0) >= 0 ? "bid" : "ask"}
+                icon={<TrendingUp className="size-4" />}
+                value={fmtRp2(pnlQuery.data?.week_profit_idr ?? 0)}
+              />
+              <StatCard
+                label="Posisi terbuka"
+                icon={<Wallet className="size-4" />}
+                value={`${(pnlQuery.data?.open_position_usdt ?? 0).toLocaleString("id-ID", {
+                  maximumFractionDigits: 2,
+                })} USDT`}
+                hint={
+                  pnlQuery.data && pnlQuery.data.open_position_usdt > 0
+                    ? `Avg. harga beli ${fmtRp2(pnlQuery.data.open_position_avg_cost_idr)}`
+                    : "Tidak ada stok terbuka"
+                }
+              />
+            </div>
+
+            <div className="panel p-5">
+              <h2 className="text-sm font-semibold tracking-[0.1em] uppercase">
+                Riwayat transaksi terakhir
+              </h2>
+              <div className="mt-3">
+                <TradesTable
+                  trades={pnlQuery.data?.recent_trades ?? []}
+                  onEdit={handleEditTrade}
+                  onDelete={handleDeleteTrade}
+                  editingId={editingTradeId}
+                  deletingId={deletingTradeId}
+                />
+              </div>
+              {pnlQuery.data && !pnlQuery.data.configured ? (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Supabase belum dikonfigurasi di server, jadi riwayat transaksi belum bisa disimpan.
+                </p>
+              ) : null}
+              {pnlQuery.data && pnlQuery.data.unmatched_sell_usdt > 0 ? (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  {pnlQuery.data.unmatched_sell_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}{" "}
+                  USDT terjual tidak match ke transaksi beli manapun (kemungkinan modal awal belum
+                  dicatat) — bagian ini dilewati dari perhitungan profit.
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </section>
+
+        <footer className="mt-8 border-t border-border pt-5 text-xs leading-relaxed text-muted-foreground">
+          Data iklan diambil langsung dari endpoint publik Binance P2P. Semua angka rekomendasi
+          adalah hasil hitungan heuristik atas data tersebut, bukan nasihat keuangan. Profit di atas
+          dihitung dari harga eksekusi yang kamu catat sendiri, metode FIFO cost-basis.
+        </footer>
       </div>
     </main>
   );
