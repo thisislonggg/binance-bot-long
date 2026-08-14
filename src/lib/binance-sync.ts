@@ -150,26 +150,28 @@ export async function executeBinanceSync(
 
   const lastSync = await getLastSyncTs();
   const now = Date.now();
-  const MS_30_DAYS = 30 * 24 * 60 * 60 * 1000;
+  const MS_DAY = 24 * 60 * 60 * 1000;
 
-  // Tentukan window waktu
-  // Binance mengizinkan data maksimal 6 bulan (180 hari = 6 chunk x 30 hari)
+  // Tentukan window waktu (Binance membatasi query maksimal interval 30 hari, data s.d 180 hari)
+  // Kita gunakan chunk 25 hari agar aman dari limit interval 30 hari Binance
   type Window = { start: number; end: number };
   const windows: Window[] = [];
 
   if (!lastSync || forceFullHistory) {
-    // Tarik 6 chunk x 30 hari = 180 hari (6 bulan penuh batas maksimal Binance)
-    for (let i = 6; i >= 1; i--) {
+    // 7 chunk x 25 hari = 175 hari ke belakang
+    for (let dayOffset = 175; dayOffset >= 0; dayOffset -= 25) {
+      const winStart = now - (dayOffset + 25) * MS_DAY;
+      const winEnd = now - dayOffset * MS_DAY;
       windows.push({
-        start: now - i * MS_30_DAYS,
-        end: now - (i - 1) * MS_30_DAYS,
+        start: Math.max(winStart, now - 179 * MS_DAY),
+        end: Math.min(winEnd, now),
       });
     }
   } else {
-    // Overlap 10 menit untuk memastikan order yang baru saja diselesaikan tercatat
-    let curStart = lastSync - 10 * 60 * 1000;
+    // Overlap 15 menit untuk memastikan order yang baru saja settled tercatat
+    let curStart = lastSync - 15 * 60 * 1000;
     while (curStart < now) {
-      const curEnd = Math.min(curStart + MS_30_DAYS, now);
+      const curEnd = Math.min(curStart + 25 * MS_DAY, now);
       windows.push({ start: curStart, end: curEnd });
       if (curEnd >= now) break;
       curStart = curEnd;
@@ -184,31 +186,45 @@ export async function executeBinanceSync(
     let sellOrders: BinanceC2cOrder[] = [];
 
     try {
-      [buyOrders, sellOrders] = await Promise.all([
-        fetchC2cOrdersForWindow(apiKey, apiSecret, "BUY", win.start, win.end),
-        fetchC2cOrdersForWindow(apiKey, apiSecret, "SELL", win.start, win.end),
+      const [resBuy, resSell] = await Promise.all([
+        fetchC2cOrdersForWindow(apiKey, apiSecret, "BUY", win.start, win.end).catch((e) => {
+          console.warn("Fetch BUY window error:", e);
+          return [] as BinanceC2cOrder[];
+        }),
+        fetchC2cOrdersForWindow(apiKey, apiSecret, "SELL", win.start, win.end).catch((e) => {
+          console.warn("Fetch SELL window error:", e);
+          return [] as BinanceC2cOrder[];
+        }),
       ]);
+      buyOrders = resBuy;
+      sellOrders = resSell;
     } catch (err) {
-      return {
-        ok: totalAdded > 0,
-        added: totalAdded,
-        skipped: totalSkipped,
-        error: String(err),
-      };
+      console.warn("Window fetch skipped due to error:", err);
+      continue;
     }
 
-    const allOrders = [...buyOrders, ...sellOrders].filter(
-      (o) =>
-        o.orderStatus === "COMPLETED" &&
-        o.asset === "USDT" &&
-        o.fiat === "IDR",
-    );
+    // Filter transaksi: COMPLETED USDT/IDR (case-insensitive)
+    const allOrders = [...buyOrders, ...sellOrders].filter((o) => {
+      const statusOk = String(o.orderStatus).toUpperCase() === "COMPLETED";
+      const assetOk = String(o.asset).toUpperCase() === "USDT";
+      const fiatOk = String(o.fiat).toUpperCase() === "IDR";
+      return statusOk && assetOk && fiatOk;
+    });
 
     for (const order of allOrders) {
-      const unitPrice = Number(order.unitPrice);
       const amountUsdt = Number(order.amount);
+      const totalPrice = Number(order.totalPrice);
+      let unitPrice = Number(order.unitPrice);
+      if ((!Number.isFinite(unitPrice) || unitPrice <= 0) && totalPrice > 0 && amountUsdt > 0) {
+        unitPrice = totalPrice / amountUsdt;
+      }
+
+      if (!Number.isFinite(amountUsdt) || amountUsdt <= 0 || !Number.isFinite(unitPrice) || unitPrice <= 0) {
+        continue;
+      }
+
       const ts = new Date(order.createTime).toISOString();
-      const side = order.tradeType === "BUY" ? "buy" : "sell";
+      const side = String(order.tradeType).toUpperCase() === "BUY" ? "buy" : "sell";
       const noteParts = [
         order.counterPartNickName ? `@${order.counterPartNickName}` : null,
         order.payMethodName ?? null,
@@ -248,6 +264,7 @@ export async function executeBinanceSync(
   await saveLastSyncTs(now);
   return { ok: true, added: totalAdded, skipped: totalSkipped, last_sync_ts: now };
 }
+
 
 // ── Server Functions ─────────────────────────────────────────────────────────
 
