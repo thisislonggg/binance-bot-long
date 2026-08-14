@@ -205,15 +205,21 @@ export async function executeBinanceSync(
       continue;
     }
 
-    // Filter transaksi: COMPLETED USDT/IDR (case-insensitive)
+    // Filter transaksi: COMPLETED USDT/IDR (case-insensitive & toleran variasi status Binance)
     const allOrders = [...buyOrders, ...sellOrders].filter((o) => {
       const statusStr = String(o.orderStatus ?? "").toUpperCase();
       const assetStr = String(o.asset ?? "").toUpperCase();
       const fiatStr = String(o.fiat ?? "").toUpperCase();
 
-      const isCompleted = !statusStr || statusStr === "COMPLETED" || statusStr === "4";
-      const isUsdt = !assetStr || assetStr === "USDT";
-      const isIdr = !fiatStr || fiatStr === "IDR";
+      const isCompleted =
+        !statusStr ||
+        statusStr.includes("COMPLET") ||
+        statusStr.includes("SUCCESS") ||
+        statusStr.includes("FINISH") ||
+        statusStr.includes("SELESAI") ||
+        statusStr === "4";
+      const isUsdt = !assetStr || assetStr.includes("USDT") || assetStr.includes("USD");
+      const isIdr = !fiatStr || fiatStr.includes("IDR") || fiatStr.includes("RP");
       return isCompleted && isUsdt && isIdr;
     });
 
@@ -221,8 +227,8 @@ export async function executeBinanceSync(
       const orderNo = String(order.orderNumber || order.advNo || "");
       if (!orderNo) continue;
 
-      const amountUsdt = Number(order.amount);
-      const totalPrice = Number(order.totalPrice);
+      const amountUsdt = Number(order.amount || order.cryptoAmount || order.quantity);
+      const totalPrice = Number(order.totalPrice || order.fiatAmount || order.amountIdr);
       let unitPrice = Number(order.unitPrice || order.price);
       if ((!Number.isFinite(unitPrice) || unitPrice <= 0) && totalPrice > 0 && amountUsdt > 0) {
         unitPrice = totalPrice / amountUsdt;
@@ -234,34 +240,26 @@ export async function executeBinanceSync(
 
       const createTime = Number(order.createTime) || Date.now();
       const ts = new Date(createTime).toISOString();
-      const side = String(order.tradeType).toUpperCase() === "BUY" ? "buy" : "sell";
+      const side = String(order.tradeType).toUpperCase().includes("BUY") ? "buy" : "sell";
       const noteParts = [
         order.counterPartNickName ? `@${order.counterPartNickName}` : null,
         order.payMethodName ?? null,
       ].filter(Boolean);
       const note = noteParts.length ? noteParts.join(" · ") : null;
 
-      // Cek duplikat berdasarkan binance_order_no
-      const { data: existing } = await db
-        .from("trades")
-        .select("id")
-        .eq("binance_order_no", orderNo)
-        .maybeSingle();
-
-      if (existing) {
-        totalSkipped++;
-        continue;
-      }
-
-      const { error } = await db.from("trades").insert({
-        ts,
-        side,
-        price: unitPrice,
-        amount_usdt: amountUsdt,
-        note,
-        source: "binance_sync",
-        binance_order_no: orderNo,
-      });
+      // Gunakan upsert agar order terupdate/tercatat secara presisi
+      const { error } = await db.from("trades").upsert(
+        {
+          ts,
+          side,
+          price: unitPrice,
+          amount_usdt: amountUsdt,
+          note,
+          source: "binance_sync",
+          binance_order_no: orderNo,
+        },
+        { onConflict: "binance_order_no" },
+      );
 
       if (!error) {
         totalAdded++;
@@ -355,6 +353,43 @@ export type ImportCsvResult = {
   totalParsed: number;
   error?: string;
 };
+
+/**
+ * Parser tanggal fleksibel untuk format Binance Indonesia/Global (DD/MM/YYYY, YYYY-MM-DD, epoch, dll).
+ */
+function parseFlexibleDate(str: string): string {
+  if (!str) return new Date().toISOString();
+
+  const trimmed = str.trim();
+
+  // 1. Epoch timestamps
+  if (/^\d{10,13}$/.test(trimmed)) {
+    const num = Number(trimmed);
+    return new Date(num > 1e11 ? num : num * 1000).toISOString();
+  }
+
+  // 2. Format DD/MM/YYYY atau DD-MM-YYYY (contoh: 03/08/2026 atau 03-08-2026 14:30:00)
+  const dmyMatch = trimmed.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+  if (dmyMatch) {
+    const [, d, m, y, hh = "0", mm = "0", ss = "0"] = dmyMatch;
+    const day = parseInt(d!, 10);
+    const month = parseInt(m!, 10) - 1; // 0-indexed month
+    const year = parseInt(y!, 10);
+    const date = new Date(Date.UTC(year, month, day, parseInt(hh, 10), parseInt(mm, 10), parseInt(ss, 10)));
+    if (!isNaN(date.getTime())) return date.toISOString();
+  }
+
+  // 3. Format YYYY-MM-DD atau YYYY/MM/DD (contoh: 2026-08-03 14:30:00)
+  const ymdMatch = trimmed.match(/^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+  if (ymdMatch) {
+    const [, y, m, d, hh = "0", mm = "0", ss = "0"] = ymdMatch;
+    const date = new Date(Date.UTC(parseInt(y!, 10), parseInt(m!, 10) - 1, parseInt(d!, 10), parseInt(hh, 10), parseInt(mm, 10), parseInt(ss, 10)));
+    if (!isNaN(date.getTime())) return date.toISOString();
+  }
+
+  const d = new Date(trimmed);
+  return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+}
 
 function parseCsvRows(csvText: string): Array<Record<string, string>> {
   const lines = csvText
@@ -452,7 +487,7 @@ export const importBinanceCsvTrades = createServerFn({ method: "POST" })
       ]);
 
       const status = findVal(row, ["status", "orderstatus", "statuspesanan"]).toUpperCase();
-      if (status && !status.includes("COMPLET") && !status.includes("SELESAI") && status !== "4") {
+      if (status && !status.includes("COMPLET") && !status.includes("SELESAI") && !status.includes("SUCCESS") && status !== "4") {
         skipped++;
         continue;
       }
@@ -507,13 +542,7 @@ export const importBinanceCsvTrades = createServerFn({ method: "POST" })
       }
 
       const timeStr = findVal(row, ["createdtime", "date", "dateutc", "time", "waktudibuat", "tanggal", "createdat"]);
-      let ts = new Date().toISOString();
-      if (timeStr) {
-        const parsedTime = new Date(timeStr);
-        if (!isNaN(parsedTime.getTime())) {
-          ts = parsedTime.toISOString();
-        }
-      }
+      const ts = parseFlexibleDate(timeStr);
 
       const counterparty = findVal(row, ["counterparty", "counterpartynickname", "lawantransaksi", "partner"]);
       const payMethod = findVal(row, ["paymethod", "paymethodname", "metodepembayaran", "payment"]);
@@ -523,28 +552,18 @@ export const importBinanceCsvTrades = createServerFn({ method: "POST" })
       ].filter(Boolean);
       const note = noteParts.length ? noteParts.join(" · ") : null;
 
-      if (orderNo) {
-        const { data: existing } = await db
-          .from("trades")
-          .select("id")
-          .eq("binance_order_no", orderNo)
-          .maybeSingle();
-
-        if (existing) {
-          skipped++;
-          continue;
-        }
-      }
-
-      const { error } = await db.from("trades").insert({
-        ts,
-        side,
-        price: unitPrice,
-        amount_usdt: amountUsdt,
-        note,
-        source: "binance_sync",
-        binance_order_no: orderNo || null,
-      });
+      const { error } = await db.from("trades").upsert(
+        {
+          ts,
+          side,
+          price: unitPrice,
+          amount_usdt: amountUsdt,
+          note,
+          source: "binance_sync",
+          binance_order_no: orderNo || null,
+        },
+        orderNo ? { onConflict: "binance_order_no" } : undefined,
+      );
 
       if (!error) {
         added++;
@@ -560,6 +579,7 @@ export const importBinanceCsvTrades = createServerFn({ method: "POST" })
       totalParsed: rows.length,
     };
   });
+
 
 
 
