@@ -7,28 +7,18 @@ import {
   ArrowUpRight,
   Calculator,
   Check,
-  CheckCircle2,
   Copy,
   ExternalLink,
   FileSpreadsheet,
-  Gauge,
   History,
   Layers,
   Lock,
   LogOut,
   Newspaper,
-  NotebookPen,
   Plus,
   RefreshCw,
-  Scale,
-  Search,
-  ShieldCheck,
-  Signal,
-  Sparkles,
   TrendingUp,
-  Upload,
   Wallet,
-  Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, YAxis } from "recharts";
@@ -38,7 +28,6 @@ import { AdsTable } from "@/components/p2p/AdsTable";
 import { MarginCalculator } from "@/components/p2p/MarginCalculator";
 import { StatCard } from "@/components/p2p/StatCard";
 import { TradesTable } from "@/components/p2p/TradesTable";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -54,7 +43,6 @@ import {
   fmtRp2,
   liquidityLabel,
   type HistoryPoint,
-  type Snapshot,
 } from "@/lib/p2p-engine";
 import { login } from "@/lib/auth";
 import {
@@ -64,25 +52,16 @@ import {
   type SyncResult,
 } from "@/lib/binance-sync";
 import { getMarketSnapshot } from "@/lib/p2p.functions";
-import { deleteTrade, getPnlSummary, logTrade, updateTrade, type Trade, type TradeSide } from "@/lib/pnl";
+import { deleteTrade, getPnlSummary, logTrade, updateTrade, type TradeSide } from "@/lib/pnl";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Radar P2P Pro — Terminal Harga Iklan USDT/IDR & Profit Merchant" },
+      { title: "Radar P2P — Terminal Merchant Binance USDT/IDR" },
       {
         name: "description",
-        content:
-          "Terminal profesional Binance P2P USDT/IDR: rekomendasi harga iklan, margin spread dinamis, otomasi pencatatan transaksi, dan analisis PnL merchant.",
+        content: "Terminal analisis harga pasar USDT/IDR, pencatatan transaksi otomatis, dan manajemen profit merchant.",
       },
-      { property: "og:title", content: "Radar P2P Pro — Terminal Merchant Binance USDT/IDR" },
-      {
-        property: "og:description",
-        content:
-          "Terminal real-time untuk merchant Binance P2P: harga pasang iklan, kalkulasi PnL FIFO otomatis, dan order book depth map.",
-      },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
   component: Dashboard,
@@ -91,7 +70,7 @@ export const Route = createFileRoute("/")({
 const HISTORY_KEY = "p2p_price_history";
 const SESSION_KEY = "p2p_session_token";
 const POLL_SECONDS = 60;
-const BINANCE_SYNC_SECONDS = 180; // 3 menit
+const BINANCE_SYNC_SECONDS = 180;
 
 function loadHistory(): HistoryPoint[] {
   try {
@@ -107,8 +86,34 @@ function saveHistory(h: HistoryPoint[]): void {
   try {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(-100)));
   } catch {
-    // Abaikan error localStorage jika penuh
+    // Abaikan
   }
+}
+
+function BrandLogo({ className = "size-7" }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 32 32"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+    >
+      <rect width="32" height="32" rx="8" fill="#181E2A" />
+      <path
+        d="M16 6L24 11.5V20.5L16 26L8 20.5V11.5L16 6Z"
+        stroke="#F59E0B"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <circle cx="16" cy="16" r="3.5" fill="#10B981" />
+      <path
+        d="M16 9.5V12.5M16 19.5V22.5M10.5 13L13 14.5M19 17.5L21.5 19M21.5 13L19 14.5M13 17.5L10.5 19"
+        stroke="#F59E0B"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
 }
 
 function Dashboard() {
@@ -128,12 +133,10 @@ function Dashboard() {
   const [tradePrice, setTradePrice] = useState("");
   const [tradeAmount, setTradeAmount] = useState("");
   const [tradeNote, setTradeNote] = useState("");
-  const [tradeTs, setTradeTs] = useState("");
   const [editingTradeId, setEditingTradeId] = useState<number | null>(null);
   const [deletingTradeId, setDeletingTradeId] = useState<number | null>(null);
 
   // State Auto-sync Binance
-  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [autoSyncBinance, setAutoSyncBinance] = useState(true);
   const [syncCountdown, setSyncCountdown] = useState(BINANCE_SYNC_SECONDS);
 
@@ -149,7 +152,6 @@ function Dashboard() {
   const importCsvFn = useServerFn(importBinanceCsvTrades);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Inisialisasi token dari sessionStorage
   useEffect(() => {
     try {
       const saved = sessionStorage.getItem(SESSION_KEY);
@@ -215,20 +217,19 @@ function Dashboard() {
         },
       }),
     onSuccess: (res, vars) => {
-      setSyncResult(res);
       syncStatusQuery.refetch();
       pnlQuery.refetch();
       if (res.not_configured) {
-        toast.error("Binance API Key & Secret belum diisi di file .env atau hosting!");
+        toast.error("Binance API Key & Secret belum dikonfigurasi.");
       } else if (!res.ok && res.error) {
-        toast.error(`Gagal sync Binance: ${res.error}`);
+        toast.error(`Gagal sinkronisasi: ${res.error}`);
       } else if (res.ok && res.added > 0) {
-        toast.success(`${res.added} transaksi berhasil ditarik dari Binance!`);
+        toast.success(`${res.added} transaksi baru berhasil disinkronkan.`);
       } else if (!vars?.isSilent && res.ok && res.added === 0) {
         toast.info(
           vars?.fullHistory
-            ? "Semua riwayat 6 bulan terakhir sudah ada di database."
-            : "Semua transaksi Binance sudah up-to-date.",
+            ? "Semua data transaksi sudah tersimpan."
+            : "Data transaksi sudah mutakhir.",
         );
       }
     },
@@ -248,7 +249,7 @@ function Dashboard() {
       pnlQuery.refetch();
       syncStatusQuery.refetch();
       if (res.ok) {
-        toast.success(`Berhasil mengimpor ${res.added} transaksi dari file CSV! (${res.skipped} terlewati/duplikat)`);
+        toast.success(`Berhasil mengimpor ${res.added} transaksi. (${res.skipped} terlewati/duplikat)`);
       } else {
         toast.error(`Gagal impor CSV: ${res.error}`);
       }
@@ -261,200 +262,60 @@ function Dashboard() {
     if (!file) return;
     try {
       const text = await file.text();
-      toast.loading("Memproses dan mengimpor file CSV Binance...");
       importCsvMutation.mutate(text);
-    } catch (err) {
-      toast.error("Gagal membaca file CSV: " + String(err));
+    } catch {
+      toast.error("Gagal membaca file CSV.");
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
-  const handleBinanceSync = () => {
-    setSyncResult(null);
-    syncMutation.mutate({ isSilent: false, fullHistory: false });
-  };
+  const handleBinanceSync = () => syncMutation.mutate({ isSilent: false });
+  const handleFullHistorySync = () => syncMutation.mutate({ isSilent: false, fullHistory: true });
 
-  const handleFullHistorySync = () => {
-    setSyncResult(null);
-    toast.loading("Menarik seluruh histori transaksi 6 bulan terakhir dari Binance...");
-    syncMutation.mutate({ isSilent: false, fullHistory: true });
-  };
-
-  // Sync otomatis saat login/startup
-  const initialSyncedRef = useRef(false);
+  // Countdown & Trigger Auto-sync
   useEffect(() => {
-    if (!sessionToken || !syncStatusQuery.data?.available || initialSyncedRef.current) return;
-    initialSyncedRef.current = true;
-    syncMutation.mutate({ isSilent: true, fullHistory: true });
-  }, [sessionToken, syncStatusQuery.data?.available]);
+    if (!autoSyncBinance || !syncStatusQuery.data?.available) return;
 
-  // Interval auto-sync berkala
-  useEffect(() => {
-    if (!autoSyncBinance || !sessionToken || !syncStatusQuery.data?.available) return;
-    const id = setInterval(() => {
-      setSyncCountdown((c) => {
-        if (c <= 1) {
-          syncMutation.mutate({ isSilent: true, fullHistory: false });
+    const timer = setInterval(() => {
+      setSyncCountdown((prev) => {
+        if (prev <= 1) {
+          syncMutation.mutate({ isSilent: true });
           return BINANCE_SYNC_SECONDS;
         }
-        return c - 1;
+        return prev - 1;
       });
     }, 1000);
-    return () => clearInterval(id);
-  }, [autoSyncBinance, sessionToken, syncStatusQuery.data?.available]);
 
-  const resetTradeForm = () => {
-    setEditingTradeId(null);
-    setTradeSide("buy");
-    setTradePrice("");
-    setTradeAmount("");
-    setTradeNote("");
-    setTradeTs("");
-  };
+    return () => clearInterval(timer);
+  }, [autoSyncBinance, syncStatusQuery.data?.available, syncMutation]);
 
-  // Mutasi Transaksi Manual
-  const logMutation = useMutation({
-    mutationFn: (data: {
-      side: TradeSide;
-      price: number;
-      amount_usdt: number;
-      note?: string;
-      ts?: string;
-    }) => logTradeFn({ data: { sessionToken: sessionToken ?? undefined, ...data } }),
-    onSuccess: (res) => {
-      if (res.ok) {
-        resetTradeForm();
-        setShowManualForm(false);
-        pnlQuery.refetch();
-        toast.success("Transaksi manual berhasil dicatat!");
-      }
-    },
-    onError: handleAuthError,
-  });
-
-  const updateMutation = useMutation({
-    mutationFn: (data: {
-      id: number;
-      side?: TradeSide;
-      price?: number;
-      amount_usdt?: number;
-      note?: string | null;
-      ts?: string;
-    }) => updateTradeFn({ data: { sessionToken: sessionToken ?? undefined, ...data } }),
-    onSuccess: (res) => {
-      if (res.ok) {
-        resetTradeForm();
-        setShowManualForm(false);
-        pnlQuery.refetch();
-        toast.success("Transaksi berhasil diperbarui!");
-      }
-    },
-    onError: handleAuthError,
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: number) =>
-      deleteTradeFn({ data: { sessionToken: sessionToken ?? undefined, id } }),
-    onMutate: (id) => setDeletingTradeId(id),
-    onSettled: () => setDeletingTradeId(null),
-    onSuccess: (res) => {
-      if (res.ok) {
-        if (editingTradeId === res.id) resetTradeForm();
-        pnlQuery.refetch();
-        toast.success("Transaksi dihapus.");
-      }
-    },
-    onError: handleAuthError,
-  });
-
-  const handleStartEditTrade = (t: Trade) => {
-    setEditingTradeId(t.id);
-    setTradeSide(t.side);
-    setTradePrice(String(t.price));
-    setTradeAmount(String(t.amount_usdt));
-    setTradeNote(t.note ?? "");
-    const d = new Date(t.ts);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    setTradeTs(
-      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`,
-    );
-    setShowManualForm(true);
-  };
-
-  const handleTradeSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const p = parseFloat(tradePrice.replace(/,/g, ""));
-    const a = parseFloat(tradeAmount.replace(/,/g, ""));
-    if (!Number.isFinite(p) || p <= 0 || !Number.isFinite(a) || a <= 0) return;
-
-    const isoTs = tradeTs ? new Date(tradeTs).toISOString() : undefined;
-    const noteVal = tradeNote.trim() ? tradeNote.trim() : undefined;
-
-    if (editingTradeId != null) {
-      updateMutation.mutate({
-        id: editingTradeId,
-        side: tradeSide,
-        price: p,
-        amount_usdt: a,
-        note: noteVal ?? null,
-        ts: isoTs,
-      });
-    } else {
-      logMutation.mutate({
-        side: tradeSide,
-        price: p,
-        amount_usdt: a,
-        note: noteVal,
-        ts: isoTs,
-      });
-    }
-  };
-
-  const handleCopyPrice = (price: number, type: "buy" | "sell") => {
-    if (!price) return;
-    navigator.clipboard.writeText(String(Math.round(price)));
-    setCopiedPrice(type);
-    toast.success(`Harga ${type === "buy" ? "Beli" : "Jual"} (${fmtRp2(price)}) disalin ke clipboard!`);
-    setTimeout(() => setCopiedPrice(null), 2000);
-  };
-
-  // Update history saat snapshot baru datang
+  // Update histori saat snapshot baru masuk
   useEffect(() => {
-    const s = snapshotQuery.data;
-    if (!s) return;
-    setHistory((prev) => {
-      const nextPoint: HistoryPoint = {
-        ts: s.timestamp || new Date().toISOString(),
-        fair_price: s.fair_price,
-      };
-      if (prev.length && prev[prev.length - 1]!.ts === nextPoint.ts) {
-        return prev;
-      }
-      const next = [...prev, nextPoint].slice(-100);
-      saveHistory(next);
-      return next;
-    });
+    if (!snapshotQuery.data) return;
+    setHistory(snapshotQuery.data.history);
+    saveHistory(snapshotQuery.data.history);
   }, [snapshotQuery.data]);
 
-
+  // Mutasi Login
   const loginMutation = useMutation({
-    mutationFn: (pwd: string) => loginFn({ data: { password: pwd } }),
+    mutationFn: (password: string) => loginFn({ data: { password } }),
     onSuccess: (res) => {
       if (res.ok && res.token) {
         setSessionToken(res.token);
-        setAuthError(null);
-        setPasswordInput("");
         try {
           sessionStorage.setItem(SESSION_KEY, res.token);
         } catch {
           // Abaikan
         }
+        setAuthError(null);
+        setPasswordInput("");
+        toast.success("Berhasil masuk.");
       } else {
-        setAuthError(res.error || "Password salah.");
+        setAuthError("Password tidak sesuai.");
       }
     },
-    onError: (err) => setAuthError(String(err)),
+    onError: () => setAuthError("Terjadi kendala saat verifikasi."),
   });
 
   const handleLogout = () => {
@@ -464,17 +325,118 @@ function Dashboard() {
     } catch {
       // Abaikan
     }
+    toast.info("Anda telah keluar.");
   };
 
-  const chartData = useMemo(() => {
-    return history.map((h) => ({
-      time: new Date(h.ts).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }),
-      fair: h.fair_price,
-    }));
-  }, [history]);
+  // Mutasi Transaksi Manual (Tambah / Edit / Hapus)
+  const logMutation = useMutation({
+    mutationFn: (data: { side: TradeSide; price: number; amountUsdt: number; note?: string }) =>
+      logTradeFn({ data: { ...data, sessionToken: sessionToken ?? undefined } }),
+    onSuccess: (res) => {
+      if (res.ok) {
+        toast.success("Transaksi tersimpan.");
+        resetTradeForm();
+        pnlQuery.refetch();
+      } else {
+        toast.error("Gagal menyimpan transaksi.");
+      }
+    },
+    onError: handleAuthError,
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: (data: { id: number; side: TradeSide; price: number; amountUsdt: number; note?: string }) =>
+      updateTradeFn({ data: { ...data, sessionToken: sessionToken ?? undefined } }),
+    onSuccess: (res) => {
+      if (res.ok) {
+        toast.success("Perubahan transaksi tersimpan.");
+        resetTradeForm();
+        pnlQuery.refetch();
+      } else {
+        toast.error("Gagal memperbarui transaksi.");
+      }
+    },
+    onError: handleAuthError,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) =>
+      deleteTradeFn({ data: { id, sessionToken: sessionToken ?? undefined } }),
+    onMutate: (id) => setDeletingTradeId(id),
+    onSuccess: (res) => {
+      if (res.ok) {
+        toast.success("Transaksi dihapus.");
+        pnlQuery.refetch();
+      } else {
+        toast.error("Gagal menghapus transaksi.");
+      }
+    },
+    onError: handleAuthError,
+    onSettled: () => setDeletingTradeId(null),
+  });
+
+  const resetTradeForm = () => {
+    setTradePrice("");
+    setTradeAmount("");
+    setTradeNote("");
+    setEditingTradeId(null);
+    setShowManualForm(false);
+  };
+
+  const handleStartEditTrade = (t: { id: number; side: TradeSide; price: number; amount_usdt: number; note: string | null }) => {
+    setEditingTradeId(t.id);
+    setTradeSide(t.side);
+    setTradePrice(String(t.price));
+    setTradeAmount(String(t.amount_usdt));
+    setTradeNote(t.note ?? "");
+    setShowManualForm(true);
+  };
+
+  const handleTradeSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const p = parseFloat(tradePrice);
+    const a = parseFloat(tradeAmount);
+    if (!Number.isFinite(p) || p <= 0) {
+      toast.error("Harga harus berupa angka positif.");
+      return;
+    }
+    if (!Number.isFinite(a) || a <= 0) {
+      toast.error("Jumlah USDT harus berupa angka positif.");
+      return;
+    }
+
+    if (editingTradeId !== null) {
+      updateMutation.mutate({
+        id: editingTradeId,
+        side: tradeSide,
+        price: p,
+        amountUsdt: a,
+        note: tradeNote.trim() || undefined,
+      });
+    } else {
+      logMutation.mutate({
+        side: tradeSide,
+        price: p,
+        amountUsdt: a,
+        note: tradeNote.trim() || undefined,
+      });
+    }
+  };
+
+  const handleCopyPrice = (val: number, side: "buy" | "sell") => {
+    navigator.clipboard.writeText(String(Math.round(val)));
+    setCopiedPrice(side);
+    toast.success(`Harga ${fmtRp2(val)} disalin.`);
+    setTimeout(() => setCopiedPrice(null), 2000);
+  };
+
+  const chartData = useMemo(
+    () => history.map((pt) => ({ time: pt.ts.slice(11, 16), fair: pt.fair_price })),
+    [history],
+  );
 
   const fairDomain = useMemo(() => {
-    if (!chartData.length) return [15000, 17000];
+    if (chartData.length === 0) return [16000, 16500];
     const vals = chartData.map((d) => d.fair);
     const min = Math.min(...vals);
     const max = Math.max(...vals);
@@ -484,24 +446,22 @@ function Dashboard() {
 
   if (!authInitialized) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background text-muted-foreground text-sm">
+      <div className="flex min-h-screen items-center justify-center bg-background text-muted-foreground text-xs">
         <RefreshCw className="size-4 animate-spin mr-2" /> Memuat terminal...
       </div>
     );
   }
 
-  // ── Login Gate (Sleek Fintech Auth) ─────────────────────────────────────────
+  // ── Login Screen ───────────────────────────────────────────────────────────
   if (!sessionToken) {
     return (
-      <div className="flex min-h-screen items-center justify-center p-4">
-        <div className="panel w-full max-w-sm p-7 space-y-6 shadow-2xl">
-          <div className="flex flex-col items-center text-center space-y-2">
-            <div className="flex size-12 items-center justify-center rounded-2xl bg-primary/15 text-primary border border-primary/30 shadow-lg shadow-primary/20">
-              <Zap className="size-6" />
-            </div>
-            <h1 className="text-xl font-bold tracking-tight text-foreground">RADAR P2P PRO</h1>
+      <div className="flex min-h-screen items-center justify-center p-4 bg-background">
+        <div className="panel w-full max-w-sm p-6 space-y-5">
+          <div className="flex flex-col items-center text-center space-y-1.5">
+            <BrandLogo className="size-9 mb-1" />
+            <h1 className="text-base font-bold text-foreground">Radar P2P</h1>
             <p className="text-xs text-muted-foreground">
-              Terminal Analisis Harga & Otomasi Merchant USDT/IDR
+              Terminal Merchant Binance USDT/IDR
             </p>
           </div>
 
@@ -510,11 +470,11 @@ function Dashboard() {
               e.preventDefault();
               if (passwordInput.trim()) loginMutation.mutate(passwordInput);
             }}
-            className="space-y-4"
+            className="space-y-3.5"
           >
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               <Label htmlFor="password" className="text-xs text-muted-foreground font-medium">
-                Password Dashboard
+                Password
               </Label>
               <Input
                 id="password"
@@ -523,12 +483,12 @@ function Dashboard() {
                 onChange={(e) => setPasswordInput(e.target.value)}
                 placeholder="Masukkan password..."
                 autoFocus
-                className="bg-surface-2 border-border/80 text-foreground"
+                className="bg-surface-2 border-border text-foreground text-xs h-9"
               />
             </div>
 
             {authError ? (
-              <p className="rounded-lg bg-destructive/15 border border-destructive/30 px-3 py-2 text-xs text-destructive-foreground font-medium">
+              <p className="rounded bg-destructive/10 border border-destructive/20 px-2.5 py-1.5 text-xs text-destructive">
                 {authError}
               </p>
             ) : null}
@@ -536,9 +496,9 @@ function Dashboard() {
             <Button
               type="submit"
               disabled={loginMutation.isPending || !passwordInput.trim()}
-              className="w-full font-semibold shadow-lg"
+              className="w-full text-xs font-semibold h-9"
             >
-              {loginMutation.isPending ? "Memverifikasi…" : "Buka Terminal"}
+              {loginMutation.isPending ? "Memverifikasi…" : "Masuk ke Terminal"}
             </Button>
           </form>
         </div>
@@ -550,95 +510,89 @@ function Dashboard() {
   const pnl = pnlQuery.data;
 
   return (
-    <div className="min-h-screen bg-background text-foreground pb-16">
+    <div className="min-h-screen bg-background text-foreground pb-12">
       <Toaster position="top-right" richColors />
 
-      {/* ── Top Live Ticker Header ──────────────────────────────────────────── */}
-      <header className="sticky top-0 z-40 border-b border-border/80 bg-background/85 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
+      {/* ── Top Header ───────────────────────────────────────────────────────── */}
+      <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur-md">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
           {/* Logo & Brand */}
           <div className="flex items-center gap-2.5">
-            <div className="flex size-8 items-center justify-center rounded-lg bg-primary/15 text-primary border border-primary/30">
-              <Zap className="size-4.5" />
-            </div>
+            <BrandLogo className="size-6" />
             <div>
               <div className="flex items-center gap-1.5">
-                <span className="text-sm font-extrabold tracking-tight text-foreground">RADAR P2P</span>
-                <span className="rounded bg-primary/20 px-1.5 py-0.2 text-[0.6rem] font-bold text-primary tracking-wider uppercase">
-                  PRO
+                <span className="text-sm font-bold text-foreground">Radar P2P</span>
+                <span className="rounded bg-surface-2 border border-border px-1.5 py-0.2 text-[0.6rem] font-semibold text-muted-foreground">
+                  USDT/IDR
                 </span>
               </div>
-              <span className="text-[0.65rem] text-muted-foreground block -mt-0.5">
-                Binance C2C · USDT/IDR
-              </span>
             </div>
           </div>
 
-          {/* Real-time Ticker Badges */}
+          {/* Ticker Badges */}
           {s ? (
-            <div className="hidden lg:flex items-center gap-3 text-xs">
-              <div className="flex items-center gap-1.5 rounded-lg border border-border/70 bg-surface-2/60 px-2.5 py-1">
-                <span className="text-muted-foreground">Fair Price:</span>
+            <div className="hidden md:flex items-center gap-2.5 text-xs">
+              <div className="flex items-center gap-1.5 rounded border border-border bg-surface-2 px-2.5 py-1">
+                <span className="text-muted-foreground">Nilai Wajar:</span>
                 <span className="num font-bold text-foreground">{fmtRp2(s.fair_price)}</span>
               </div>
 
-              <div className="flex items-center gap-1.5 rounded-lg border border-border/70 bg-surface-2/60 px-2.5 py-1">
+              <div className="flex items-center gap-1.5 rounded border border-border bg-surface-2 px-2.5 py-1">
                 <span className="text-muted-foreground">Spread:</span>
                 <span className="num font-bold text-primary">+{fmtRp(s.spread_abs)} ({fmtPct(s.spread_pct)})</span>
               </div>
 
               {syncStatusQuery.data?.available ? (
-                <div className="flex items-center gap-1.5 rounded-lg border border-bid/25 bg-bid/10 px-2.5 py-1 text-bid">
-                  <span className="relative flex size-2">
-                    <span className="absolute inline-flex size-full animate-ping rounded-full bg-bid opacity-75" />
-                    <span className="relative inline-flex size-2 rounded-full bg-bid" />
-                  </span>
-                  <span className="text-[0.7rem] font-semibold">Binance Sync Aktif</span>
+                <div className="flex items-center gap-1.5 rounded border border-bid/25 bg-bid/10 px-2 py-1 text-bid text-[0.7rem]">
+                  <span className="size-1.5 rounded-full bg-bid" />
+                  <span>Sync Aktif</span>
                 </div>
               ) : null}
             </div>
           ) : null}
 
-          {/* Quick Actions & Logout */}
-          <div className="flex items-center gap-2">
+          {/* Actions & Logout */}
+          <div className="flex items-center gap-1.5">
             <Button
               variant="outline"
               size="sm"
-              onClick={() => snapshotQuery.refetch()}
-              disabled={snapshotQuery.isFetching}
-              className="h-8 gap-1.5 text-xs bg-surface-2/80 hover:bg-surface-3"
+              onClick={() => {
+                snapshotQuery.refetch();
+                pnlQuery.refetch();
+              }}
+              disabled={snapshotQuery.isFetching || pnlQuery.isFetching}
+              className="h-7.5 gap-1.5 text-xs bg-surface-2 hover:bg-surface-3"
             >
-              <RefreshCw className={snapshotQuery.isFetching ? "size-3.5 animate-spin" : "size-3.5"} />
-              <span className="hidden sm:inline">Segarkan</span>
+              <RefreshCw className={snapshotQuery.isFetching ? "size-3 animate-spin" : "size-3"} />
+              <span className="hidden sm:inline">Refresh</span>
             </Button>
 
             <Button
               variant="ghost"
               size="sm"
               onClick={handleLogout}
-              className="h-8 text-xs text-muted-foreground hover:text-foreground"
-              title="Keluar dari sesi"
+              className="h-7.5 text-xs text-muted-foreground hover:text-foreground"
             >
-              <LogOut className="size-3.5 mr-1 sm:mr-1.5" />
-              <span className="hidden sm:inline">Logout</span>
+              <LogOut className="size-3.5 mr-1" />
+              <span className="hidden sm:inline">Keluar</span>
             </Button>
           </div>
         </div>
       </header>
 
-      {/* ── Main Trading Terminal Body ───────────────────────────────────────── */}
-      <main className="mx-auto max-w-7xl px-4 pt-5 sm:px-6 space-y-6">
+      {/* ── Main Body ───────────────────────────────────────────────────────── */}
+      <main className="mx-auto max-w-7xl px-4 pt-5 sm:px-6 space-y-5">
 
-        {/* ── HERO: Dual Trading Cockpit (Buy & Sell Recommendations) ───────── */}
+        {/* ── Dual Trading Recommendations ─────────────────────────────────── */}
         {s ? (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-12">
-            {/* Kartu Rekomendasi BELI */}
-            <div className="panel relative overflow-hidden p-5 md:col-span-6 glow-bid border-bid/30">
+          <div className="grid grid-cols-1 gap-3.5 md:grid-cols-12">
+            {/* Rekomendasi BELI */}
+            <div className="panel p-4.5 md:col-span-6 border-bid/25">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="flex size-2 rounded-full bg-bid" />
-                  <span className="text-xs font-bold tracking-wider text-bid uppercase">
-                    Harga Pasang Iklan BELI Anda
+                <div className="flex items-center gap-1.5">
+                  <span className="size-2 rounded-full bg-bid" />
+                  <span className="text-xs font-bold text-bid uppercase tracking-wider">
+                    Rekomendasi Pasang Beli
                   </span>
                 </div>
 
@@ -646,53 +600,49 @@ function Dashboard() {
                   size="sm"
                   variant="outline"
                   onClick={() => handleCopyPrice(s.my_buy_price, "buy")}
-                  className="h-7 gap-1 border-bid/30 bg-bid/10 text-bid hover:bg-bid/20 text-xs font-semibold"
+                  className="h-6.5 gap-1 border-bid/25 bg-bid/10 text-bid hover:bg-bid/20 text-xs font-semibold px-2"
                 >
                   {copiedPrice === "buy" ? (
                     <>
-                      <Check className="size-3.5 text-bid" /> Disalin!
+                      <Check className="size-3" /> Disalin
                     </>
                   ) : (
                     <>
-                      <Copy className="size-3.5" /> Salin Harga
+                      <Copy className="size-3" /> Salin
                     </>
                   )}
                 </Button>
               </div>
 
-              <div className="mt-3 flex items-baseline justify-between gap-2">
-                <div className="num text-3xl sm:text-4xl font-extrabold text-foreground tracking-tight">
+              <div className="mt-2.5 flex items-baseline justify-between gap-2">
+                <div className="num text-2xl sm:text-3xl font-bold text-foreground">
                   {fmtRp2(s.my_buy_price)}
                 </div>
-                <div className="num text-xs font-bold text-bid bg-bid/15 px-2 py-0.5 rounded-full border border-bid/20">
-                  {fmtRp(s.my_buy_price - s.fair_price)} vs Fair
+                <div className="num text-xs font-medium text-bid">
+                  {fmtRp(s.my_buy_price - s.fair_price)} vs Nilai Wajar
                 </div>
               </div>
 
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3 text-xs text-muted-foreground">
-                <div className="flex items-center gap-1.5">
-                  <ShieldCheck className="size-3.5 text-bid" />
-                  <span>Kedalaman: <strong>{s.buy_depth.ads_used} iklan</strong> ({fmtRp(s.buy_depth.depth_reached_idr)})</span>
-                </div>
-
+              <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2.5 text-xs text-muted-foreground">
+                <span>Kedalaman: <strong>{s.buy_depth.ads_used} iklan</strong> ({fmtRp(s.buy_depth.depth_reached_idr)})</span>
                 <a
                   href="https://p2p.binance.com/en/trade/buy/USDT?fiat=IDR"
                   target="_blank"
                   rel="noreferrer noopener"
-                  className="inline-flex items-center gap-1 text-bid hover:underline font-medium"
+                  className="inline-flex items-center gap-1 text-bid hover:underline"
                 >
-                  Buka P2P <ExternalLink className="size-3" />
+                  Binance P2P <ExternalLink className="size-3" />
                 </a>
               </div>
             </div>
 
-            {/* Kartu Rekomendasi JUAL */}
-            <div className="panel relative overflow-hidden p-5 md:col-span-6 glow-ask border-ask/30">
+            {/* Rekomendasi JUAL */}
+            <div className="panel p-4.5 md:col-span-6 border-ask/25">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="flex size-2 rounded-full bg-ask" />
-                  <span className="text-xs font-bold tracking-wider text-ask uppercase">
-                    Harga Pasang Iklan JUAL Anda
+                <div className="flex items-center gap-1.5">
+                  <span className="size-2 rounded-full bg-ask" />
+                  <span className="text-xs font-bold text-ask uppercase tracking-wider">
+                    Rekomendasi Pasang Jual
                   </span>
                 </div>
 
@@ -700,115 +650,111 @@ function Dashboard() {
                   size="sm"
                   variant="outline"
                   onClick={() => handleCopyPrice(s.my_sell_price, "sell")}
-                  className="h-7 gap-1 border-ask/30 bg-ask/10 text-ask hover:bg-ask/20 text-xs font-semibold"
+                  className="h-6.5 gap-1 border-ask/25 bg-ask/10 text-ask hover:bg-ask/20 text-xs font-semibold px-2"
                 >
                   {copiedPrice === "sell" ? (
                     <>
-                      <Check className="size-3.5 text-ask" /> Disalin!
+                      <Check className="size-3" /> Disalin
                     </>
                   ) : (
                     <>
-                      <Copy className="size-3.5" /> Salin Harga
+                      <Copy className="size-3" /> Salin
                     </>
                   )}
                 </Button>
               </div>
 
-              <div className="mt-3 flex items-baseline justify-between gap-2">
-                <div className="num text-3xl sm:text-4xl font-extrabold text-foreground tracking-tight">
+              <div className="mt-2.5 flex items-baseline justify-between gap-2">
+                <div className="num text-2xl sm:text-3xl font-bold text-foreground">
                   {fmtRp2(s.my_sell_price)}
                 </div>
-                <div className="num text-xs font-bold text-ask bg-ask/15 px-2 py-0.5 rounded-full border border-ask/20">
-                  +{fmtRp(s.my_sell_price - s.fair_price)} vs Fair
+                <div className="num text-xs font-medium text-ask">
+                  +{fmtRp(s.my_sell_price - s.fair_price)} vs Nilai Wajar
                 </div>
               </div>
 
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3 text-xs text-muted-foreground">
-                <div className="flex items-center gap-1.5">
-                  <ShieldCheck className="size-3.5 text-ask" />
-                  <span>Kedalaman: <strong>{s.sell_depth.ads_used} iklan</strong> ({fmtRp(s.sell_depth.depth_reached_idr)})</span>
-                </div>
-
+              <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2.5 text-xs text-muted-foreground">
+                <span>Kedalaman: <strong>{s.sell_depth.ads_used} iklan</strong> ({fmtRp(s.sell_depth.depth_reached_idr)})</span>
                 <a
                   href="https://p2p.binance.com/en/trade/sell/USDT?fiat=IDR"
                   target="_blank"
                   rel="noreferrer noopener"
-                  className="inline-flex items-center gap-1 text-ask hover:underline font-medium"
+                  className="inline-flex items-center gap-1 text-ask hover:underline"
                 >
-                  Buka P2P <ExternalLink className="size-3" />
+                  Binance P2P <ExternalLink className="size-3" />
                 </a>
               </div>
             </div>
           </div>
         ) : null}
 
-        {/* ── PRO WORKSPACE TABS ────────────────────────────────────────────── */}
-        <div className="space-y-5">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/80 pb-3">
-            <div className="flex flex-wrap gap-2">
+        {/* ── Navigation Tabs ──────────────────────────────────────────────── */}
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2.5">
+            <div className="flex flex-wrap gap-1.5">
               <button
                 type="button"
                 onClick={() => setActiveTab("pnl")}
-                className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-bold transition-all ${
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
                   activeTab === "pnl"
-                    ? "bg-primary text-primary-foreground shadow-md"
+                    ? "bg-primary text-primary-foreground"
                     : "bg-surface-2 text-muted-foreground hover:text-foreground"
                 }`}
               >
-                <Zap className="size-3.5" />
-                Laporan Profit (PnL) & Riwayat
+                <Wallet className="size-3.5" />
+                Laporan & Transaksi
               </button>
 
               <button
                 type="button"
                 onClick={() => setActiveTab("market")}
-                className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-bold transition-all ${
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
                   activeTab === "market"
-                    ? "bg-primary text-primary-foreground shadow-md"
+                    ? "bg-primary text-primary-foreground"
                     : "bg-surface-2 text-muted-foreground hover:text-foreground"
                 }`}
               >
                 <Layers className="size-3.5" />
-                Order Book & Analisis Pasar
+                Buku Pesanan
               </button>
 
               <button
                 type="button"
                 onClick={() => setActiveTab("calculator")}
-                className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-bold transition-all ${
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
                   activeTab === "calculator"
-                    ? "bg-primary text-primary-foreground shadow-md"
+                    ? "bg-primary text-primary-foreground"
                     : "bg-surface-2 text-muted-foreground hover:text-foreground"
                 }`}
               >
                 <Calculator className="size-3.5" />
-                Kalkulator Simulasi Margin
+                Simulasi Margin
               </button>
 
               {s?.news_items && s.news_items.length > 0 ? (
                 <button
                   type="button"
                   onClick={() => setActiveTab("news")}
-                  className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-bold transition-all ${
+                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
                     activeTab === "news"
-                      ? "bg-primary text-primary-foreground shadow-md"
+                      ? "bg-primary text-primary-foreground"
                       : "bg-surface-2 text-muted-foreground hover:text-foreground"
                   }`}
                 >
                   <Newspaper className="size-3.5" />
-                  Konteks Berita ({s.news_items.length})
+                  Berita Pasar ({s.news_items.length})
                 </button>
               ) : null}
             </div>
           </div>
 
-          {/* ── TAB 1: LAPORAN PNL & TRANSAKSI OTOMATIS ─────────────────────── */}
+          {/* ── TAB 1: LAPORAN & TRANSAKSI ──────────────────────────────────── */}
           {activeTab === "pnl" && (
-            <div className="space-y-6">
-              {/* Financial Metric Cards Grid (WIB Timezone Aware) */}
-              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+            <div className="space-y-5">
+              {/* Financial Metric Cards */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
                 <StatCard
-                  label="Profit Hari Ini"
+                  label="Hari Ini"
                   value={pnl ? `+${fmtRp(pnl.today_profit_idr)}` : "—"}
                   subvalue={
                     pnl
@@ -816,62 +762,55 @@ function Dashboard() {
                       : undefined
                   }
                   tone="bid"
-                  icon={<Sparkles className="size-4" />}
-                  hint="Sejak 00:00 WIB hari ini"
+                  hint="Sejak 00:00 WIB"
                 />
 
                 <StatCard
-                  label="Profit Kemarin"
+                  label="Kemarin"
                   value={pnl ? `+${fmtRp(pnl.yesterday_profit_idr)}` : "—"}
-                  tone="primary"
-                  icon={<History className="size-4" />}
-                  hint="Rekap 24 jam penuh kemarin (WIB)"
+                  tone="neutral"
+                  hint="24 jam penuh kemarin"
                 />
 
                 <StatCard
-                  label="Rolling 24 Jam"
+                  label="24 Jam Terakhir"
                   value={pnl ? `+${fmtRp(pnl.last_24h_profit_idr)}` : "—"}
                   tone="bid"
-                  icon={<TrendingUp className="size-4" />}
-                  hint="Performa 24 jam non-stop"
+                  hint="Performa rolling 24 jam"
                 />
 
                 <StatCard
-                  label="Profit 7 Hari (Mingguan)"
+                  label="7 Hari"
                   value={pnl ? `+${fmtRp(pnl.week_profit_idr)}` : "—"}
                   subvalue={pnl ? `+${fmtRp(pnl.month_profit_idr)} (30 hari)` : undefined}
-                  tone="primary"
-                  icon={<Activity className="size-4" />}
-                  hint="Perputaran 7 hari terakhir"
+                  tone="neutral"
+                  hint="Akumulasi mingguan"
                 />
 
                 <StatCard
-                  label="Sepanjang Masa"
+                  label="Total Realisasi"
                   value={pnl ? `+${fmtRp(pnl.all_time_profit_idr)}` : "—"}
                   subvalue={pnl ? `${pnl.total_trades_count} total transaksi` : undefined}
-                  tone="primary"
-                  icon={<Wallet className="size-4" />}
-                  hint="Total laba terealisasi (FIFO)"
+                  tone="neutral"
+                  hint="Laba bersih setelah fee"
                 />
 
                 <StatCard
-                  label="Stok Terbuka"
+                  label="Sisa Stok USDT"
                   value={pnl ? `${pnl.open_position_usdt.toLocaleString("id-ID", { maximumFractionDigits: 1 })} USDT` : "—"}
                   subvalue={
                     pnl && pnl.open_position_usdt > 0
-                      ? `Modal: ${fmtRp2(pnl.open_position_avg_cost_idr)}/USDT`
+                      ? `Modal: ${fmtRp2(pnl.open_position_avg_cost_idr)}`
                       : "Stok seimbang"
                   }
                   tone="neutral"
-                  icon={<Layers className="size-4" />}
-                  hint={pnl ? `Avg margin: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT` : undefined}
+                  hint={pnl ? `Margin avg: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT` : undefined}
                 />
               </div>
 
-
-              {/* Sync Actions & Manual Trade Trigger Toolbar */}
-              <div className="panel p-4 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2.5">
+              {/* Toolbar Aksi */}
+              <div className="panel p-3.5 flex flex-wrap items-center justify-between gap-2.5">
+                <div className="flex flex-wrap items-center gap-2">
                   <input
                     type="file"
                     ref={fileInputRef}
@@ -882,16 +821,16 @@ function Dashboard() {
 
                   {syncStatusQuery.data?.available ? (
                     <>
-                      <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-1.5">
+                      <div className="flex items-center gap-1.5 rounded border border-border bg-surface-2 px-2.5 py-1">
                         <Switch
                           id="auto-sync"
                           checked={autoSyncBinance}
                           onCheckedChange={setAutoSyncBinance}
                         />
-                        <Label htmlFor="auto-sync" className="text-xs cursor-pointer text-muted-foreground font-medium">
+                        <Label htmlFor="auto-sync" className="text-xs cursor-pointer text-muted-foreground">
                           Auto-sync{" "}
                           {autoSyncBinance ? (
-                            <span className="text-foreground font-bold">({syncCountdown}s)</span>
+                            <span className="text-foreground font-semibold">({syncCountdown}s)</span>
                           ) : (
                             "Off"
                           )}
@@ -903,10 +842,10 @@ function Dashboard() {
                         size="sm"
                         onClick={handleBinanceSync}
                         disabled={syncMutation.isPending}
-                        className="gap-1.5 text-xs font-semibold"
+                        className="gap-1 text-xs h-8"
                       >
-                        <RefreshCw className={syncMutation.isPending ? "size-3.5 animate-spin" : "size-3.5"} />
-                        {syncMutation.isPending ? "Menyinkronkan…" : "Sync Baru"}
+                        <RefreshCw className={syncMutation.isPending ? "size-3 animate-spin" : "size-3"} />
+                        {syncMutation.isPending ? "Sinkronisasi…" : "Sync Baru"}
                       </Button>
 
                       <Button
@@ -914,11 +853,10 @@ function Dashboard() {
                         size="sm"
                         onClick={handleFullHistorySync}
                         disabled={syncMutation.isPending}
-                        className="gap-1.5 text-xs font-semibold border-primary/40 text-primary hover:bg-primary/10"
-                        title="Tarik seluruh riwayat transaksi Binance C2C selama 6 bulan terakhir via API"
+                        className="gap-1 text-xs h-8 text-primary border-primary/30 hover:bg-primary/10"
                       >
-                        <History className="size-3.5" />
-                        Tarik 6 Bulan (API)
+                        <History className="size-3" />
+                        Tarik Riwayat
                       </Button>
                     </>
                   ) : null}
@@ -928,30 +866,29 @@ function Dashboard() {
                     size="sm"
                     onClick={() => fileInputRef.current?.click()}
                     disabled={importCsvMutation.isPending}
-                    className="gap-1.5 text-xs font-semibold bg-surface-2 hover:bg-surface-3"
-                    title="Unggah file ekspor CSV riwayat pesanan P2P langsung dari website Binance (Bebas kendala Geoblock / IP restriction)"
+                    className="gap-1 text-xs h-8 bg-surface-2 hover:bg-surface-3"
                   >
-                    <FileSpreadsheet className={importCsvMutation.isPending ? "size-3.5 animate-pulse" : "size-3.5 text-emerald-400"} />
-                    {importCsvMutation.isPending ? "Mengimpor CSV…" : "Import CSV Binance"}
+                    <FileSpreadsheet className={importCsvMutation.isPending ? "size-3 animate-pulse" : "size-3 text-emerald-400"} />
+                    {importCsvMutation.isPending ? "Mengimpor…" : "Impor CSV"}
                   </Button>
                 </div>
 
                 <Button
                   size="sm"
                   onClick={() => setShowManualForm(!showManualForm)}
-                  className="gap-1.5 text-xs font-semibold"
+                  className="gap-1 text-xs h-8"
                 >
                   <Plus className="size-3.5" />
-                  {showManualForm ? "Tutup Form" : "Catat Transaksi Manual"}
+                  {showManualForm ? "Tutup Form" : "Catat Transaksi"}
                 </Button>
               </div>
 
-              {/* Form Input Transaksi Manual (Collapsible) */}
+              {/* Form Input Transaksi Manual */}
               {showManualForm && (
-                <div className="panel p-5 space-y-4 border-primary/30">
-                  <div className="flex items-center justify-between border-b border-border/80 pb-2">
-                    <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
-                      {editingTradeId ? "Edit Transaksi Manual" : "Form Catat Transaksi Manual / Modal Awal"}
+                <div className="panel p-4 space-y-3 border-primary/30">
+                  <div className="flex items-center justify-between border-b border-border pb-2">
+                    <h3 className="text-xs font-semibold text-foreground">
+                      {editingTradeId ? "Edit Transaksi" : "Catat Transaksi Manual"}
                     </h3>
                     <button
                       type="button"
@@ -962,11 +899,11 @@ function Dashboard() {
                     </button>
                   </div>
 
-                  <form onSubmit={handleTradeSubmit} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                  <form onSubmit={handleTradeSubmit} className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-5">
                     <div>
-                      <Label className="text-[0.7rem] font-semibold text-muted-foreground uppercase">Sisi</Label>
+                      <Label className="text-[0.7rem] text-muted-foreground">Sisi</Label>
                       <Select value={tradeSide} onValueChange={(v) => setTradeSide(v as TradeSide)}>
-                        <SelectTrigger className="mt-1 bg-surface-2 text-xs">
+                        <SelectTrigger className="mt-1 bg-surface-2 text-xs h-8">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -977,34 +914,34 @@ function Dashboard() {
                     </div>
 
                     <div>
-                      <Label className="text-[0.7rem] font-semibold text-muted-foreground uppercase">Harga (IDR)</Label>
+                      <Label className="text-[0.7rem] text-muted-foreground">Harga (IDR)</Label>
                       <Input
                         type="number"
-                        placeholder="contoh 16200"
+                        placeholder="contoh: 17820"
                         value={tradePrice}
                         onChange={(e) => setTradePrice(e.target.value)}
-                        className="mt-1 bg-surface-2 text-xs"
+                        className="mt-1 bg-surface-2 text-xs h-8"
                       />
                     </div>
 
                     <div>
-                      <Label className="text-[0.7rem] font-semibold text-muted-foreground uppercase">Jumlah (USDT)</Label>
+                      <Label className="text-[0.7rem] text-muted-foreground">Jumlah (USDT)</Label>
                       <Input
                         type="number"
-                        placeholder="contoh 1000"
+                        placeholder="contoh: 1000"
                         value={tradeAmount}
                         onChange={(e) => setTradeAmount(e.target.value)}
-                        className="mt-1 bg-surface-2 text-xs"
+                        className="mt-1 bg-surface-2 text-xs h-8"
                       />
                     </div>
 
                     <div>
-                      <Label className="text-[0.7rem] font-semibold text-muted-foreground uppercase">Catatan / Lawan</Label>
+                      <Label className="text-[0.7rem] text-muted-foreground">Catatan / Lawan</Label>
                       <Input
-                        placeholder="contoh @merchant_id"
+                        placeholder="opsional..."
                         value={tradeNote}
                         onChange={(e) => setTradeNote(e.target.value)}
-                        className="mt-1 bg-surface-2 text-xs"
+                        className="mt-1 bg-surface-2 text-xs h-8"
                       />
                     </div>
 
@@ -1012,9 +949,9 @@ function Dashboard() {
                       <Button
                         type="submit"
                         disabled={logMutation.isPending || updateMutation.isPending}
-                        className="w-full text-xs font-semibold"
+                        className="w-full text-xs font-semibold h-8"
                       >
-                        {editingTradeId ? "Simpan Perubahan" : "Tambah Transaksi"}
+                        {editingTradeId ? "Simpan" : "Tambah"}
                       </Button>
                     </div>
                   </form>
@@ -1022,14 +959,14 @@ function Dashboard() {
               )}
 
               {/* Tabel Riwayat Transaksi */}
-              <div className="panel p-5 space-y-3">
-                <div className="flex items-center justify-between border-b border-border/80 pb-3">
+              <div className="panel p-4 space-y-3">
+                <div className="flex items-center justify-between border-b border-border pb-2.5">
                   <div>
-                    <h3 className="text-sm font-bold text-foreground tracking-wide uppercase">
-                      Riwayat Transaksi Merchant
+                    <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
+                      Riwayat Transaksi
                     </h3>
                     <p className="text-xs text-muted-foreground">
-                      Daftar transaksi tersimpan dari Binance Sync & Manual dengan standar akuntansi FIFO.
+                      Semua transaksi tercatat via Sinkronisasi Binance & Input Manual.
                     </p>
                   </div>
                 </div>
@@ -1045,61 +982,60 @@ function Dashboard() {
             </div>
           )}
 
-          {/* ── TAB 2: ORDER BOOK & ANALISIS PASAR ───────────────────────────── */}
+          {/* ── TAB 2: BUKU PESANAN (ORDER BOOK) ────────────────────────────── */}
           {activeTab === "market" && (
-            <div className="space-y-6">
-              {/* Order book kompetitor */}
-              <div className="panel p-5">
+            <div className="space-y-5">
+              <div className="panel p-4 space-y-3">
                 <Tabs defaultValue="sell">
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/80 pb-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-border pb-2.5">
                     <div>
-                      <h3 className="text-sm font-bold text-foreground uppercase tracking-wide">
-                        Order Book Kompetitor Real-Time
+                      <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
+                        Buku Pesanan Binance P2P
                       </h3>
                       <p className="text-xs text-muted-foreground">
-                        Iklan kompetitor yang lolos filter likuiditas & outlier di pasar P2P Binance.
+                        Daftar iklan kompetitor terverifikasi di pasar USDT/IDR.
                       </p>
                     </div>
-                    
-                    <div className="flex items-center gap-3">
+
+                    <div className="flex items-center gap-2">
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => snapshotQuery.refetch()}
                         disabled={snapshotQuery.isFetching}
-                        className="gap-1.5 text-xs font-semibold h-8"
+                        className="gap-1 text-xs h-7.5"
                       >
-                        <RefreshCw className={snapshotQuery.isFetching ? "size-3.5 animate-spin" : "size-3.5"} />
-                        {snapshotQuery.isFetching ? "Memuat Pasar…" : "Refresh Order Book"}
+                        <RefreshCw className={snapshotQuery.isFetching ? "size-3 animate-spin" : "size-3"} />
+                        {snapshotQuery.isFetching ? "Memuat…" : "Refresh"}
                       </Button>
 
-                      <TabsList className="bg-surface-2">
-                        <TabsTrigger value="sell" className="text-xs">
-                          Acuan Iklan JUAL ({s?.sell_ref_count_clean ?? (s?.top_sell_ref_ads?.length || 0)})
+                      <TabsList className="bg-surface-2 h-7.5">
+                        <TabsTrigger value="sell" className="text-xs px-2.5">
+                          Iklan JUAL ({s?.sell_ref_count_clean ?? (s?.top_sell_ref_ads?.length || 0)})
                         </TabsTrigger>
-                        <TabsTrigger value="buy" className="text-xs">
-                          Acuan Iklan BELI ({s?.buy_ref_count_clean ?? (s?.top_buy_ref_ads?.length || 0)})
+                        <TabsTrigger value="buy" className="text-xs px-2.5">
+                          Iklan BELI ({s?.buy_ref_count_clean ?? (s?.top_buy_ref_ads?.length || 0)})
                         </TabsTrigger>
                       </TabsList>
                     </div>
                   </div>
 
-                  <TabsContent value="sell" className="mt-4">
+                  <TabsContent value="sell" className="mt-3">
                     {snapshotQuery.isPending && !s ? (
-                      <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                        <RefreshCw className="size-6 animate-spin text-primary mb-2" />
-                        <p className="text-xs">Sedang menghubungkan ke feed pasar Binance P2P…</p>
+                      <div className="flex flex-col items-center justify-center py-10 text-center text-muted-foreground text-xs">
+                        <RefreshCw className="size-5 animate-spin text-primary mb-2" />
+                        <span>Memuat data buku pesanan Binance…</span>
                       </div>
                     ) : (
                       <AdsTable ads={s?.top_sell_ref_ads ?? []} side="ask" />
                     )}
                   </TabsContent>
 
-                  <TabsContent value="buy" className="mt-4">
+                  <TabsContent value="buy" className="mt-3">
                     {snapshotQuery.isPending && !s ? (
-                      <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
-                        <RefreshCw className="size-6 animate-spin text-primary mb-2" />
-                        <p className="text-xs">Sedang menghubungkan ke feed pasar Binance P2P…</p>
+                      <div className="flex flex-col items-center justify-center py-10 text-center text-muted-foreground text-xs">
+                        <RefreshCw className="size-5 animate-spin text-primary mb-2" />
+                        <span>Memuat data buku pesanan Binance…</span>
                       </div>
                     ) : (
                       <AdsTable ads={s?.top_buy_ref_ads ?? []} side="bid" />
@@ -1108,48 +1044,47 @@ function Dashboard() {
                 </Tabs>
               </div>
 
-
-              {/* Grafik Riwayat Fair Price & Intel Pasar */}
+              {/* Grafik Nilai Wajar & Intel Pasar */}
               {s && (
-                <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
                   {/* Grafik Fair Price */}
-                  <div className="panel p-5 lg:col-span-8 space-y-4">
-                    <div className="flex items-center justify-between border-b border-border/80 pb-2">
+                  <div className="panel p-4 lg:col-span-8 space-y-3">
+                    <div className="flex items-center justify-between border-b border-border pb-2">
                       <div>
-                        <h3 className="text-sm font-bold text-foreground uppercase tracking-wide">
-                          Pergerakan Fair Price USDT/IDR
+                        <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
+                          Grafik Nilai Wajar USDT/IDR
                         </h3>
                         <p className="text-xs text-muted-foreground">
-                          Titik temu pasar P2P berbasis weighted mid-price order book.
+                          Titik tengah pasar P2P berbasis weighted mid-price.
                         </p>
                       </div>
                       <span className="num font-bold text-sm text-primary">{fmtRp2(s.fair_price)}</span>
                     </div>
 
-                    <div className="h-56 w-full">
+                    <div className="h-52 w-full">
                       <ResponsiveContainer width="100%" height="100%">
                         <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                           <defs>
                             <linearGradient id="fairGrad" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="var(--color-primary)" stopOpacity={0.4} />
-                              <stop offset="95%" stopColor="var(--color-primary)" stopOpacity={0} />
+                              <stop offset="5%" stopColor="#F59E0B" stopOpacity={0.3} />
+                              <stop offset="95%" stopColor="#F59E0B" stopOpacity={0} />
                             </linearGradient>
                           </defs>
                           <YAxis domain={fairDomain} hide />
                           <Tooltip
                             contentStyle={{
-                              background: "oklch(0.18 0.02 260 / 95%)",
-                              border: "1px solid oklch(1 0 0 / 12%)",
-                              borderRadius: "0.5rem",
+                              background: "#12161F",
+                              border: "1px solid rgba(255, 255, 255, 0.1)",
+                              borderRadius: "0.375rem",
                               fontSize: "0.75rem",
                             }}
-                            formatter={(v: any) => [fmtRp2(Number(v)), "Fair Price"]}
+                            formatter={(v: any) => [fmtRp2(Number(v)), "Nilai Wajar"]}
                           />
                           <Area
                             type="monotone"
                             dataKey="fair"
-                            stroke="var(--color-primary)"
-                            strokeWidth={2}
+                            stroke="#F59E0B"
+                            strokeWidth={1.8}
                             fillOpacity={1}
                             fill="url(#fairGrad)"
                           />
@@ -1158,39 +1093,39 @@ function Dashboard() {
                     </div>
                   </div>
 
-                  {/* Sinyal Pasar & Kedalaman Likuiditas */}
-                  <div className="panel p-5 lg:col-span-4 space-y-4 flex flex-col justify-between">
+                  {/* Sinyal Pasar */}
+                  <div className="panel p-4 lg:col-span-4 space-y-3 flex flex-col justify-between">
                     <div>
-                      <h3 className="text-sm font-bold text-foreground uppercase tracking-wide border-b border-border/80 pb-2">
-                        Sinyal & Intel Pasar
+                      <h3 className="text-xs font-bold text-foreground uppercase tracking-wider border-b border-border pb-2">
+                        Sinyal & Kondisi Pasar
                       </h3>
 
-                      <div className="mt-3 space-y-3 text-xs">
+                      <div className="mt-3 space-y-2.5 text-xs">
                         <div className="flex items-center justify-between">
                           <span className="text-muted-foreground">Bias Pasar:</span>
-                          <span className="font-bold text-foreground">{biasLabel(s.bias ?? "neutral")}</span>
+                          <span className="font-semibold text-foreground">{biasLabel(s.bias ?? "neutral")}</span>
                         </div>
                         <div className="flex items-center justify-between">
-                          <span className="text-muted-foreground">Tingkat Keyakinan:</span>
-                          <span className="font-bold text-foreground">{confidenceLabel(s.confidence ?? 50)}</span>
+                          <span className="text-muted-foreground">Keyakinan:</span>
+                          <span className="font-semibold text-foreground">{confidenceLabel(s.confidence ?? 50)}</span>
                         </div>
                         <div className="flex items-center justify-between">
-                          <span className="text-muted-foreground">Likuiditas Pasar:</span>
-                          <span className="font-bold text-primary">{liquidityLabel(s.liquidity_class ?? "normal")}</span>
+                          <span className="text-muted-foreground">Likuiditas:</span>
+                          <span className="font-semibold text-primary">{liquidityLabel(s.liquidity_class ?? "normal")}</span>
                         </div>
                         <div className="flex items-center justify-between">
                           <span className="text-muted-foreground">Kedalaman Beli:</span>
-                          <span className="font-bold text-bid">{s.buy_depth?.depth_sufficient ? "Cukup Tercover" : "Tipis"}</span>
+                          <span className="font-semibold text-bid">{s.buy_depth?.depth_sufficient ? "Tercover" : "Tipis"}</span>
                         </div>
                         <div className="flex items-center justify-between">
                           <span className="text-muted-foreground">Kedalaman Jual:</span>
-                          <span className="font-bold text-ask">{s.sell_depth?.depth_sufficient ? "Cukup Tercover" : "Tipis"}</span>
+                          <span className="font-semibold text-ask">{s.sell_depth?.depth_sufficient ? "Tercover" : "Tipis"}</span>
                         </div>
                       </div>
                     </div>
 
-                    <div className="rounded-lg bg-surface-2/60 p-3 text-[0.7rem] text-muted-foreground">
-                      💡 <strong>Tips Merchant:</strong> Pasang harga iklan Beli pada <strong className="text-bid">{fmtRp2(s.my_buy_price)}</strong> dan Jual pada <strong className="text-ask">{fmtRp2(s.my_sell_price)}</strong> untuk perputaran maksimal.
+                    <div className="rounded border border-border bg-surface-2 p-2.5 text-[0.7rem] text-muted-foreground">
+                      Target spread optimal: Beli di <strong className="text-bid">{fmtRp2(s.my_buy_price)}</strong> | Jual di <strong className="text-ask">{fmtRp2(s.my_sell_price)}</strong>
                     </div>
                   </div>
                 </div>
@@ -1201,36 +1136,38 @@ function Dashboard() {
           {/* ── TAB 3: KALKULATOR SIMULASI MARGIN ───────────────────────────── */}
           {activeTab === "calculator" && (
             <MarginCalculator
-              defaultBuyPrice={s?.my_buy_price || 16200}
-              defaultSellPrice={s?.my_sell_price || 16350}
+              defaultBuyPrice={s?.my_buy_price || 17780}
+              defaultSellPrice={s?.my_sell_price || 17830}
             />
           )}
 
-          {/* ── TAB 4: KONTEKS BERITA ───────────────────────────────────────── */}
-          {activeTab === "news" && s && s.news_items && (
-            <div className="panel p-5 space-y-4">
-              <div className="flex items-center gap-2 border-b border-border/80 pb-2">
-                <Newspaper className="size-4 text-primary" />
-                <h3 className="text-sm font-bold text-foreground uppercase tracking-wide">
-                  Konteks Berita Pasar Terkini
+          {/* ── TAB 4: BERITA PASAR ─────────────────────────────────────────── */}
+          {activeTab === "news" && s?.news_items && (
+            <div className="panel p-4 space-y-3">
+              <div className="border-b border-border pb-2">
+                <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
+                  Berita Terkait Pasar & Nilai Tukar
                 </h3>
+                <p className="text-xs text-muted-foreground">
+                  Informasi terkini seputar pergerakan Rupiah dan pasar kripto Indonesia.
+                </p>
               </div>
 
-              <ul className="divide-y divide-border/40 space-y-2">
-                {s.news_items.map((n) => (
-                  <li key={n.link || n.title} className="pt-2">
+              <div className="divide-y divide-border">
+                {s.news_items.map((n, idx) => (
+                  <div key={idx} className="py-2.5 first:pt-0 last:pb-0 flex items-center justify-between gap-3">
+                    <span className="text-xs text-foreground">{n.title}</span>
                     <a
                       href={n.link}
                       target="_blank"
                       rel="noreferrer noopener"
-                      className="text-xs text-foreground/90 hover:text-primary hover:underline transition-colors flex items-center justify-between gap-2"
+                      className="inline-flex items-center gap-1 text-xs text-primary hover:underline shrink-0 font-medium"
                     >
-                      <span>{n.title}</span>
-                      <ExternalLink className="size-3 shrink-0 text-muted-foreground" />
+                      Baca <ExternalLink className="size-3" />
                     </a>
-                  </li>
+                  </div>
                 ))}
-              </ul>
+              </div>
             </div>
           )}
         </div>
@@ -1238,4 +1175,3 @@ function Dashboard() {
     </div>
   );
 }
-

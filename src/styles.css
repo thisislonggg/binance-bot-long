@@ -5,8 +5,8 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme {
-  --font-sans: "Space Grotesk", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, monospace;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --color-bid: var(--bid);
   --color-bid-foreground: var(--bid-foreground);
   --color-ask: var(--ask);
@@ -15,20 +15,15 @@
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
   --color-surface-3: var(--surface-3);
-  --shadow-panel: 0 1px 0 0 oklch(1 0 0 / 8%) inset, 0 20px 45px -20px oklch(0 0 0 / 90%);
-  --shadow-glow-bid: 0 0 0 1px oklch(0.78 0.18 160 / 40%), 0 16px 40px -16px oklch(0.78 0.18 160 / 30%);
-  --shadow-glow-ask: 0 0 0 1px oklch(0.72 0.22 15 / 40%), 0 16px 40px -16px oklch(0.72 0.22 15 / 30%);
-  --shadow-glow-gold: 0 0 0 1px oklch(0.82 0.16 85 / 40%), 0 16px 40px -16px oklch(0.82 0.16 85 / 30%);
+  --shadow-panel: 0 1px 2px 0 rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
 }
 
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
-  --radius-2xl: calc(var(--radius) + 8px);
-  --radius-3xl: calc(var(--radius) + 12px);
-  --radius-4xl: calc(var(--radius) + 16px);
+  --radius-xl: calc(var(--radius) + 3px);
+  --radius-2xl: calc(var(--radius) + 6px);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -56,39 +51,52 @@
 }
 
 :root {
-  --radius: 0.65rem;
-  --background: oklch(0.12 0.016 260);
-  --foreground: oklch(0.97 0.005 250);
-  --surface: oklch(0.17 0.018 260);
-  --surface-2: oklch(0.22 0.022 260);
-  --surface-3: oklch(0.26 0.025 260);
-  --card: oklch(0.17 0.018 260);
-  --card-foreground: oklch(0.97 0.005 250);
-  --popover: oklch(0.17 0.018 260);
-  --popover-foreground: oklch(0.97 0.005 250);
-  --primary: oklch(0.82 0.16 85);
-  --primary-foreground: oklch(0.15 0.03 80);
-  --secondary: oklch(0.24 0.022 260);
-  --secondary-foreground: oklch(0.97 0.005 250);
-  --muted: oklch(0.22 0.018 260);
-  --muted-foreground: oklch(0.65 0.018 255);
-  --accent: oklch(0.32 0.04 220);
-  --accent-foreground: oklch(0.97 0.005 250);
-  --destructive: oklch(0.65 0.22 20);
-  --destructive-foreground: oklch(0.98 0.01 250);
-  --border: oklch(1 0 0 / 8%);
-  --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.82 0.16 85 / 60%);
-  --bid: oklch(0.78 0.18 160);
-  --bid-foreground: oklch(0.15 0.04 165);
-  --ask: oklch(0.72 0.22 15);
-  --ask-foreground: oklch(0.15 0.04 15);
-  --warn: oklch(0.82 0.16 85);
-  --chart-1: oklch(0.82 0.16 85);
-  --chart-2: oklch(0.78 0.18 160);
-  --chart-3: oklch(0.72 0.15 240);
-  --chart-4: oklch(0.72 0.22 15);
-  --chart-5: oklch(0.68 0.17 280);
+  --radius: 0.5rem;
+  /* Human-crafted Deep Slate Palette (nyaman untuk mata, profesional fintech) */
+  --background: #0B0E14;
+  --foreground: #EDEDF0;
+  --surface: #12161F;
+  --surface-2: #181E2A;
+  --surface-3: #202838;
+  --card: #12161F;
+  --card-foreground: #EDEDF0;
+  --popover: #12161F;
+  --popover-foreground: #EDEDF0;
+  
+  /* Brand Amber (Natural Binance gold, tidak menyilaukan) */
+  --primary: #F59E0B;
+  --primary-foreground: #0B0E14;
+  
+  --secondary: #181E2A;
+  --secondary-foreground: #EDEDF0;
+  
+  --muted: #181E2A;
+  --muted-foreground: #8B95A5;
+  
+  --accent: #202838;
+  --accent-foreground: #EDEDF0;
+  
+  --destructive: #F43F5E;
+  --destructive-foreground: #FFFFFF;
+  
+  --border: rgba(255, 255, 255, 0.07);
+  --input: rgba(255, 255, 255, 0.1);
+  --ring: rgba(245, 158, 11, 0.4);
+  
+  /* Natural Trading Colors (Emerald & Rose) */
+  --bid: #10B981;
+  --bid-foreground: #042F1A;
+  
+  --ask: #F43F5E;
+  --ask-foreground: #4C0519;
+  
+  --warn: #F59E0B;
+  
+  --chart-1: #F59E0B;
+  --chart-2: #10B981;
+  --chart-3: #3B82F6;
+  --chart-4: #F43F5E;
+  --chart-5: #8B5CF6;
 }
 
 @layer base {
@@ -100,74 +108,52 @@
     background-color: var(--color-background);
     color: var(--color-foreground);
     font-feature-settings: "tnum" 1, "cv02" 1, "cv03" 1, "cv04" 1;
-    background-image: 
-      radial-gradient(ellipse 80% 50% at 50% -20%, oklch(0.24 0.04 260 / 30%), transparent 70%),
-      radial-gradient(ellipse 60% 40% at 90% 80%, oklch(0.20 0.03 160 / 10%), transparent 60%);
-    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
   }
 
   h1, h2, h3, h4, h5, h6 {
-    letter-spacing: -0.025em;
+    letter-spacing: -0.015em;
   }
 
-  /* Custom Sleek Scrollbar */
+  /* Custom Clean Scrollbar */
   ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: oklch(1 0 0 / 14%);
+    background: rgba(255, 255, 255, 0.12);
     border-radius: 9999px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: oklch(1 0 0 / 25%);
+    background: rgba(255, 255, 255, 0.22);
   }
 }
 
 @utility panel {
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-xl);
-  background: linear-gradient(180deg, oklch(0.18 0.02 260 / 92%) 0%, oklch(0.14 0.015 260 / 95%) 100%);
-  backdrop-filter: blur(12px);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-surface);
   box-shadow: var(--shadow-panel);
 }
 
 @utility panel-interactive {
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-xl);
-  background: linear-gradient(180deg, oklch(0.18 0.02 260 / 92%) 0%, oklch(0.14 0.015 260 / 95%) 100%);
-  backdrop-filter: blur(12px);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-surface);
   box-shadow: var(--shadow-panel);
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
 
   &:hover {
-    border-color: oklch(1 0 0 / 18%);
-    transform: translateY(-1px);
-    box-shadow: 0 8px 30px -12px oklch(0 0 0 / 90%);
+    border-color: rgba(255, 255, 255, 0.14);
+    background-color: var(--color-surface-2);
   }
 }
-
 
 @utility num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
-}
-
-@utility glow-bid {
-  border-color: oklch(0.78 0.18 160 / 30%);
-  box-shadow: var(--shadow-glow-bid);
-}
-
-@utility glow-ask {
-  border-color: oklch(0.72 0.22 15 / 30%);
-  box-shadow: var(--shadow-glow-ask);
-}
-
-@utility glow-gold {
-  border-color: oklch(0.82 0.16 85 / 30%);
-  box-shadow: var(--shadow-glow-gold);
 }

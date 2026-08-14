@@ -21,18 +21,19 @@ type StatCardProps = {
 };
 
 const toneClasses: Record<NonNullable<StatCardProps["tone"]>, string> = {
-  bid: "text-bid glow-bid border-bid/25",
-  ask: "text-ask glow-ask border-ask/25",
-  primary: "text-primary glow-gold border-primary/25",
+  bid: "text-bid border-bid/25",
+  ask: "text-ask border-ask/25",
+  primary: "text-primary border-primary/25",
   neutral: "text-foreground",
 };
 
 const badgeClasses: Record<string, string> = {
-  bid: "bg-bid/15 text-bid border-bid/25",
-  ask: "bg-ask/15 text-ask border-ask/25",
-  primary: "bg-primary/15 text-primary border-primary/25",
+  bid: "bg-bid/10 text-bid border-bid/20",
+  ask: "bg-ask/10 text-ask border-ask/20",
+  primary: "bg-primary/10 text-primary border-primary/20",
   neutral: "bg-surface-2 text-muted-foreground border-border",
 };
+
 
 export function StatCard({
   label,
