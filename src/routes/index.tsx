@@ -76,7 +76,10 @@ function loadHistory(): HistoryPoint[] {
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.slice(-100) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((p) => p && typeof p === "object" && typeof p.ts === "string" && Number.isFinite(Number(p.fair_price)))
+      .slice(-100);
   } catch {
     return [];
   }
@@ -84,11 +87,14 @@ function loadHistory(): HistoryPoint[] {
 
 function saveHistory(h: HistoryPoint[]): void {
   try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(-100)));
+    if (!Array.isArray(h)) return;
+    const clean = h.filter((p) => p && typeof p === "object" && typeof p.ts === "string" && Number.isFinite(Number(p.fair_price)));
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(clean.slice(-100)));
   } catch {
     // Abaikan
   }
 }
+
 
 function BrandLogo({ className = "size-7" }: { className?: string }) {
   return (
@@ -430,10 +436,16 @@ function Dashboard() {
     setTimeout(() => setCopiedPrice(null), 2000);
   };
 
-  const chartData = useMemo(
-    () => history.map((pt) => ({ time: pt.ts.slice(11, 16), fair: pt.fair_price })),
-    [history],
-  );
+  const chartData = useMemo(() => {
+    if (!Array.isArray(history)) return [];
+    return history
+      .filter((pt) => pt && typeof pt === "object" && typeof pt.ts === "string")
+      .map((pt) => ({
+        time: pt.ts.length >= 16 ? pt.ts.slice(11, 16) : String(pt.ts),
+        fair: Number(pt.fair_price) || 0,
+      }));
+  }, [history]);
+
 
   const fairDomain = useMemo(() => {
     if (chartData.length === 0) return [16000, 16500];

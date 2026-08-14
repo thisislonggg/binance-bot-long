@@ -237,7 +237,8 @@ export function confidenceScore(
 }
 
 export function computeRecentVolatilityPct(history: HistoryPoint[]) {
-  const points = history.slice(-CFG.VOLATILITY_LOOKBACK_POINTS);
+  const safeHistory = Array.isArray(history) ? history : [];
+  const points = safeHistory.slice(-CFG.VOLATILITY_LOOKBACK_POINTS);
   if (points.length < 3) return 0;
   const prices = points.map((p) => p.fair_price);
   const returns: number[] = [];
@@ -247,6 +248,7 @@ export function computeRecentVolatilityPct(history: HistoryPoint[]) {
   if (returns.length < 2) return returns.length ? Math.abs(returns[0]!) : 0;
   return pstdev(returns);
 }
+
 
 export function competitorDensity(adsBestFirst: Ad[]) {
   if (!adsBestFirst.length) return 0;
@@ -351,9 +353,10 @@ export function computeOrderBookImbalance(sellClean: Ad[], buyClean: Ad[]) {
 }
 
 export function computeMomentumSignal(history: HistoryPoint[]) {
-  if (history.length < CFG.MOMENTUM_LONG_WINDOW)
+  const safeHistory = Array.isArray(history) ? history : [];
+  if (safeHistory.length < CFG.MOMENTUM_LONG_WINDOW)
     return { available: false, label: "belum cukup histori" };
-  const prices = history.map((p) => p.fair_price);
+  const prices = safeHistory.map((p) => p.fair_price);
   const shortAvg = mean(prices.slice(-CFG.MOMENTUM_SHORT_WINDOW));
   const longAvg = mean(prices.slice(-CFG.MOMENTUM_LONG_WINDOW));
   const deltaPct = longAvg ? ((shortAvg - longAvg) / longAvg) * 100 : 0;
@@ -404,13 +407,15 @@ export function computePriceOutlook(
 }
 
 export function computeBias(history: HistoryPoint[], currentFairPrice: number) {
-  if (history.length < 3) return "neutral (histori belum cukup)";
-  const ref = mean(history.slice(-5).map((p) => p.fair_price));
+  const safeHistory = Array.isArray(history) ? history : [];
+  if (safeHistory.length < 3) return "neutral (histori belum cukup)";
+  const ref = mean(safeHistory.slice(-5).map((p) => p.fair_price));
   const deltaPct = ((currentFairPrice - ref) / ref) * 100;
   if (deltaPct > CFG.BIAS_THRESHOLD_PCT) return "bullish";
   if (deltaPct < -CFG.BIAS_THRESHOLD_PCT) return "bearish";
   return "neutral";
 }
+
 
 /** Rangkai analisis lengkap dari data mentah yang sudah di-fetch. */
 export function buildSnapshot(input: {
