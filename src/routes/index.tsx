@@ -1057,28 +1057,57 @@ function Dashboard() {
                         Order Book Kompetitor Real-Time
                       </h3>
                       <p className="text-xs text-muted-foreground">
-                        Iklan kompetitor yang lolos filter likuiditas & outlier di pasar P2P.
+                        Iklan kompetitor yang lolos filter likuiditas & outlier di pasar P2P Binance.
                       </p>
                     </div>
-                    <TabsList className="bg-surface-2">
-                      <TabsTrigger value="sell" className="text-xs">
-                        Acuan Iklan JUAL ({s?.sell_ref_count_clean ?? 0})
-                      </TabsTrigger>
-                      <TabsTrigger value="buy" className="text-xs">
-                        Acuan Iklan BELI ({s?.buy_ref_count_clean ?? 0})
-                      </TabsTrigger>
-                    </TabsList>
+                    
+                    <div className="flex items-center gap-3">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => snapshotQuery.refetch()}
+                        disabled={snapshotQuery.isFetching}
+                        className="gap-1.5 text-xs font-semibold h-8"
+                      >
+                        <RefreshCw className={snapshotQuery.isFetching ? "size-3.5 animate-spin" : "size-3.5"} />
+                        {snapshotQuery.isFetching ? "Memuat Pasar…" : "Refresh Order Book"}
+                      </Button>
+
+                      <TabsList className="bg-surface-2">
+                        <TabsTrigger value="sell" className="text-xs">
+                          Acuan Iklan JUAL ({s?.sell_ref_count_clean ?? (s?.top_sell_ref_ads?.length || 0)})
+                        </TabsTrigger>
+                        <TabsTrigger value="buy" className="text-xs">
+                          Acuan Iklan BELI ({s?.buy_ref_count_clean ?? (s?.top_buy_ref_ads?.length || 0)})
+                        </TabsTrigger>
+                      </TabsList>
+                    </div>
                   </div>
 
                   <TabsContent value="sell" className="mt-4">
-                    <AdsTable ads={s?.top_sell_ref_ads ?? []} side="ask" />
+                    {snapshotQuery.isPending && !s ? (
+                      <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+                        <RefreshCw className="size-6 animate-spin text-primary mb-2" />
+                        <p className="text-xs">Sedang menghubungkan ke feed pasar Binance P2P…</p>
+                      </div>
+                    ) : (
+                      <AdsTable ads={s?.top_sell_ref_ads ?? []} side="ask" />
+                    )}
                   </TabsContent>
 
                   <TabsContent value="buy" className="mt-4">
-                    <AdsTable ads={s?.top_buy_ref_ads ?? []} side="bid" />
+                    {snapshotQuery.isPending && !s ? (
+                      <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground">
+                        <RefreshCw className="size-6 animate-spin text-primary mb-2" />
+                        <p className="text-xs">Sedang menghubungkan ke feed pasar Binance P2P…</p>
+                      </div>
+                    ) : (
+                      <AdsTable ads={s?.top_buy_ref_ads ?? []} side="bid" />
+                    )}
                   </TabsContent>
                 </Tabs>
               </div>
+
 
               {/* Grafik Riwayat Fair Price & Intel Pasar */}
               {s && (
