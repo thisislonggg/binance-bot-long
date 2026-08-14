@@ -425,12 +425,10 @@ function Dashboard() {
     if (!s) return;
     setHistory((prev) => {
       const nextPoint: HistoryPoint = {
-        ts: s.ts,
+        ts: s.timestamp || new Date().toISOString(),
         fair_price: s.fair_price,
-        rec_buy: s.rec_buy,
-        rec_sell: s.rec_sell,
       };
-      if (prev.length && prev[prev.length - 1]!.ts === s.ts) {
+      if (prev.length && prev[prev.length - 1]!.ts === nextPoint.ts) {
         return prev;
       }
       const next = [...prev, nextPoint].slice(-100);
@@ -438,6 +436,7 @@ function Dashboard() {
       return next;
     });
   }, [snapshotQuery.data]);
+
 
   const loginMutation = useMutation({
     mutationFn: (pwd: string) => loginFn({ data: { password: pwd } }),
@@ -585,7 +584,7 @@ function Dashboard() {
 
               <div className="flex items-center gap-1.5 rounded-lg border border-border/70 bg-surface-2/60 px-2.5 py-1">
                 <span className="text-muted-foreground">Spread:</span>
-                <span className="num font-bold text-primary">+{fmtRp(s.spread_idr)} ({fmtPct(s.spread_pct)})</span>
+                <span className="num font-bold text-primary">+{fmtRp(s.spread_abs)} ({fmtPct(s.spread_pct)})</span>
               </div>
 
               {syncStatusQuery.data?.available ? (
@@ -646,7 +645,7 @@ function Dashboard() {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => handleCopyPrice(s.rec_buy, "buy")}
+                  onClick={() => handleCopyPrice(s.my_buy_price, "buy")}
                   className="h-7 gap-1 border-bid/30 bg-bid/10 text-bid hover:bg-bid/20 text-xs font-semibold"
                 >
                   {copiedPrice === "buy" ? (
@@ -663,10 +662,10 @@ function Dashboard() {
 
               <div className="mt-3 flex items-baseline justify-between gap-2">
                 <div className="num text-3xl sm:text-4xl font-extrabold text-foreground tracking-tight">
-                  {fmtRp2(s.rec_buy)}
+                  {fmtRp2(s.my_buy_price)}
                 </div>
                 <div className="num text-xs font-bold text-bid bg-bid/15 px-2 py-0.5 rounded-full border border-bid/20">
-                  {fmtRp(s.rec_buy - s.fair_price)} vs Fair
+                  {fmtRp(s.my_buy_price - s.fair_price)} vs Fair
                 </div>
               </div>
 
@@ -700,7 +699,7 @@ function Dashboard() {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => handleCopyPrice(s.rec_sell, "sell")}
+                  onClick={() => handleCopyPrice(s.my_sell_price, "sell")}
                   className="h-7 gap-1 border-ask/30 bg-ask/10 text-ask hover:bg-ask/20 text-xs font-semibold"
                 >
                   {copiedPrice === "sell" ? (
@@ -717,10 +716,10 @@ function Dashboard() {
 
               <div className="mt-3 flex items-baseline justify-between gap-2">
                 <div className="num text-3xl sm:text-4xl font-extrabold text-foreground tracking-tight">
-                  {fmtRp2(s.rec_sell)}
+                  {fmtRp2(s.my_sell_price)}
                 </div>
                 <div className="num text-xs font-bold text-ask bg-ask/15 px-2 py-0.5 rounded-full border border-ask/20">
-                  +{fmtRp(s.rec_sell - s.fair_price)} vs Fair
+                  +{fmtRp(s.my_sell_price - s.fair_price)} vs Fair
                 </div>
               </div>
 
@@ -786,7 +785,7 @@ function Dashboard() {
                 Kalkulator Simulasi Margin
               </button>
 
-              {s?.news_items.length ? (
+              {s?.news_items && s.news_items.length > 0 ? (
                 <button
                   type="button"
                   onClick={() => setActiveTab("news")}
@@ -1026,7 +1025,7 @@ function Dashboard() {
           )}
 
           {/* ── TAB 2: ORDER BOOK & ANALISIS PASAR ───────────────────────────── */}
-          {activeTab === "market" && s && (
+          {activeTab === "market" && (
             <div className="space-y-6">
               {/* Order book kompetitor */}
               <div className="panel p-5">
@@ -1042,117 +1041,123 @@ function Dashboard() {
                     </div>
                     <TabsList className="bg-surface-2">
                       <TabsTrigger value="sell" className="text-xs">
-                        Acuan Iklan JUAL ({s.sell_ref_count_clean})
+                        Acuan Iklan JUAL ({s?.sell_ref_count_clean ?? 0})
                       </TabsTrigger>
                       <TabsTrigger value="buy" className="text-xs">
-                        Acuan Iklan BELI ({s.buy_ref_count_clean})
+                        Acuan Iklan BELI ({s?.buy_ref_count_clean ?? 0})
                       </TabsTrigger>
                     </TabsList>
                   </div>
 
                   <TabsContent value="sell" className="mt-4">
-                    <AdsTable ads={s.top_sell_ref_ads} side="ask" />
+                    <AdsTable ads={s?.top_sell_ref_ads ?? []} side="ask" />
                   </TabsContent>
 
                   <TabsContent value="buy" className="mt-4">
-                    <AdsTable ads={s.top_buy_ref_ads} side="bid" />
+                    <AdsTable ads={s?.top_buy_ref_ads ?? []} side="bid" />
                   </TabsContent>
                 </Tabs>
               </div>
 
               {/* Grafik Riwayat Fair Price & Intel Pasar */}
-              <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-                {/* Grafik Fair Price */}
-                <div className="panel p-5 lg:col-span-8 space-y-4">
-                  <div className="flex items-center justify-between border-b border-border/80 pb-2">
+              {s && (
+                <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+                  {/* Grafik Fair Price */}
+                  <div className="panel p-5 lg:col-span-8 space-y-4">
+                    <div className="flex items-center justify-between border-b border-border/80 pb-2">
+                      <div>
+                        <h3 className="text-sm font-bold text-foreground uppercase tracking-wide">
+                          Pergerakan Fair Price USDT/IDR
+                        </h3>
+                        <p className="text-xs text-muted-foreground">
+                          Titik temu pasar P2P berbasis weighted mid-price order book.
+                        </p>
+                      </div>
+                      <span className="num font-bold text-sm text-primary">{fmtRp2(s.fair_price)}</span>
+                    </div>
+
+                    <div className="h-56 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                          <defs>
+                            <linearGradient id="fairGrad" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="var(--color-primary)" stopOpacity={0.4} />
+                              <stop offset="95%" stopColor="var(--color-primary)" stopOpacity={0} />
+                            </linearGradient>
+                          </defs>
+                          <YAxis domain={fairDomain} hide />
+                          <Tooltip
+                            contentStyle={{
+                              background: "oklch(0.18 0.02 260 / 95%)",
+                              border: "1px solid oklch(1 0 0 / 12%)",
+                              borderRadius: "0.5rem",
+                              fontSize: "0.75rem",
+                            }}
+                            formatter={(v: any) => [fmtRp2(Number(v)), "Fair Price"]}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="fair"
+                            stroke="var(--color-primary)"
+                            strokeWidth={2}
+                            fillOpacity={1}
+                            fill="url(#fairGrad)"
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  {/* Sinyal Pasar & Kedalaman Likuiditas */}
+                  <div className="panel p-5 lg:col-span-4 space-y-4 flex flex-col justify-between">
                     <div>
-                      <h3 className="text-sm font-bold text-foreground uppercase tracking-wide">
-                        Pergerakan Fair Price USDT/IDR
+                      <h3 className="text-sm font-bold text-foreground uppercase tracking-wide border-b border-border/80 pb-2">
+                        Sinyal & Intel Pasar
                       </h3>
-                      <p className="text-xs text-muted-foreground">
-                        Titik temu pasar P2P berbasis weighted mid-price order book.
-                      </p>
-                    </div>
-                    <span className="num font-bold text-sm text-primary">{fmtRp2(s.fair_price)}</span>
-                  </div>
 
-                  <div className="h-56 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                        <defs>
-                          <linearGradient id="fairGrad" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="var(--color-primary)" stopOpacity={0.4} />
-                            <stop offset="95%" stopColor="var(--color-primary)" stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
-                        <YAxis domain={fairDomain} hide />
-                        <Tooltip
-                          contentStyle={{
-                            background: "oklch(0.18 0.02 260 / 95%)",
-                            border: "1px solid oklch(1 0 0 / 12%)",
-                            borderRadius: "0.5rem",
-                            fontSize: "0.75rem",
-                          }}
-                          formatter={(v: any) => [fmtRp2(Number(v)), "Fair Price"]}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="fair"
-                          stroke="var(--color-primary)"
-                          strokeWidth={2}
-                          fillOpacity={1}
-                          fill="url(#fairGrad)"
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-
-                {/* Sinyal Pasar & Kedalaman Likuiditas */}
-                <div className="panel p-5 lg:col-span-4 space-y-4 flex flex-col justify-between">
-                  <div>
-                    <h3 className="text-sm font-bold text-foreground uppercase tracking-wide border-b border-border/80 pb-2">
-                      Sinyal & Intel Pasar
-                    </h3>
-
-                    <div className="mt-3 space-y-3 text-xs">
-                      <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Bias Pasar:</span>
-                        <span className="font-bold text-foreground">{biasLabel(s.signals.bias)}</span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Tingkat Keyakinan:</span>
-                        <span className="font-bold text-foreground">{confidenceLabel(s.signals.confidence)}</span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Likuiditas Beli:</span>
-                        <span className="font-bold text-bid">{liquidityLabel(s.buy_depth.depth_sufficient)}</span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Likuiditas Jual:</span>
-                        <span className="font-bold text-ask">{liquidityLabel(s.sell_depth.depth_sufficient)}</span>
+                      <div className="mt-3 space-y-3 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Bias Pasar:</span>
+                          <span className="font-bold text-foreground">{biasLabel(s.bias ?? "neutral")}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Tingkat Keyakinan:</span>
+                          <span className="font-bold text-foreground">{confidenceLabel(s.confidence ?? 50)}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Likuiditas Pasar:</span>
+                          <span className="font-bold text-primary">{liquidityLabel(s.liquidity_class ?? "normal")}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Kedalaman Beli:</span>
+                          <span className="font-bold text-bid">{s.buy_depth?.depth_sufficient ? "Cukup Tercover" : "Tipis"}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Kedalaman Jual:</span>
+                          <span className="font-bold text-ask">{s.sell_depth?.depth_sufficient ? "Cukup Tercover" : "Tipis"}</span>
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <div className="rounded-lg bg-surface-2/60 p-3 text-[0.7rem] text-muted-foreground">
-                    💡 <strong>Tips Merchant:</strong> Pasang harga iklan Beli pada <strong className="text-bid">{fmtRp2(s.rec_buy)}</strong> dan Jual pada <strong className="text-ask">{fmtRp2(s.rec_sell)}</strong> untuk perputaran maksimal.
+                    <div className="rounded-lg bg-surface-2/60 p-3 text-[0.7rem] text-muted-foreground">
+                      💡 <strong>Tips Merchant:</strong> Pasang harga iklan Beli pada <strong className="text-bid">{fmtRp2(s.my_buy_price)}</strong> dan Jual pada <strong className="text-ask">{fmtRp2(s.my_sell_price)}</strong> untuk perputaran maksimal.
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
 
           {/* ── TAB 3: KALKULATOR SIMULASI MARGIN ───────────────────────────── */}
           {activeTab === "calculator" && (
             <MarginCalculator
-              defaultBuyPrice={s?.rec_buy || 16200}
-              defaultSellPrice={s?.rec_sell || 16350}
+              defaultBuyPrice={s?.my_buy_price || 16200}
+              defaultSellPrice={s?.my_sell_price || 16350}
             />
           )}
 
           {/* ── TAB 4: KONTEKS BERITA ───────────────────────────────────────── */}
-          {activeTab === "news" && s && (
+          {activeTab === "news" && s && s.news_items && (
             <div className="panel p-5 space-y-4">
               <div className="flex items-center gap-2 border-b border-border/80 pb-2">
                 <Newspaper className="size-4 text-primary" />
@@ -1183,3 +1188,4 @@ function Dashboard() {
     </div>
   );
 }
+

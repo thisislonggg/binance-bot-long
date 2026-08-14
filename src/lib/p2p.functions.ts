@@ -119,6 +119,7 @@ async function saveHistoryPoint(point: HistoryPoint): Promise<void> {
 }
 
 const inputSchema = z.object({
+  sessionToken: z.string().optional(),
   capitalUsdt: z.number().positive().max(10_000_000).default(10_000),
   buyFeeIdr: z.number().min(0).max(5000).default(30),
   history: z
@@ -130,7 +131,9 @@ const inputSchema = z.object({
 export const getMarketSnapshot = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => inputSchema.parse(data))
   .handler(async ({ data }): Promise<Snapshot> => {
+    await requireSession(data.sessionToken);
     const [sellRefRaw, buyRefRaw, crossPlatform, newsItems, dbHistory] = await Promise.all([
+
       fetchP2pAds("BUY"), // kompetitor JUAL -> acuan iklan JUAL saya
       fetchP2pAds("SELL"), // kompetitor BELI -> acuan iklan BELI saya
       fetchCrossPlatform(),
