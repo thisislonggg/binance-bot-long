@@ -7,6 +7,7 @@ import {
   ArrowUpRight,
   CheckCircle2,
   Copy,
+  FileSpreadsheet,
   Gauge,
   History,
   Layers,
@@ -18,6 +19,7 @@ import {
   Scale,
   Signal,
   TrendingUp,
+  Upload,
   Wallet,
   Zap,
 } from "lucide-react";
@@ -48,7 +50,9 @@ import {
 } from "@/lib/p2p-engine";
 import { login } from "@/lib/auth";
 import { getBinanceSyncStatus, syncBinanceTrades, type SyncResult } from "@/lib/binance-sync";
+import { importBinanceCsvTrades } from "@/lib/csv-import";
 import { getMarketSnapshot } from "@/lib/p2p.functions";
+
 import { deleteTrade, getPnlSummary, logTrade, updateTrade, type Trade, type TradeSide } from "@/lib/pnl";
 
 export const Route = createFileRoute("/")({
@@ -224,6 +228,43 @@ function Dashboard() {
     onError: handleAuthError,
   });
 
+  const importCsvFn = useServerFn(importBinanceCsvTrades);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const importCsvMutation = useMutation({
+    mutationFn: (csvText: string) =>
+      importCsvFn({
+        data: {
+          sessionToken: sessionToken ?? undefined,
+          csvText,
+        },
+      }),
+    onSuccess: (res) => {
+      pnlQuery.refetch();
+      syncStatusQuery.refetch();
+      if (res.ok) {
+        toast.success(`Berhasil mengimpor ${res.added} transaksi dari file CSV! (${res.skipped} terlewati/duplikat)`);
+      } else {
+        toast.error(`Gagal impor CSV: ${res.error}`);
+      }
+    },
+    onError: handleAuthError,
+  });
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      toast.loading("Memproses dan mengimpor file CSV Binance...");
+      importCsvMutation.mutate(text);
+    } catch (err) {
+      toast.error("Gagal membaca file CSV: " + String(err));
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
   const handleBinanceSync = () => {
     setSyncResult(null);
     syncMutation.mutate({ isSilent: false, fullHistory: false });
@@ -257,6 +298,7 @@ function Dashboard() {
     }, 1000);
     return () => clearInterval(id);
   }, [autoSyncBinance, sessionToken, syncStatusQuery.data?.available]);
+
 
 
   const resetTradeForm = () => {
@@ -831,46 +873,69 @@ function Dashboard() {
               </p>
             </div>
 
-            {syncStatusQuery.data?.available ? (
-              <div className="flex flex-wrap items-center gap-2.5">
-                <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-1.5">
-                  <Switch
-                    id="auto-sync"
-                    checked={autoSyncBinance}
-                    onCheckedChange={setAutoSyncBinance}
-                  />
-                  <Label htmlFor="auto-sync" className="text-xs cursor-pointer text-muted-foreground">
-                    Auto-sync{" "}
-                    {autoSyncBinance ? (
-                      <span className="text-foreground/90 font-medium">({syncCountdown}s)</span>
-                    ) : (
-                      "Off"
-                    )}
-                  </Label>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleBinanceSync}
-                  disabled={syncMutation.isPending}
-                  className="gap-1.5 text-xs font-medium"
-                >
-                  <RefreshCw className={syncMutation.isPending ? "size-3.5 animate-spin" : "size-3.5"} />
-                  {syncMutation.isPending ? "Menyinkronkan…" : "Sync Baru"}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleFullHistorySync}
-                  disabled={syncMutation.isPending}
-                  className="gap-1.5 text-xs font-medium border-primary/40 text-primary hover:bg-primary/10"
-                  title="Tarik seluruh riwayat transaksi Binance C2C selama 6 bulan terakhir"
-                >
-                  <History className="size-3.5" />
-                  Tarik 6 Bulan Penuh
-                </Button>
-              </div>
-            ) : null}
+            <div className="flex flex-wrap items-center gap-2.5">
+              <input
+                type="file"
+                ref={fileInputRef}
+                accept=".csv,.txt"
+                onChange={handleFileUpload}
+                className="hidden"
+              />
+
+              {syncStatusQuery.data?.available ? (
+                <>
+                  <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-1.5">
+                    <Switch
+                      id="auto-sync"
+                      checked={autoSyncBinance}
+                      onCheckedChange={setAutoSyncBinance}
+                    />
+                    <Label htmlFor="auto-sync" className="text-xs cursor-pointer text-muted-foreground">
+                      Auto-sync{" "}
+                      {autoSyncBinance ? (
+                        <span className="text-foreground/90 font-medium">({syncCountdown}s)</span>
+                      ) : (
+                        "Off"
+                      )}
+                    </Label>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleBinanceSync}
+                    disabled={syncMutation.isPending}
+                    className="gap-1.5 text-xs font-medium"
+                  >
+                    <RefreshCw className={syncMutation.isPending ? "size-3.5 animate-spin" : "size-3.5"} />
+                    {syncMutation.isPending ? "Menyinkronkan…" : "Sync Baru"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleFullHistorySync}
+                    disabled={syncMutation.isPending}
+                    className="gap-1.5 text-xs font-medium border-primary/40 text-primary hover:bg-primary/10"
+                    title="Tarik seluruh riwayat transaksi Binance C2C selama 6 bulan terakhir via API"
+                  >
+                    <History className="size-3.5" />
+                    Tarik 6 Bulan (API)
+                  </Button>
+                </>
+              ) : null}
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={importCsvMutation.isPending}
+                className="gap-1.5 text-xs font-medium bg-surface-2 hover:bg-surface-3"
+                title="Unggah file ekspor CSV riwayat pesanan P2P langsung dari website Binance (Bebas kendala Geoblock / IP restriction)"
+              >
+                <FileSpreadsheet className={importCsvMutation.isPending ? "size-3.5 animate-pulse" : "size-3.5 text-emerald-400"} />
+                {importCsvMutation.isPending ? "Mengimpor CSV…" : "Import CSV Binance"}
+              </Button>
+            </div>
+
 
           </div>
 

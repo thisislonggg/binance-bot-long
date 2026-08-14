@@ -21,7 +21,7 @@ import { z } from "zod";
 import { requireSession } from "./auth";
 import { getSupabase } from "./supabase";
 
-const BINANCE_C2C_URL = "https://api.binance.com/sapi/v1/c2c/orderMatch/listUserOrderHistory";
+const DEFAULT_BINANCE_URL = "https://api.binance.com/sapi/v1/c2c/orderMatch/listUserOrderHistory";
 const SYNC_TS_KEY = "binance_last_sync_ts";
 
 // ── Tipe respons Binance C2C ────────────────────────────────────────────────
@@ -57,6 +57,12 @@ async function fetchC2cOrdersForWindow(
   const rows = 100;
   const maxPages = 20; // safety limit hingga 2000 order per sisi per window
 
+  // Dukungan proxy atau custom base URL jika server hosting berada di region terblokir (US)
+  const baseUrl =
+    process.env["BINANCE_PROXY_URL"] ||
+    process.env["BINANCE_API_BASE_URL"] ||
+    DEFAULT_BINANCE_URL;
+
   while (page <= maxPages) {
     const timestamp = Date.now();
     const params: Record<string, string | number> = {
@@ -73,7 +79,9 @@ async function fetchC2cOrdersForWindow(
       .map(([k, v]) => `${k}=${v}`)
       .join("&");
     const signature = createHmac("sha256", apiSecret).update(qs).digest("hex");
-    const url = `${BINANCE_C2C_URL}?${qs}&signature=${signature}`;
+    const url = baseUrl.includes("?")
+      ? `${baseUrl}&${qs}&signature=${signature}`
+      : `${baseUrl}?${qs}&signature=${signature}`;
 
     const resp = await fetch(url, {
       headers: {
@@ -86,6 +94,7 @@ async function fetchC2cOrdersForWindow(
       const body = await resp.text().catch(() => "");
       throw new Error(`Binance API HTTP ${resp.status}: ${body}`);
     }
+
 
     const json = await resp.json();
 
