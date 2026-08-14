@@ -80,11 +80,11 @@ async function fetchC2cOrders(
     }
 
     const json = await resp.json();
-    if (!json.success) {
-      throw new Error(`Binance C2C error: ${json.message ?? JSON.stringify(json)}`);
+    if (json.code && json.code !== "000000" && json.code !== 0 && json.code !== "0") {
+      throw new Error(`Binance C2C error: ${json.code} - ${json.message ?? JSON.stringify(json)}`);
     }
 
-    const list = (json.data ?? []) as BinanceC2cOrder[];
+    const list = (Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : []) as BinanceC2cOrder[];
     allOrders.push(...list);
 
     if (list.length < rows) break;
@@ -93,6 +93,7 @@ async function fetchC2cOrders(
 
   return allOrders;
 }
+
 
 Deno.serve(async () => {
   try {

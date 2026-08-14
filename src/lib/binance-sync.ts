@@ -9,8 +9,8 @@
  *
  * Constraint:
  *   - Max window per request: 30 hari
- *   - Data tersedia: 6 bulan ke belakang
- *   - tradeType BUY dan SELL harus di-fetch terpisah
+ *   - Data tersedia: 6 bulan ke belakang (180 hari)
+ *   - tradeType BUY dan SELL di-fetch terpisah
  *   - Pagination: page (1-indexed) & rows (maks 100)
  */
 
@@ -28,31 +28,20 @@ const SYNC_TS_KEY = "binance_last_sync_ts";
 
 export type BinanceC2cOrder = {
   orderNumber: string;
-  advNo: string;
-  tradeType: "BUY" | "SELL";
-  asset: string;
-  fiat: string;
-  amount: string;      // jumlah crypto (USDT)
-  totalPrice: string;  // total IDR
-  unitPrice: string;   // harga per USDT dalam IDR
-  orderStatus: string;
-  createTime: number;  // epoch ms
-  counterPartNickName: string;
+  advNo?: string;
+  tradeType: "BUY" | "SELL" | string;
+  asset?: string;
+  fiat?: string;
+  amount: string | number;      // jumlah crypto (USDT)
+  totalPrice?: string | number; // total IDR
+  unitPrice?: string | number;  // harga per USDT dalam IDR
+  price?: string | number;
+  orderStatus?: string;
+  createTime?: number | string; // epoch ms
+  counterPartNickName?: string;
   payMethodName?: string;
   commission?: string;
 };
-
-// ── Signature builder ────────────────────────────────────────────────────────
-
-/**
- * Buat HMAC-SHA256 signature standar untuk Binance signed endpoint.
- */
-function buildSignature(queryParams: Record<string, string | number>, secret: string): string {
-  const raw = Object.entries(queryParams)
-    .map(([k, v]) => `${k}=${v}`)
-    .join("&");
-  return createHmac("sha256", secret).update(raw).digest("hex");
-}
 
 // ── Fetch halaman dari Binance C2C API dengan Paginasi Penuh ─────────────────
 
@@ -72,19 +61,18 @@ async function fetchC2cOrdersForWindow(
     const timestamp = Date.now();
     const params: Record<string, string | number> = {
       tradeType,
-      startTimestamp: startMs,
-      endTimestamp: endMs,
+      startTimestamp: Math.floor(startMs),
+      endTimestamp: Math.floor(endMs),
       page,
       rows,
       timestamp,
       recvWindow: 10_000,
     };
 
-    const signature = buildSignature(params, apiSecret);
     const qs = Object.entries(params)
-      .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
+      .map(([k, v]) => `${k}=${v}`)
       .join("&");
-
+    const signature = createHmac("sha256", apiSecret).update(qs).digest("hex");
     const url = `${BINANCE_C2C_URL}?${qs}&signature=${signature}`;
 
     const resp = await fetch(url, {
@@ -96,15 +84,17 @@ async function fetchC2cOrdersForWindow(
 
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
-      throw new Error(`Binance API error ${resp.status}: ${body}`);
+      throw new Error(`Binance API HTTP ${resp.status}: ${body}`);
     }
 
     const json = await resp.json();
-    if (!json.success) {
-      throw new Error(`Binance C2C error: ${json.message ?? JSON.stringify(json)}`);
+
+    // Respons Binance SAPI mengembalikan code: "000000" atau 0 saat sukses
+    if (json.code && json.code !== "000000" && json.code !== 0 && json.code !== "0") {
+      throw new Error(`Binance C2C API error: ${json.code} - ${json.message ?? JSON.stringify(json)}`);
     }
 
-    const list = (json.data ?? []) as BinanceC2cOrder[];
+    const list = (Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : []) as BinanceC2cOrder[];
     allOrders.push(...list);
 
     if (list.length < rows) {
@@ -153,7 +143,6 @@ export async function executeBinanceSync(
   const MS_DAY = 24 * 60 * 60 * 1000;
 
   // Tentukan window waktu (Binance membatasi query maksimal interval 30 hari, data s.d 180 hari)
-  // Kita gunakan chunk 25 hari agar aman dari limit interval 30 hari Binance
   type Window = { start: number; end: number };
   const windows: Window[] = [];
 
@@ -180,6 +169,7 @@ export async function executeBinanceSync(
 
   let totalAdded = 0;
   let totalSkipped = 0;
+  let lastError: string | null = null;
 
   for (const win of windows) {
     let buyOrders: BinanceC2cOrder[] = [];
@@ -188,33 +178,43 @@ export async function executeBinanceSync(
     try {
       const [resBuy, resSell] = await Promise.all([
         fetchC2cOrdersForWindow(apiKey, apiSecret, "BUY", win.start, win.end).catch((e) => {
+          lastError = e?.message || String(e);
           console.warn("Fetch BUY window error:", e);
           return [] as BinanceC2cOrder[];
         }),
         fetchC2cOrdersForWindow(apiKey, apiSecret, "SELL", win.start, win.end).catch((e) => {
+          lastError = e?.message || String(e);
           console.warn("Fetch SELL window error:", e);
           return [] as BinanceC2cOrder[];
         }),
       ]);
       buyOrders = resBuy;
       sellOrders = resSell;
-    } catch (err) {
+    } catch (err: any) {
+      lastError = err?.message || String(err);
       console.warn("Window fetch skipped due to error:", err);
       continue;
     }
 
     // Filter transaksi: COMPLETED USDT/IDR (case-insensitive)
     const allOrders = [...buyOrders, ...sellOrders].filter((o) => {
-      const statusOk = String(o.orderStatus).toUpperCase() === "COMPLETED";
-      const assetOk = String(o.asset).toUpperCase() === "USDT";
-      const fiatOk = String(o.fiat).toUpperCase() === "IDR";
-      return statusOk && assetOk && fiatOk;
+      const statusStr = String(o.orderStatus ?? "").toUpperCase();
+      const assetStr = String(o.asset ?? "").toUpperCase();
+      const fiatStr = String(o.fiat ?? "").toUpperCase();
+
+      const isCompleted = !statusStr || statusStr === "COMPLETED" || statusStr === "4";
+      const isUsdt = !assetStr || assetStr === "USDT";
+      const isIdr = !fiatStr || fiatStr === "IDR";
+      return isCompleted && isUsdt && isIdr;
     });
 
     for (const order of allOrders) {
+      const orderNo = String(order.orderNumber || order.advNo || "");
+      if (!orderNo) continue;
+
       const amountUsdt = Number(order.amount);
       const totalPrice = Number(order.totalPrice);
-      let unitPrice = Number(order.unitPrice);
+      let unitPrice = Number(order.unitPrice || order.price);
       if ((!Number.isFinite(unitPrice) || unitPrice <= 0) && totalPrice > 0 && amountUsdt > 0) {
         unitPrice = totalPrice / amountUsdt;
       }
@@ -223,7 +223,8 @@ export async function executeBinanceSync(
         continue;
       }
 
-      const ts = new Date(order.createTime).toISOString();
+      const createTime = Number(order.createTime) || Date.now();
+      const ts = new Date(createTime).toISOString();
       const side = String(order.tradeType).toUpperCase() === "BUY" ? "buy" : "sell";
       const noteParts = [
         order.counterPartNickName ? `@${order.counterPartNickName}` : null,
@@ -235,7 +236,7 @@ export async function executeBinanceSync(
       const { data: existing } = await db
         .from("trades")
         .select("id")
-        .eq("binance_order_no", order.orderNumber)
+        .eq("binance_order_no", orderNo)
         .maybeSingle();
 
       if (existing) {
@@ -250,7 +251,7 @@ export async function executeBinanceSync(
         amount_usdt: amountUsdt,
         note,
         source: "binance_sync",
-        binance_order_no: order.orderNumber,
+        binance_order_no: orderNo,
       });
 
       if (!error) {
@@ -262,9 +263,13 @@ export async function executeBinanceSync(
   }
 
   await saveLastSyncTs(now);
+
+  if (totalAdded === 0 && totalSkipped === 0 && lastError) {
+    return { ok: false, added: 0, skipped: 0, error: lastError };
+  }
+
   return { ok: true, added: totalAdded, skipped: totalSkipped, last_sync_ts: now };
 }
-
 
 // ── Server Functions ─────────────────────────────────────────────────────────
 
@@ -313,4 +318,5 @@ export const getBinanceSyncStatus = createServerFn({ method: "POST" })
     const lastSyncTs = available ? await getLastSyncTs() : null;
     return { available, last_sync_ts: lastSyncTs };
   });
+
 
