@@ -5,8 +5,11 @@ import {
   Activity,
   ArrowDownRight,
   ArrowUpRight,
+  Calculator,
+  Check,
   CheckCircle2,
   Copy,
+  ExternalLink,
   FileSpreadsheet,
   Gauge,
   History,
@@ -15,9 +18,13 @@ import {
   LogOut,
   Newspaper,
   NotebookPen,
+  Plus,
   RefreshCw,
   Scale,
+  Search,
+  ShieldCheck,
   Signal,
+  Sparkles,
   TrendingUp,
   Upload,
   Wallet,
@@ -28,6 +35,7 @@ import { Area, AreaChart, ResponsiveContainer, Tooltip, YAxis } from "recharts";
 import { toast } from "sonner";
 
 import { AdsTable } from "@/components/p2p/AdsTable";
+import { MarginCalculator } from "@/components/p2p/MarginCalculator";
 import { StatCard } from "@/components/p2p/StatCard";
 import { TradesTable } from "@/components/p2p/TradesTable";
 import { Badge } from "@/components/ui/badge";
@@ -56,24 +64,22 @@ import {
   type SyncResult,
 } from "@/lib/binance-sync";
 import { getMarketSnapshot } from "@/lib/p2p.functions";
-
-
 import { deleteTrade, getPnlSummary, logTrade, updateTrade, type Trade, type TradeSide } from "@/lib/pnl";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Radar P2P — Harga Iklan USDT/IDR untuk Merchant" },
+      { title: "Radar P2P Pro — Terminal Harga Iklan USDT/IDR & Profit Merchant" },
       {
         name: "description",
         content:
-          "Dashboard analisis Binance P2P USDT/IDR: harga beli & jual rekomendasi, margin dinamis, kedalaman likuiditas, dan sinyal pasar untuk merchant.",
+          "Terminal profesional Binance P2P USDT/IDR: rekomendasi harga iklan, margin spread dinamis, otomasi pencatatan transaksi, dan analisis PnL merchant.",
       },
-      { property: "og:title", content: "Radar P2P — Harga Iklan USDT/IDR untuk Merchant" },
+      { property: "og:title", content: "Radar P2P Pro — Terminal Merchant Binance USDT/IDR" },
       {
         property: "og:description",
         content:
-          "Rekomendasi harga iklan beli & jual USDT/IDR berbasis order book P2P, margin dinamis, dan sinyal pasar jangka pendek.",
+          "Terminal real-time untuk merchant Binance P2P: harga pasang iklan, kalkulasi PnL FIFO otomatis, dan order book depth map.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -84,7 +90,7 @@ export const Route = createFileRoute("/")({
 
 const HISTORY_KEY = "p2p_price_history";
 const SESSION_KEY = "p2p_session_token";
-const POLL_SECONDS = 90;
+const POLL_SECONDS = 60;
 const BINANCE_SYNC_SECONDS = 180; // 3 menit
 
 function loadHistory(): HistoryPoint[] {
@@ -97,94 +103,89 @@ function loadHistory(): HistoryPoint[] {
   }
 }
 
+function saveHistory(h: HistoryPoint[]): void {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(-100)));
+  } catch {
+    // Abaikan error localStorage jika penuh
+  }
+}
+
 function Dashboard() {
-  // --- Login gerbang password tunggal (lihat src/lib/auth.ts) ---
-  const loginFn = useServerFn(login);
   const [sessionToken, setSessionToken] = useState<string | null>(null);
-  const [sessionChecked, setSessionChecked] = useState(false);
-  const [loginPassword, setLoginPassword] = useState("");
-  const [loginError, setLoginError] = useState<string | null>(null);
+  const [authInitialized, setAuthInitialized] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
 
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(SESSION_KEY);
-      if (saved) setSessionToken(saved);
-    } catch {
-      /* storage diblokir: abaikan, minta login manual */
-    }
-    setSessionChecked(true);
-  }, []);
+  // Polling pasar & history chart
+  const [history, setHistory] = useState<HistoryPoint[]>(loadHistory);
+  const [copiedPrice, setCopiedPrice] = useState<"buy" | "sell" | null>(null);
+  const [activeTab, setActiveTab] = useState<"pnl" | "market" | "calculator" | "news">("pnl");
 
-  const handleLogout = useCallback(() => {
-    setSessionToken(null);
-    try {
-      localStorage.removeItem(SESSION_KEY);
-    } catch {
-      /* abaikan */
-    }
-  }, []);
-
-  const handleAuthError = useCallback(
-    (err: unknown) => {
-      if (err instanceof Error && err.message.includes("unauthorized")) handleLogout();
-    },
-    [handleLogout],
-  );
-
-  const loginMutation = useMutation({
-    mutationFn: (password: string) => loginFn({ data: { password } }),
-    onSuccess: (res) => {
-      if (res.ok && res.token) {
-        setSessionToken(res.token);
-        try {
-          localStorage.setItem(SESSION_KEY, res.token);
-        } catch {
-          /* abaikan */
-        }
-        setLoginError(null);
-        setLoginPassword("");
-      } else if (res.reason === "server_not_configured") {
-        setLoginError("Password login belum di-set di server (DASHBOARD_PASSWORD).");
-      } else {
-        setLoginError("Password salah.");
-      }
-    },
-    onError: () => setLoginError("Gagal menghubungi server."),
-  });
-
-  const handleLogin = () => {
-    if (!loginPassword) return;
-    loginMutation.mutate(loginPassword);
-  };
-
-  const snapshotFn = useServerFn(getMarketSnapshot);
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [capital, setCapital] = useState(10000);
-  const [fee, setFee] = useState(30);
-  const [auto, setAuto] = useState(true);
-  const [countdown, setCountdown] = useState(POLL_SECONDS);
-  const historyRef = useRef<HistoryPoint[]>([]);
-  const [hydrated, setHydrated] = useState(false);
-
-  // --- Pencatatan/edit/hapus transaksi & profit harian/mingguan ---
-  const logTradeFn = useServerFn(logTrade);
-  const updateTradeFn = useServerFn(updateTrade);
-  const deleteTradeFn = useServerFn(deleteTrade);
-  const pnlFn = useServerFn(getPnlSummary);
+  // State Form Transaksi Manual
+  const [showManualForm, setShowManualForm] = useState(false);
   const [tradeSide, setTradeSide] = useState<TradeSide>("buy");
   const [tradePrice, setTradePrice] = useState("");
   const [tradeAmount, setTradeAmount] = useState("");
   const [tradeNote, setTradeNote] = useState("");
+  const [tradeTs, setTradeTs] = useState("");
   const [editingTradeId, setEditingTradeId] = useState<number | null>(null);
   const [deletingTradeId, setDeletingTradeId] = useState<number | null>(null);
 
-  // --- Binance auto-sync ---
-  const syncFn = useServerFn(syncBinanceTrades);
-  const syncStatusFn = useServerFn(getBinanceSyncStatus);
+  // State Auto-sync Binance
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [autoSyncBinance, setAutoSyncBinance] = useState(true);
   const [syncCountdown, setSyncCountdown] = useState(BINANCE_SYNC_SECONDS);
 
+  // Binding Server Functions
+  const loginFn = useServerFn(login);
+  const getSnapshotFn = useServerFn(getMarketSnapshot);
+  const pnlFn = useServerFn(getPnlSummary);
+  const logTradeFn = useServerFn(logTrade);
+  const updateTradeFn = useServerFn(updateTrade);
+  const deleteTradeFn = useServerFn(deleteTrade);
+  const syncFn = useServerFn(syncBinanceTrades);
+  const syncStatusFn = useServerFn(getBinanceSyncStatus);
+  const importCsvFn = useServerFn(importBinanceCsvTrades);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Inisialisasi token dari sessionStorage
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(SESSION_KEY);
+      if (saved) setSessionToken(saved);
+    } catch {
+      // Abaikan
+    } finally {
+      setAuthInitialized(true);
+    }
+  }, []);
+
+  const handleAuthError = useCallback((err: unknown) => {
+    const msg = String(err);
+    if (msg.includes("AUTH_REQUIRED") || msg.includes("UNAUTHORIZED")) {
+      setSessionToken(null);
+      try {
+        sessionStorage.removeItem(SESSION_KEY);
+      } catch {
+        // Abaikan
+      }
+    }
+  }, []);
+
+  // Query Market Snapshot
+  const snapshotQuery = useQuery({
+    queryKey: ["p2p-snapshot"],
+    queryFn: () => getSnapshotFn({ data: { sessionToken: sessionToken ?? undefined } }),
+    refetchInterval: POLL_SECONDS * 1000,
+    enabled: Boolean(sessionToken),
+  });
+
+  useEffect(() => {
+    if (snapshotQuery.error) handleAuthError(snapshotQuery.error);
+  }, [snapshotQuery.error, handleAuthError]);
+
+  // Query PnL Summary
   const pnlQuery = useQuery({
     queryKey: ["pnl-summary"],
     queryFn: () => pnlFn({ data: { sessionToken: sessionToken ?? undefined } }),
@@ -196,6 +197,7 @@ function Dashboard() {
     if (pnlQuery.error) handleAuthError(pnlQuery.error);
   }, [pnlQuery.error, handleAuthError]);
 
+  // Query Status Binance Sync
   const syncStatusQuery = useQuery({
     queryKey: ["binance-sync-status"],
     queryFn: () => syncStatusFn({ data: { sessionToken: sessionToken ?? undefined } }),
@@ -203,6 +205,7 @@ function Dashboard() {
     staleTime: 60_000,
   });
 
+  // Mutasi Sync Binance API
   const syncMutation = useMutation({
     mutationFn: (vars?: { isSilent?: boolean; fullHistory?: boolean }) =>
       syncFn({
@@ -229,13 +232,10 @@ function Dashboard() {
         );
       }
     },
-
     onError: handleAuthError,
   });
 
-  const importCsvFn = useServerFn(importBinanceCsvTrades);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
+  // Mutasi Import CSV Binance
   const importCsvMutation = useMutation({
     mutationFn: (csvText: string) =>
       importCsvFn({
@@ -281,7 +281,7 @@ function Dashboard() {
     syncMutation.mutate({ isSilent: false, fullHistory: true });
   };
 
-  // Sync otomatis saat startup jika API key tersedia
+  // Sync otomatis saat login/startup
   const initialSyncedRef = useRef(false);
   useEffect(() => {
     if (!sessionToken || !syncStatusQuery.data?.available || initialSyncedRef.current) return;
@@ -304,913 +304,882 @@ function Dashboard() {
     return () => clearInterval(id);
   }, [autoSyncBinance, sessionToken, syncStatusQuery.data?.available]);
 
-
-
   const resetTradeForm = () => {
     setEditingTradeId(null);
     setTradeSide("buy");
     setTradePrice("");
     setTradeAmount("");
     setTradeNote("");
+    setTradeTs("");
   };
 
+  // Mutasi Transaksi Manual
   const logMutation = useMutation({
-    mutationFn: (vars: { side: TradeSide; price: number; amountUsdt: number; note?: string }) =>
-      logTradeFn({ data: { ...vars, sessionToken: sessionToken ?? undefined } }),
-    onSuccess: () => {
-      resetTradeForm();
-      pnlQuery.refetch();
-      toast.success("Transaksi berhasil dicatat.");
+    mutationFn: (data: {
+      side: TradeSide;
+      price: number;
+      amount_usdt: number;
+      note?: string;
+      ts?: string;
+    }) => logTradeFn({ data: { sessionToken: sessionToken ?? undefined, ...data } }),
+    onSuccess: (res) => {
+      if (res.ok) {
+        resetTradeForm();
+        setShowManualForm(false);
+        pnlQuery.refetch();
+        toast.success("Transaksi manual berhasil dicatat!");
+      }
     },
     onError: handleAuthError,
   });
 
   const updateMutation = useMutation({
-    mutationFn: (vars: {
+    mutationFn: (data: {
       id: number;
-      side: TradeSide;
-      price: number;
-      amountUsdt: number;
-      note?: string;
-    }) => updateTradeFn({ data: { ...vars, sessionToken: sessionToken ?? undefined } }),
-    onSuccess: () => {
-      resetTradeForm();
-      pnlQuery.refetch();
-      toast.success("Perubahan transaksi berhasil disimpan.");
+      side?: TradeSide;
+      price?: number;
+      amount_usdt?: number;
+      note?: string | null;
+      ts?: string;
+    }) => updateTradeFn({ data: { sessionToken: sessionToken ?? undefined, ...data } }),
+    onSuccess: (res) => {
+      if (res.ok) {
+        resetTradeForm();
+        setShowManualForm(false);
+        pnlQuery.refetch();
+        toast.success("Transaksi berhasil diperbarui!");
+      }
     },
     onError: handleAuthError,
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => deleteTradeFn({ data: { id, sessionToken: sessionToken ?? undefined } }),
+    mutationFn: (id: number) =>
+      deleteTradeFn({ data: { sessionToken: sessionToken ?? undefined, id } }),
     onMutate: (id) => setDeletingTradeId(id),
-    onSuccess: (_res, id) => {
-      if (editingTradeId === id) resetTradeForm();
-      pnlQuery.refetch();
-      toast.success("Transaksi berhasil dihapus.");
+    onSettled: () => setDeletingTradeId(null),
+    onSuccess: (res) => {
+      if (res.ok) {
+        if (editingTradeId === res.id) resetTradeForm();
+        pnlQuery.refetch();
+        toast.success("Transaksi dihapus.");
+      }
     },
     onError: handleAuthError,
-    onSettled: () => setDeletingTradeId(null),
   });
 
-  const handleSubmitTrade = () => {
-    const price = Number(tradePrice);
-    const amount = Number(tradeAmount);
-    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(amount) || amount <= 0) return;
-    if (editingTradeId != null) {
-      updateMutation.mutate({
-        id: editingTradeId,
-        side: tradeSide,
-        price,
-        amountUsdt: amount,
-        note: tradeNote || undefined,
-      });
-    } else {
-      logMutation.mutate({ side: tradeSide, price, amountUsdt: amount, note: tradeNote || undefined });
-    }
-  };
-
-  const handleEditTrade = (t: Trade) => {
+  const handleStartEditTrade = (t: Trade) => {
     setEditingTradeId(t.id);
     setTradeSide(t.side);
     setTradePrice(String(t.price));
     setTradeAmount(String(t.amount_usdt));
     setTradeNote(t.note ?? "");
+    const d = new Date(t.ts);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    setTradeTs(
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`,
+    );
+    setShowManualForm(true);
   };
 
-  const handleDeleteTrade = (t: Trade) => {
-    if (!window.confirm(`Hapus transaksi ${t.side === "buy" ? "beli" : "jual"} ${fmtRp2(t.price)}?`)) return;
-    deleteMutation.mutate(t.id);
+  const handleTradeSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const p = parseFloat(tradePrice.replace(/,/g, ""));
+    const a = parseFloat(tradeAmount.replace(/,/g, ""));
+    if (!Number.isFinite(p) || p <= 0 || !Number.isFinite(a) || a <= 0) return;
+
+    const isoTs = tradeTs ? new Date(tradeTs).toISOString() : undefined;
+    const noteVal = tradeNote.trim() ? tradeNote.trim() : undefined;
+
+    if (editingTradeId != null) {
+      updateMutation.mutate({
+        id: editingTradeId,
+        side: tradeSide,
+        price: p,
+        amount_usdt: a,
+        note: noteVal ?? null,
+        ts: isoTs,
+      });
+    } else {
+      logMutation.mutate({
+        side: tradeSide,
+        price: p,
+        amount_usdt: a,
+        note: noteVal,
+        ts: isoTs,
+      });
+    }
   };
 
-  const copyToClipboard = (text: string, label: string) => {
-    navigator.clipboard.writeText(text);
-    toast.success(`${label} disalin: ${text}`);
+  const handleCopyPrice = (price: number, type: "buy" | "sell") => {
+    if (!price) return;
+    navigator.clipboard.writeText(String(Math.round(price)));
+    setCopiedPrice(type);
+    toast.success(`Harga ${type === "buy" ? "Beli" : "Jual"} (${fmtRp2(price)}) disalin ke clipboard!`);
+    setTimeout(() => setCopiedPrice(null), 2000);
   };
 
-  const mutation = useMutation({
-    mutationFn: (vars: { capitalUsdt: number; buyFeeIdr: number }) =>
-      snapshotFn({ data: { ...vars, sessionToken: sessionToken ?? undefined, history: historyRef.current } }),
-    onSuccess: (data) => {
-      historyRef.current = data.history;
-      try {
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(data.history));
-      } catch {
-        /* storage penuh / diblokir: abaikan */
+  // Update history saat snapshot baru datang
+  useEffect(() => {
+    const s = snapshotQuery.data;
+    if (!s) return;
+    setHistory((prev) => {
+      const nextPoint: HistoryPoint = {
+        ts: s.ts,
+        fair_price: s.fair_price,
+        rec_buy: s.rec_buy,
+        rec_sell: s.rec_sell,
+      };
+      if (prev.length && prev[prev.length - 1]!.ts === s.ts) {
+        return prev;
       }
-      setSnapshot(data);
-      setCountdown(POLL_SECONDS);
+      const next = [...prev, nextPoint].slice(-100);
+      saveHistory(next);
+      return next;
+    });
+  }, [snapshotQuery.data]);
+
+  const loginMutation = useMutation({
+    mutationFn: (pwd: string) => loginFn({ data: { password: pwd } }),
+    onSuccess: (res) => {
+      if (res.ok && res.token) {
+        setSessionToken(res.token);
+        setAuthError(null);
+        setPasswordInput("");
+        try {
+          sessionStorage.setItem(SESSION_KEY, res.token);
+        } catch {
+          // Abaikan
+        }
+      } else {
+        setAuthError(res.error || "Password salah.");
+      }
     },
-    onError: handleAuthError,
+    onError: (err) => setAuthError(String(err)),
   });
 
-  const refresh = useCallback(() => {
-    mutation.mutate({ capitalUsdt: capital, buyFeeIdr: fee });
-  }, [capital, fee, mutation]);
+  const handleLogout = () => {
+    setSessionToken(null);
+    try {
+      sessionStorage.removeItem(SESSION_KEY);
+    } catch {
+      // Abaikan
+    }
+  };
 
-  const refreshRef = useRef(refresh);
-  refreshRef.current = refresh;
+  const chartData = useMemo(() => {
+    return history.map((h) => ({
+      time: new Date(h.ts).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }),
+      fair: h.fair_price,
+    }));
+  }, [history]);
 
-  useEffect(() => {
-    if (!sessionToken) return;
-    historyRef.current = loadHistory();
-    setHydrated(true);
-    refreshRef.current();
-  }, [sessionToken]);
+  const fairDomain = useMemo(() => {
+    if (!chartData.length) return [15000, 17000];
+    const vals = chartData.map((d) => d.fair);
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const pad = Math.max((max - min) * 0.15, 20);
+    return [Math.floor(min - pad), Math.ceil(max + pad)];
+  }, [chartData]);
 
-  useEffect(() => {
-    if (!auto || !sessionToken) return;
-    const id = setInterval(() => {
-      setCountdown((c) => {
-        if (c <= 1) {
-          refreshRef.current();
-          return POLL_SECONDS;
-        }
-        return c - 1;
-      });
-    }, 1000);
-    return () => clearInterval(id);
-  }, [auto, sessionToken]);
-
-  const chartData = useMemo(
-    () =>
-      (snapshot?.history ?? []).map((p) => ({
-        ts: new Date(p.ts).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }),
-        price: p.fair_price,
-      })),
-    [snapshot],
-  );
-
-  const s = snapshot;
-  const loading = mutation.isPending && !s;
-
-  if (!sessionChecked) {
-    return <main className="min-h-screen bg-background" />;
-  }
-
-  if (!sessionToken) {
+  if (!authInitialized) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-background bg-grid px-4 [background-size:44px_44px]">
-        <div className="panel w-full max-w-sm p-6">
-          <div className="flex items-center gap-2 text-primary">
-            <Lock className="size-5" />
-            <span className="text-[0.7rem] font-medium tracking-[0.2em] uppercase">Akses terbatas</span>
-          </div>
-          <h1 className="mt-2 text-2xl font-semibold">Radar Harga Merchant</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Masukkan password untuk membuka dashboard.</p>
-          <div className="mt-5 space-y-3">
-            <div>
-              <Label htmlFor="login-password" className="text-[0.7rem] tracking-[0.14em] text-muted-foreground uppercase">
-                Password
-              </Label>
-              <Input
-                id="login-password"
-                type="password"
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleLogin();
-                }}
-                autoFocus
-                className="mt-2 border-0 bg-surface-2"
-              />
-            </div>
-            <Button
-              onClick={handleLogin}
-              disabled={loginMutation.isPending || !loginPassword}
-              className="w-full font-semibold"
-            >
-              {loginMutation.isPending ? "Memeriksa…" : "Masuk"}
-            </Button>
-            {loginError ? <p className="text-xs text-destructive-foreground">{loginError}</p> : null}
-          </div>
-        </div>
-      </main>
+      <div className="flex min-h-screen items-center justify-center bg-background text-muted-foreground text-sm">
+        <RefreshCw className="size-4 animate-spin mr-2" /> Memuat terminal...
+      </div>
     );
   }
 
-  return (
-    <main className="min-h-screen bg-background bg-grid [background-size:44px_44px]">
-      <Toaster richColors position="top-right" />
-      <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-12">
-        <header className="flex flex-col gap-5 border-b border-border pb-7 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="relative flex size-2">
-                <span className="absolute inline-flex size-full animate-ping rounded-full bg-bid/70" />
-                <span className="relative inline-flex size-2 rounded-full bg-bid" />
-              </span>
-              <span className="text-[0.7rem] font-medium tracking-[0.2em] text-muted-foreground uppercase">
-                Binance P2P · USDT / IDR
-              </span>
+  // ── Login Gate (Sleek Fintech Auth) ─────────────────────────────────────────
+  if (!sessionToken) {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-4">
+        <div className="panel w-full max-w-sm p-7 space-y-6 shadow-2xl">
+          <div className="flex flex-col items-center text-center space-y-2">
+            <div className="flex size-12 items-center justify-center rounded-2xl bg-primary/15 text-primary border border-primary/30 shadow-lg shadow-primary/20">
+              <Zap className="size-6" />
             </div>
-            <h1 className="mt-2 text-3xl font-semibold sm:text-4xl">Radar Harga Merchant</h1>
-            <p className="mt-2 max-w-xl text-sm text-muted-foreground">
-              Acuan harga iklan <strong className="text-foreground/90">beli</strong> dan{" "}
-              <strong className="text-foreground/90">jual</strong> Anda — dihitung dari order book
-              kompetitor, kedalaman stok, dan margin minimum dinamis.
+            <h1 className="text-xl font-bold tracking-tight text-foreground">RADAR P2P PRO</h1>
+            <p className="text-xs text-muted-foreground">
+              Terminal Analisis Harga & Otomasi Merchant USDT/IDR
             </p>
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="mt-3 inline-flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <LogOut className="size-3.5" /> Keluar
-            </button>
           </div>
 
-          <div className="flex flex-col items-start gap-3 sm:items-end">
-            <Button
-              onClick={refresh}
-              disabled={mutation.isPending}
-              className="w-full font-semibold sm:w-auto"
-            >
-              <RefreshCw className={mutation.isPending ? "animate-spin" : ""} />
-              {mutation.isPending ? "Mengambil data…" : "Refresh sekarang"}
-            </Button>
-            <div className="flex items-center gap-2.5">
-              <Switch id="auto" checked={auto} onCheckedChange={setAuto} />
-              <Label htmlFor="auto" className="text-xs text-muted-foreground">
-                Auto-refresh {auto ? `· ${countdown}s` : "nonaktif"}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (passwordInput.trim()) loginMutation.mutate(passwordInput);
+            }}
+            className="space-y-4"
+          >
+            <div className="space-y-1.5">
+              <Label htmlFor="password" className="text-xs text-muted-foreground font-medium">
+                Password Dashboard
               </Label>
+              <Input
+                id="password"
+                type="password"
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                placeholder="Masukkan password..."
+                autoFocus
+                className="bg-surface-2 border-border/80 text-foreground"
+              />
             </div>
-          </div>
-        </header>
 
-        {/* Parameter */}
-        <section className="mt-7 grid gap-4 sm:grid-cols-[repeat(2,minmax(0,220px))_1fr]">
-          <div className="panel p-4">
-            <Label htmlFor="capital" className="text-[0.7rem] tracking-[0.14em] text-muted-foreground uppercase">
-              Modal (USDT)
-            </Label>
-            <Input
-              id="capital"
-              type="number"
-              min={1}
-              value={capital}
-              onChange={(e) => setCapital(Math.max(1, Number(e.target.value) || 0))}
-              className="num mt-2 border-0 bg-surface-2 text-lg font-semibold"
-            />
-          </div>
-          <div className="panel p-4">
-            <Label htmlFor="fee" className="text-[0.7rem] tracking-[0.14em] text-muted-foreground uppercase">
-              Fee beli (Rp/USDT)
-            </Label>
-            <Input
-              id="fee"
-              type="number"
-              min={0}
-              value={fee}
-              onChange={(e) => setFee(Math.max(0, Number(e.target.value) || 0))}
-              className="num mt-2 border-0 bg-surface-2 text-lg font-semibold"
-            />
-          </div>
-          <div className="panel flex flex-col justify-center gap-1.5 p-4">
-            <span className="text-[0.7rem] tracking-[0.14em] text-muted-foreground uppercase">
-              Terakhir diperbarui
-            </span>
-            <span className="num text-sm text-foreground/90">
-              {s ? new Date(s.timestamp).toLocaleString("id-ID") : hydrated ? "—" : ""}
-            </span>
-            <span className="text-xs text-muted-foreground">
-              Riwayat harga tersimpan di database & browser: {s?.history.length ?? 0} titik
-            </span>
-          </div>
-        </section>
-
-        {mutation.isError ? (
-          <p className="mt-5 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive-foreground">
-            Gagal mengambil data pasar. Coba refresh lagi.
-          </p>
-        ) : null}
-
-        {loading ? (
-          <p className="mt-10 text-sm text-muted-foreground">Mengambil order book P2P…</p>
-        ) : null}
-
-        {s ? (
-          <>
-            {/* Rekomendasi harga */}
-            <section className="mt-6 grid gap-4 sm:grid-cols-2">
-              <StatCard
-                label="Pasang iklan BELI di"
-                tone="bid"
-                icon={<ArrowDownRight className="size-5" />}
-                action={
-                  <button
-                    type="button"
-                    onClick={() => copyToClipboard(String(Math.round(s.my_buy_price)), "Harga Beli")}
-                    className="inline-flex items-center gap-1 rounded bg-bid/20 px-2 py-0.5 text-[0.65rem] font-semibold text-bid hover:bg-bid/30 transition-colors"
-                    title="Salin harga rekomendasi beli"
-                  >
-                    <Copy className="size-2.5" /> Salin
-                  </button>
-                }
-                value={fmtRp2(s.my_buy_price)}
-                hint={
-                  <>
-                    Sebelum fee {fmtRp2(s.my_buy_price_pre_fee)} · zona kompetitor{" "}
-                    {fmtRp(s.my_buy_zone[0])}–{fmtRp(s.my_buy_zone[1])}
-                  </>
-                }
-              />
-              <StatCard
-                label="Pasang iklan JUAL di"
-                tone="ask"
-                icon={<ArrowUpRight className="size-5" />}
-                action={
-                  <button
-                    type="button"
-                    onClick={() => copyToClipboard(String(Math.round(s.my_sell_price)), "Harga Jual")}
-                    className="inline-flex items-center gap-1 rounded bg-ask/20 px-2 py-0.5 text-[0.65rem] font-semibold text-ask hover:bg-ask/30 transition-colors"
-                    title="Salin harga rekomendasi jual"
-                  >
-                    <Copy className="size-2.5" /> Salin
-                  </button>
-                }
-                value={fmtRp2(s.my_sell_price)}
-                hint={
-                  <>
-                    Zona kompetitor {fmtRp(s.my_sell_zone[0])}–{fmtRp(s.my_sell_zone[1])}
-                  </>
-                }
-              />
-            </section>
-
-            <section className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <StatCard
-                label="Harga tengah wajar"
-                tone="primary"
-                icon={<Scale className="size-4" />}
-                value={fmtRp2(s.fair_price)}
-                hint={`Bias pasar: ${biasLabel(s.bias)}`}
-              />
-              <StatCard
-                label="Margin Anda"
-                icon={<TrendingUp className="size-4" />}
-                value={`${fmtRp2(s.spread_abs)}`}
-                hint={`${fmtPct(s.spread_pct)} · minimum dijaga ${fmtRp2(s.min_margin_used)}${
-                  s.margin_adjusted ? " (harga dilebarkan)" : ""
-                }`}
-              />
-              <StatCard
-                label="Likuiditas terlihat"
-                icon={<Layers className="size-4" />}
-                value={fmtRp(s.total_liquidity_idr)}
-                hint={`Kelas: ${liquidityLabel(s.liquidity_class)} · ${s.sell_ref_count_clean + s.buy_ref_count_clean} iklan valid`}
-              />
-              <StatCard
-                label="Skor keyakinan"
-                icon={<Gauge className="size-4" />}
-                value={`${s.confidence}/100`}
-                hint={confidenceLabel(s.confidence)}
-              />
-            </section>
-
-            {/* Grafik + sinyal */}
-            <section className="mt-4 grid gap-4 lg:grid-cols-[1.55fr_1fr]">
-              <div className="panel p-5">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-semibold tracking-[0.1em] uppercase">
-                    Harga wajar (riwayat sesi)
-                  </h2>
-                  <Badge variant="outline" className="num text-xs">
-                    {chartData.length} titik
-                  </Badge>
-                </div>
-                <div className="mt-4 h-56">
-                  {chartData.length > 1 ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={chartData}>
-                        <defs>
-                          <linearGradient id="fair" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="0%" stopColor="var(--color-primary)" stopOpacity={0.45} />
-                            <stop offset="100%" stopColor="var(--color-primary)" stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
-                        <YAxis domain={["dataMin - 15", "dataMax + 15"]} hide />
-                        <Tooltip
-                          contentStyle={{
-                            background: "var(--color-surface-2)",
-                            border: "1px solid var(--color-border)",
-                            borderRadius: 10,
-                            fontSize: 12,
-                          }}
-                          labelStyle={{ color: "var(--color-muted-foreground)" }}
-                          formatter={(v: number) => [fmtRp2(v), "Harga wajar"]}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="price"
-                          stroke="var(--color-primary)"
-                          strokeWidth={2}
-                          fill="url(#fair)"
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                      Butuh minimal 2 pembacaan — biarkan auto-refresh berjalan.
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="panel space-y-3 p-5">
-                <h2 className="text-sm font-semibold tracking-[0.1em] uppercase">Sinyal pasar</h2>
-                <Row
-                  icon={<Signal className="size-4" />}
-                  label="Arah jangka pendek"
-                  value={s.price_outlook.outlook}
-                />
-                <Row
-                  icon={<Activity className="size-4" />}
-                  label="Momentum"
-                  value={
-                    s.momentum.available
-                      ? `${s.momentum.label} (${fmtPct(s.momentum.delta_pct ?? NaN)})`
-                      : s.momentum.label
-                  }
-                />
-                <Row
-                  icon={<Layers className="size-4" />}
-                  label="Imbalance order book"
-                  value={`${s.order_book_imbalance.label} (${fmtPct(s.order_book_imbalance.imbalance_pct, 1)})`}
-                />
-                <Row
-                  icon={<Scale className="size-4" />}
-                  label="Selisih vs bursa spot"
-                  value={fmtPct(s.cross_platform_gap_pct)}
-                />
-                <Row
-                  icon={<Activity className="size-4" />}
-                  label="Volatilitas terakhir"
-                  value={fmtPct(s.volatility_pct, 3)}
-                />
-                <Row
-                  icon={<Wallet className="size-4" />}
-                  label="Pangsa modal Anda"
-                  value={`${fmtPct(s.capital_share_pct, 1)} dari likuiditas`}
-                />
-                <p className="pt-1 text-xs leading-relaxed text-muted-foreground">
-                  Sinyal ini heuristik sederhana, bukan prediksi harga. Jangan jadikan satu-satunya
-                  dasar keputusan.
-                </p>
-              </div>
-            </section>
-
-            {/* Rincian margin & kedalaman */}
-            <section className="mt-4 grid gap-4 lg:grid-cols-2">
-              <div className="panel p-5">
-                <h2 className="text-sm font-semibold tracking-[0.1em] uppercase">
-                  Kenapa margin sebesar ini
-                </h2>
-                <div className="mt-3 space-y-2.5">
-                  <Row label="Dasar (floor)" value={fmtPct(s.margin_breakdown['floor_pct'] ?? NaN, 3)} />
-                  <Row label="Buffer volatilitas" value={fmtPct(s.margin_breakdown['vol_buf_pct'] ?? NaN, 3)} />
-                  <Row label="Buffer likuiditas" value={fmtPct(s.margin_breakdown['liq_buf_pct'] ?? NaN, 3)} />
-                  <Row label="Buffer modal" value={fmtPct(s.margin_breakdown['capital_buf_pct'] ?? NaN, 3)} />
-                  <Row
-                    label="Faktor kepadatan kompetitor"
-                    value={`×${(s.margin_breakdown['crowd_factor'] ?? 0).toFixed(2)} (jual ${s.sell_density} · beli ${s.buy_density} iklan nempel)`}
-                  />
-                  <Row label="Margin minimum dipakai" value={fmtRp2(s.min_margin_used)} />
-                </div>
-              </div>
-
-              <div className="panel p-5">
-                <h2 className="text-sm font-semibold tracking-[0.1em] uppercase">
-                  Kedalaman stok relevan
-                </h2>
-                <div className="mt-3 space-y-2.5">
-                  <Row label="Modal Anda" value={`${s.capital_usdt.toLocaleString("id-ID")} USDT · ${fmtRp(s.capital_idr)}`} />
-                  <Row label="Target kedalaman" value={fmtRp(s.depth_target_idr)} />
-                  <Row
-                    label="Sisi JUAL (acuan)"
-                    value={`${fmtRp2(s.sell_depth.price)} · ${s.sell_depth.ads_used} iklan · ${fmtRp(s.sell_depth.depth_reached_idr)}${s.sell_depth.depth_sufficient ? "" : " (belum cukup)"}`}
-                  />
-                  <Row
-                    label="Sisi BELI (acuan)"
-                    value={`${fmtRp2(s.buy_depth.price)} · ${s.buy_depth.ads_used} iklan · ${fmtRp(s.buy_depth.depth_reached_idr)}${s.buy_depth.depth_sufficient ? "" : " (belum cukup)"}`}
-                  />
-                  <Row
-                    label="Referensi bursa spot"
-                    value={
-                      Object.keys(s.cross_platform).length
-                        ? Object.entries(s.cross_platform)
-                            .map(([k, v]) => `${k.includes("indodax") ? "Indodax" : "CoinGecko"} ${fmtRp2(v)}`)
-                            .join(" · ")
-                        : "tidak tersedia"
-                    }
-                  />
-                </div>
-              </div>
-            </section>
-
-            {/* Order book */}
-            <section className="panel mt-4 p-5">
-              <Tabs defaultValue="sell">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <h2 className="text-sm font-semibold tracking-[0.1em] uppercase">
-                    Order book kompetitor
-                  </h2>
-                  <TabsList>
-                    <TabsTrigger value="sell">Acuan iklan JUAL saya</TabsTrigger>
-                    <TabsTrigger value="buy">Acuan iklan BELI saya</TabsTrigger>
-                  </TabsList>
-                </div>
-                <TabsContent value="sell" className="mt-4">
-                  <p className="mb-3 text-xs text-muted-foreground">
-                    Kompetitor yang menjual USDT — {s.sell_ref_count_clean} dari{" "}
-                    {s.sell_ref_count_raw} iklan lolos filter likuiditas & outlier.
-                  </p>
-                  <AdsTable ads={s.top_sell_ref_ads} side="ask" />
-                </TabsContent>
-                <TabsContent value="buy" className="mt-4">
-                  <p className="mb-3 text-xs text-muted-foreground">
-                    Kompetitor yang membeli USDT — {s.buy_ref_count_clean} dari {s.buy_ref_count_raw}{" "}
-                    iklan lolos filter likuiditas & outlier.
-                  </p>
-                  <AdsTable ads={s.top_buy_ref_ads} side="bid" />
-                </TabsContent>
-              </Tabs>
-            </section>
-
-            {/* Berita */}
-            {s.news_items.length ? (
-              <section className="panel mt-4 p-5">
-                <h2 className="flex items-center gap-2 text-sm font-semibold tracking-[0.1em] uppercase">
-                  <Newspaper className="size-4 text-primary" /> Konteks berita
-                </h2>
-                <ul className="mt-3 space-y-2">
-                  {s.news_items.map((n) => (
-                    <li key={n.link || n.title}>
-                      <a
-                        href={n.link}
-                        target="_blank"
-                        rel="noreferrer noopener"
-                        className="text-sm text-foreground/85 underline-offset-4 hover:text-primary hover:underline"
-                      >
-                        {n.title}
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-                <p className="mt-3 text-xs text-muted-foreground">
-                  Judul mentah dari Google News — tidak dipakai untuk menghitung harga.
-                </p>
-              </section>
-            ) : null}
-          </>
-        ) : null}
-
-        {/* ── Otomasi Auto-Catat Transaksi & Laporan PnL Real-Time ── */}
-        <section className="mt-8 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <Zap className="size-5 text-primary" />
-                <h2 className="text-xl font-semibold">Otomasi Transaksi & Analisis Profit (PnL)</h2>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Transaksi Binance C2C dicatat secara otomatis ke database Supabase dan dihitung
-                profit real-time menggunakan standar <strong>FIFO Cost-Basis</strong>.
+            {authError ? (
+              <p className="rounded-lg bg-destructive/15 border border-destructive/30 px-3 py-2 text-xs text-destructive-foreground font-medium">
+                {authError}
               </p>
-            </div>
+            ) : null}
 
-            <div className="flex flex-wrap items-center gap-2.5">
-              <input
-                type="file"
-                ref={fileInputRef}
-                accept=".csv,.txt"
-                onChange={handleFileUpload}
-                className="hidden"
-              />
+            <Button
+              type="submit"
+              disabled={loginMutation.isPending || !passwordInput.trim()}
+              className="w-full font-semibold shadow-lg"
+            >
+              {loginMutation.isPending ? "Memverifikasi…" : "Buka Terminal"}
+            </Button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  const s = snapshotQuery.data;
+  const pnl = pnlQuery.data;
+
+  return (
+    <div className="min-h-screen bg-background text-foreground pb-16">
+      <Toaster position="top-right" richColors />
+
+      {/* ── Top Live Ticker Header ──────────────────────────────────────────── */}
+      <header className="sticky top-0 z-40 border-b border-border/80 bg-background/85 backdrop-blur-xl">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
+          {/* Logo & Brand */}
+          <div className="flex items-center gap-2.5">
+            <div className="flex size-8 items-center justify-center rounded-lg bg-primary/15 text-primary border border-primary/30">
+              <Zap className="size-4.5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-extrabold tracking-tight text-foreground">RADAR P2P</span>
+                <span className="rounded bg-primary/20 px-1.5 py-0.2 text-[0.6rem] font-bold text-primary tracking-wider uppercase">
+                  PRO
+                </span>
+              </div>
+              <span className="text-[0.65rem] text-muted-foreground block -mt-0.5">
+                Binance C2C · USDT/IDR
+              </span>
+            </div>
+          </div>
+
+          {/* Real-time Ticker Badges */}
+          {s ? (
+            <div className="hidden lg:flex items-center gap-3 text-xs">
+              <div className="flex items-center gap-1.5 rounded-lg border border-border/70 bg-surface-2/60 px-2.5 py-1">
+                <span className="text-muted-foreground">Fair Price:</span>
+                <span className="num font-bold text-foreground">{fmtRp2(s.fair_price)}</span>
+              </div>
+
+              <div className="flex items-center gap-1.5 rounded-lg border border-border/70 bg-surface-2/60 px-2.5 py-1">
+                <span className="text-muted-foreground">Spread:</span>
+                <span className="num font-bold text-primary">+{fmtRp(s.spread_idr)} ({fmtPct(s.spread_pct)})</span>
+              </div>
 
               {syncStatusQuery.data?.available ? (
-                <>
-                  <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-1.5">
-                    <Switch
-                      id="auto-sync"
-                      checked={autoSyncBinance}
-                      onCheckedChange={setAutoSyncBinance}
-                    />
-                    <Label htmlFor="auto-sync" className="text-xs cursor-pointer text-muted-foreground">
-                      Auto-sync{" "}
-                      {autoSyncBinance ? (
-                        <span className="text-foreground/90 font-medium">({syncCountdown}s)</span>
-                      ) : (
-                        "Off"
-                      )}
-                    </Label>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleBinanceSync}
-                    disabled={syncMutation.isPending}
-                    className="gap-1.5 text-xs font-medium"
-                  >
-                    <RefreshCw className={syncMutation.isPending ? "size-3.5 animate-spin" : "size-3.5"} />
-                    {syncMutation.isPending ? "Menyinkronkan…" : "Sync Baru"}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleFullHistorySync}
-                    disabled={syncMutation.isPending}
-                    className="gap-1.5 text-xs font-medium border-primary/40 text-primary hover:bg-primary/10"
-                    title="Tarik seluruh riwayat transaksi Binance C2C selama 6 bulan terakhir via API"
-                  >
-                    <History className="size-3.5" />
-                    Tarik 6 Bulan (API)
-                  </Button>
-                </>
-              ) : null}
-
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={importCsvMutation.isPending}
-                className="gap-1.5 text-xs font-medium bg-surface-2 hover:bg-surface-3"
-                title="Unggah file ekspor CSV riwayat pesanan P2P langsung dari website Binance (Bebas kendala Geoblock / IP restriction)"
-              >
-                <FileSpreadsheet className={importCsvMutation.isPending ? "size-3.5 animate-pulse" : "size-3.5 text-emerald-400"} />
-                {importCsvMutation.isPending ? "Mengimpor CSV…" : "Import CSV Binance"}
-              </Button>
-            </div>
-
-
-          </div>
-
-          {/* Sync Status Banner */}
-          {syncStatusQuery.data?.available ? (
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/80 bg-surface/50 px-4 py-2.5 text-xs text-muted-foreground">
-              <div className="flex items-center gap-2">
-                <span className="relative flex size-2">
-                  <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
-                </span>
-                <span>
-                  Koneksi Binance API: <strong className="text-foreground">Terhubung & Siap</strong>
-                </span>
-                {syncStatusQuery.data.last_sync_ts ? (
-                  <span>
-                    · Terakhir disinkronkan:{" "}
-                    <strong className="text-foreground/90">
-                      {new Date(syncStatusQuery.data.last_sync_ts).toLocaleString("id-ID", {
-                        day: "2-digit",
-                        month: "short",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        second: "2-digit",
-                      })}
-                    </strong>
+                <div className="flex items-center gap-1.5 rounded-lg border border-bid/25 bg-bid/10 px-2.5 py-1 text-bid">
+                  <span className="relative flex size-2">
+                    <span className="absolute inline-flex size-full animate-ping rounded-full bg-bid opacity-75" />
+                    <span className="relative inline-flex size-2 rounded-full bg-bid" />
                   </span>
-                ) : null}
-              </div>
-
-              {syncResult && syncResult.ok ? (
-                <span className="text-bid font-medium">
-                  {syncResult.added > 0
-                    ? `+${syncResult.added} order baru ditambahkan`
-                    : "Semua order sudah tersinkron"}
-                </span>
+                  <span className="text-[0.7rem] font-semibold">Binance Sync Aktif</span>
+                </div>
               ) : null}
             </div>
-          ) : (
-            <div className="rounded-lg border border-warn/30 bg-warn/10 px-4 py-3 text-xs text-foreground/90">
-              <strong>💡 Tips Otomasi:</strong> Set <code className="font-mono text-primary">BINANCE_API_KEY</code> &{" "}
-              <code className="font-mono text-primary">BINANCE_API_SECRET</code> di file server <code>.env</code> untuk
-              mengaktifkan auto-catat transaksi otomatis tanpa perlu input manual.
+          ) : null}
+
+          {/* Quick Actions & Logout */}
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => snapshotQuery.refetch()}
+              disabled={snapshotQuery.isFetching}
+              className="h-8 gap-1.5 text-xs bg-surface-2/80 hover:bg-surface-3"
+            >
+              <RefreshCw className={snapshotQuery.isFetching ? "size-3.5 animate-spin" : "size-3.5"} />
+              <span className="hidden sm:inline">Segarkan</span>
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleLogout}
+              className="h-8 text-xs text-muted-foreground hover:text-foreground"
+              title="Keluar dari sesi"
+            >
+              <LogOut className="size-3.5 mr-1 sm:mr-1.5" />
+              <span className="hidden sm:inline">Logout</span>
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      {/* ── Main Trading Terminal Body ───────────────────────────────────────── */}
+      <main className="mx-auto max-w-7xl px-4 pt-5 sm:px-6 space-y-6">
+
+        {/* ── HERO: Dual Trading Cockpit (Buy & Sell Recommendations) ───────── */}
+        {s ? (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-12">
+            {/* Kartu Rekomendasi BELI */}
+            <div className="panel relative overflow-hidden p-5 md:col-span-6 glow-bid border-bid/30">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="flex size-2 rounded-full bg-bid" />
+                  <span className="text-xs font-bold tracking-wider text-bid uppercase">
+                    Harga Pasang Iklan BELI Anda
+                  </span>
+                </div>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleCopyPrice(s.rec_buy, "buy")}
+                  className="h-7 gap-1 border-bid/30 bg-bid/10 text-bid hover:bg-bid/20 text-xs font-semibold"
+                >
+                  {copiedPrice === "buy" ? (
+                    <>
+                      <Check className="size-3.5 text-bid" /> Disalin!
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="size-3.5" /> Salin Harga
+                    </>
+                  )}
+                </Button>
+              </div>
+
+              <div className="mt-3 flex items-baseline justify-between gap-2">
+                <div className="num text-3xl sm:text-4xl font-extrabold text-foreground tracking-tight">
+                  {fmtRp2(s.rec_buy)}
+                </div>
+                <div className="num text-xs font-bold text-bid bg-bid/15 px-2 py-0.5 rounded-full border border-bid/20">
+                  {fmtRp(s.rec_buy - s.fair_price)} vs Fair
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3 text-xs text-muted-foreground">
+                <div className="flex items-center gap-1.5">
+                  <ShieldCheck className="size-3.5 text-bid" />
+                  <span>Kedalaman: <strong>{s.buy_depth.ads_used} iklan</strong> ({fmtRp(s.buy_depth.depth_reached_idr)})</span>
+                </div>
+
+                <a
+                  href="https://p2p.binance.com/en/trade/buy/USDT?fiat=IDR"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="inline-flex items-center gap-1 text-bid hover:underline font-medium"
+                >
+                  Buka P2P <ExternalLink className="size-3" />
+                </a>
+              </div>
             </div>
-          )}
 
-          {/* Kartu Ringkasan Metrik PnL */}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <StatCard
-              label="Profit Hari Ini"
-              tone={(pnlQuery.data?.today_profit_idr ?? 0) >= 0 ? "bid" : "ask"}
-              icon={<TrendingUp className="size-4" />}
-              value={fmtRp2(pnlQuery.data?.today_profit_idr ?? 0)}
-              hint="Realized profit hari ini (FIFO)"
-            />
-            <StatCard
-              label="Profit 7 Hari"
-              tone={(pnlQuery.data?.week_profit_idr ?? 0) >= 0 ? "bid" : "ask"}
-              icon={<TrendingUp className="size-4" />}
-              value={fmtRp2(pnlQuery.data?.week_profit_idr ?? 0)}
-              hint="Akumulasi profit 7 hari terakhir"
-            />
-            <StatCard
-              label="Profit 30 Hari (Bulanan)"
-              tone={(pnlQuery.data?.month_profit_idr ?? 0) >= 0 ? "bid" : "ask"}
-              icon={<TrendingUp className="size-4" />}
-              value={fmtRp2(pnlQuery.data?.month_profit_idr ?? 0)}
-              hint="Akumulasi profit 30 hari"
-            />
-            <StatCard
-              label="Profit Sepanjang Masa"
-              tone={(pnlQuery.data?.all_time_profit_idr ?? 0) >= 0 ? "bid" : "ask"}
-              icon={<CheckCircle2 className="size-4" />}
-              value={fmtRp2(pnlQuery.data?.all_time_profit_idr ?? 0)}
-              hint="Total keuntungan bersih kumulatif"
-            />
+            {/* Kartu Rekomendasi JUAL */}
+            <div className="panel relative overflow-hidden p-5 md:col-span-6 glow-ask border-ask/30">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="flex size-2 rounded-full bg-ask" />
+                  <span className="text-xs font-bold tracking-wider text-ask uppercase">
+                    Harga Pasang Iklan JUAL Anda
+                  </span>
+                </div>
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleCopyPrice(s.rec_sell, "sell")}
+                  className="h-7 gap-1 border-ask/30 bg-ask/10 text-ask hover:bg-ask/20 text-xs font-semibold"
+                >
+                  {copiedPrice === "sell" ? (
+                    <>
+                      <Check className="size-3.5 text-ask" /> Disalin!
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="size-3.5" /> Salin Harga
+                    </>
+                  )}
+                </Button>
+              </div>
+
+              <div className="mt-3 flex items-baseline justify-between gap-2">
+                <div className="num text-3xl sm:text-4xl font-extrabold text-foreground tracking-tight">
+                  {fmtRp2(s.rec_sell)}
+                </div>
+                <div className="num text-xs font-bold text-ask bg-ask/15 px-2 py-0.5 rounded-full border border-ask/20">
+                  +{fmtRp(s.rec_sell - s.fair_price)} vs Fair
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3 text-xs text-muted-foreground">
+                <div className="flex items-center gap-1.5">
+                  <ShieldCheck className="size-3.5 text-ask" />
+                  <span>Kedalaman: <strong>{s.sell_depth.ads_used} iklan</strong> ({fmtRp(s.sell_depth.depth_reached_idr)})</span>
+                </div>
+
+                <a
+                  href="https://p2p.binance.com/en/trade/sell/USDT?fiat=IDR"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="inline-flex items-center gap-1 text-ask hover:underline font-medium"
+                >
+                  Buka P2P <ExternalLink className="size-3" />
+                </a>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {/* ── PRO WORKSPACE TABS ────────────────────────────────────────────── */}
+        <div className="space-y-5">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/80 pb-3">
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setActiveTab("pnl")}
+                className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-bold transition-all ${
+                  activeTab === "pnl"
+                    ? "bg-primary text-primary-foreground shadow-md"
+                    : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Zap className="size-3.5" />
+                Laporan Profit (PnL) & Riwayat
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab("market")}
+                className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-bold transition-all ${
+                  activeTab === "market"
+                    ? "bg-primary text-primary-foreground shadow-md"
+                    : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Layers className="size-3.5" />
+                Order Book & Analisis Pasar
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab("calculator")}
+                className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-bold transition-all ${
+                  activeTab === "calculator"
+                    ? "bg-primary text-primary-foreground shadow-md"
+                    : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Calculator className="size-3.5" />
+                Kalkulator Simulasi Margin
+              </button>
+
+              {s?.news_items.length ? (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("news")}
+                  className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-bold transition-all ${
+                    activeTab === "news"
+                      ? "bg-primary text-primary-foreground shadow-md"
+                      : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Newspaper className="size-3.5" />
+                  Konteks Berita ({s.news_items.length})
+                </button>
+              ) : null}
+            </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-3">
-            <StatCard
-              label="Posisi Terbuka (Stok USDT)"
-              icon={<Wallet className="size-4" />}
-              value={`${(pnlQuery.data?.open_position_usdt ?? 0).toLocaleString("id-ID", {
-                maximumFractionDigits: 2,
-              })} USDT`}
-              hint={
-                pnlQuery.data && pnlQuery.data.open_position_usdt > 0
-                  ? `Avg. harga beli: ${fmtRp2(pnlQuery.data.open_position_avg_cost_idr)}`
-                  : "Tidak ada stok terbuka"
-              }
-            />
-            <StatCard
-              label="Rata-rata Margin Bersih"
-              tone="primary"
-              icon={<Scale className="size-4" />}
-              value={
-                pnlQuery.data && pnlQuery.data.avg_profit_per_usdt_idr > 0
-                  ? `+${fmtRp2(pnlQuery.data.avg_profit_per_usdt_idr)} / USDT`
-                  : "—"
-              }
-              hint="Rata-rata selisih profit per USDT terjual"
-            />
-            <StatCard
-              label="Volume Turnover Transaksi"
-              icon={<Layers className="size-4" />}
-              value={`${(
-                (pnlQuery.data?.total_buy_usdt ?? 0) + (pnlQuery.data?.total_sell_usdt ?? 0)
-              ).toLocaleString("id-ID", { maximumFractionDigits: 1 })} USDT`}
-              hint={`Total: ${fmtRp(
-                (pnlQuery.data?.total_buy_idr ?? 0) + (pnlQuery.data?.total_sell_idr ?? 0),
-              )} (${pnlQuery.data?.total_trades_count ?? 0} transaksi)`}
-            />
-          </div>
+          {/* ── TAB 1: LAPORAN PNL & TRANSAKSI OTOMATIS ─────────────────────── */}
+          {activeTab === "pnl" && (
+            <div className="space-y-6">
+              {/* Financial Metric Cards Grid */}
+              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
+                <StatCard
+                  label="Profit Hari Ini"
+                  value={pnl ? `+${fmtRp(pnl.today_profit_idr)}` : "—"}
+                  subvalue={pnl ? `${fmtRp(pnl.total_sell_idr)} total omset` : undefined}
+                  tone="bid"
+                  icon={<Sparkles className="size-4" />}
+                  hint="Keuntungan riil terealisasi hari ini"
+                />
 
-          {/* Grid Formulir Catat Manual & Tabel Transaksi */}
-          <div className="grid gap-4 lg:grid-cols-[1fr_1.65fr]">
-            {/* Form Catat/Edit Manual */}
-            <div className="panel p-5">
-              <h3 className="flex items-center gap-2 text-sm font-semibold tracking-[0.1em] uppercase">
-                <NotebookPen className="size-4 text-primary" />
-                {editingTradeId != null ? "Edit Transaksi" : "Input Transaksi Manual"}
-              </h3>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {editingTradeId != null
-                  ? "Ubah data transaksi lalu simpan."
-                  : "Gunakan form ini jika ada transaksi di luar Binance C2C yang ingin Anda catat ke dalam PnL."}
-              </p>
+                <StatCard
+                  label="Profit 7 Hari (Mingguan)"
+                  value={pnl ? `+${fmtRp(pnl.week_profit_idr)}` : "—"}
+                  subvalue={pnl ? `+${fmtRp(pnl.month_profit_idr)} (30 hari)` : undefined}
+                  tone="primary"
+                  icon={<TrendingUp className="size-4" />}
+                  hint="Perputaran 7 hari terakhir"
+                />
 
-              <div className="mt-4 space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label className="text-[0.7rem] tracking-[0.14em] text-muted-foreground uppercase">
-                      Sisi
-                    </Label>
-                    <Select value={tradeSide} onValueChange={(v) => setTradeSide(v as TradeSide)}>
-                      <SelectTrigger className="mt-2 border-0 bg-surface-2">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="buy">Beli (Buy)</SelectItem>
-                        <SelectItem value="sell">Jual (Sell)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <Label className="text-[0.7rem] tracking-[0.14em] text-muted-foreground uppercase">
-                      Harga Eksekusi (Rp)
-                    </Label>
-                    <Input
-                      type="number"
-                      min={0}
-                      value={tradePrice}
-                      onChange={(e) => setTradePrice(e.target.value)}
-                      placeholder="mis. 16250"
-                      className="num mt-2 border-0 bg-surface-2"
-                    />
-                  </div>
-                </div>
+                <StatCard
+                  label="Profit Sepanjang Masa"
+                  value={pnl ? `+${fmtRp(pnl.all_time_profit_idr)}` : "—"}
+                  subvalue={pnl ? `${pnl.total_trades_count} total transaksi` : undefined}
+                  tone="primary"
+                  icon={<Wallet className="size-4" />}
+                  hint="Total keuntungan terealisasi"
+                />
 
-                <div>
-                  <Label className="text-[0.7rem] tracking-[0.14em] text-muted-foreground uppercase">
-                    Jumlah (USDT)
-                  </Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    value={tradeAmount}
-                    onChange={(e) => setTradeAmount(e.target.value)}
-                    placeholder="mis. 500"
-                    className="num mt-2 border-0 bg-surface-2"
+                <StatCard
+                  label="Stok Terbuka & Modal Beli"
+                  value={pnl ? `${pnl.open_position_usdt.toLocaleString("id-ID", { maximumFractionDigits: 1 })} USDT` : "—"}
+                  subvalue={
+                    pnl && pnl.open_position_usdt > 0
+                      ? `Modal: ${fmtRp2(pnl.open_position_avg_cost_idr)}/USDT`
+                      : "Stok seimbang"
+                  }
+                  tone="neutral"
+                  icon={<Layers className="size-4" />}
+                  hint={pnl ? `Avg margin: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT` : undefined}
+                />
+              </div>
+
+              {/* Sync Actions & Manual Trade Trigger Toolbar */}
+              <div className="panel p-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    accept=".csv,.txt"
+                    onChange={handleFileUpload}
+                    className="hidden"
                   />
-                </div>
 
-                <div>
-                  <Label className="text-[0.7rem] tracking-[0.14em] text-muted-foreground uppercase">
-                    Catatan (opsional)
-                  </Label>
-                  <Input
-                    value={tradeNote}
-                    onChange={(e) => setTradeNote(e.target.value)}
-                    placeholder="mis. Pelanggan offline / Bank Mandiri"
-                    className="mt-2 border-0 bg-surface-2"
-                  />
-                </div>
+                  {syncStatusQuery.data?.available ? (
+                    <>
+                      <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-1.5">
+                        <Switch
+                          id="auto-sync"
+                          checked={autoSyncBinance}
+                          onCheckedChange={setAutoSyncBinance}
+                        />
+                        <Label htmlFor="auto-sync" className="text-xs cursor-pointer text-muted-foreground font-medium">
+                          Auto-sync{" "}
+                          {autoSyncBinance ? (
+                            <span className="text-foreground font-bold">({syncCountdown}s)</span>
+                          ) : (
+                            "Off"
+                          )}
+                        </Label>
+                      </div>
 
-                <div className="flex gap-2 pt-1">
-                  <Button
-                    onClick={handleSubmitTrade}
-                    disabled={
-                      logMutation.isPending || updateMutation.isPending || !tradePrice || !tradeAmount
-                    }
-                    className="w-full font-semibold"
-                  >
-                    {logMutation.isPending || updateMutation.isPending
-                      ? "Menyimpan…"
-                      : editingTradeId != null
-                        ? "Simpan Perubahan"
-                        : "Catat Transaksi"}
-                  </Button>
-                  {editingTradeId != null ? (
-                    <Button variant="outline" onClick={resetTradeForm} className="shrink-0">
-                      Batal
-                    </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleBinanceSync}
+                        disabled={syncMutation.isPending}
+                        className="gap-1.5 text-xs font-semibold"
+                      >
+                        <RefreshCw className={syncMutation.isPending ? "size-3.5 animate-spin" : "size-3.5"} />
+                        {syncMutation.isPending ? "Menyinkronkan…" : "Sync Baru"}
+                      </Button>
+
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handleFullHistorySync}
+                        disabled={syncMutation.isPending}
+                        className="gap-1.5 text-xs font-semibold border-primary/40 text-primary hover:bg-primary/10"
+                        title="Tarik seluruh riwayat transaksi Binance C2C selama 6 bulan terakhir via API"
+                      >
+                        <History className="size-3.5" />
+                        Tarik 6 Bulan (API)
+                      </Button>
+                    </>
                   ) : null}
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={importCsvMutation.isPending}
+                    className="gap-1.5 text-xs font-semibold bg-surface-2 hover:bg-surface-3"
+                    title="Unggah file ekspor CSV riwayat pesanan P2P langsung dari website Binance (Bebas kendala Geoblock / IP restriction)"
+                  >
+                    <FileSpreadsheet className={importCsvMutation.isPending ? "size-3.5 animate-pulse" : "size-3.5 text-emerald-400"} />
+                    {importCsvMutation.isPending ? "Mengimpor CSV…" : "Import CSV Binance"}
+                  </Button>
                 </div>
-              </div>
-            </div>
 
-            {/* Tabel Transaksi */}
-            <div className="panel p-5">
-              <div className="flex items-center justify-between pb-2">
-                <h3 className="text-sm font-semibold tracking-[0.1em] uppercase">
-                  Riwayat Transaksi (Auto & Manual)
-                </h3>
-                <Badge variant="outline" className="num text-xs">
-                  {pnlQuery.data?.recent_trades.length ?? 0} Transaksi Terakhir
-                </Badge>
+                <Button
+                  size="sm"
+                  onClick={() => setShowManualForm(!showManualForm)}
+                  className="gap-1.5 text-xs font-semibold"
+                >
+                  <Plus className="size-3.5" />
+                  {showManualForm ? "Tutup Form" : "Catat Transaksi Manual"}
+                </Button>
               </div>
 
-              <div className="mt-2">
+              {/* Form Input Transaksi Manual (Collapsible) */}
+              {showManualForm && (
+                <div className="panel p-5 space-y-4 border-primary/30">
+                  <div className="flex items-center justify-between border-b border-border/80 pb-2">
+                    <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
+                      {editingTradeId ? "Edit Transaksi Manual" : "Form Catat Transaksi Manual / Modal Awal"}
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={resetTradeForm}
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      Batal
+                    </button>
+                  </div>
+
+                  <form onSubmit={handleTradeSubmit} className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                    <div>
+                      <Label className="text-[0.7rem] font-semibold text-muted-foreground uppercase">Sisi</Label>
+                      <Select value={tradeSide} onValueChange={(v) => setTradeSide(v as TradeSide)}>
+                        <SelectTrigger className="mt-1 bg-surface-2 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="buy">Beli (Masuk Stok)</SelectItem>
+                          <SelectItem value="sell">Jual (Keluar Stok)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div>
+                      <Label className="text-[0.7rem] font-semibold text-muted-foreground uppercase">Harga (IDR)</Label>
+                      <Input
+                        type="number"
+                        placeholder="contoh 16200"
+                        value={tradePrice}
+                        onChange={(e) => setTradePrice(e.target.value)}
+                        className="mt-1 bg-surface-2 text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <Label className="text-[0.7rem] font-semibold text-muted-foreground uppercase">Jumlah (USDT)</Label>
+                      <Input
+                        type="number"
+                        placeholder="contoh 1000"
+                        value={tradeAmount}
+                        onChange={(e) => setTradeAmount(e.target.value)}
+                        className="mt-1 bg-surface-2 text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <Label className="text-[0.7rem] font-semibold text-muted-foreground uppercase">Catatan / Lawan</Label>
+                      <Input
+                        placeholder="contoh @merchant_id"
+                        value={tradeNote}
+                        onChange={(e) => setTradeNote(e.target.value)}
+                        className="mt-1 bg-surface-2 text-xs"
+                      />
+                    </div>
+
+                    <div className="flex items-end">
+                      <Button
+                        type="submit"
+                        disabled={logMutation.isPending || updateMutation.isPending}
+                        className="w-full text-xs font-semibold"
+                      >
+                        {editingTradeId ? "Simpan Perubahan" : "Tambah Transaksi"}
+                      </Button>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              {/* Tabel Riwayat Transaksi */}
+              <div className="panel p-5 space-y-3">
+                <div className="flex items-center justify-between border-b border-border/80 pb-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-foreground tracking-wide uppercase">
+                      Riwayat Transaksi Merchant
+                    </h3>
+                    <p className="text-xs text-muted-foreground">
+                      Daftar transaksi tersimpan dari Binance Sync & Manual dengan standar akuntansi FIFO.
+                    </p>
+                  </div>
+                </div>
+
                 <TradesTable
-                  trades={pnlQuery.data?.recent_trades ?? []}
-                  onEdit={handleEditTrade}
-                  onDelete={handleDeleteTrade}
+                  trades={pnl?.recent_trades ?? []}
+                  onEdit={handleStartEditTrade}
+                  onDelete={(t) => deleteMutation.mutate(t.id)}
                   editingId={editingTradeId}
                   deletingId={deletingTradeId}
                 />
               </div>
-
-              {pnlQuery.data && !pnlQuery.data.configured ? (
-                <p className="mt-3 text-xs text-muted-foreground">
-                  Supabase belum dikonfigurasi di server, jadi riwayat transaksi belum bisa disimpan.
-                </p>
-              ) : null}
-
-              {pnlQuery.data && pnlQuery.data.unmatched_sell_usdt > 0 ? (
-                <p className="mt-3 rounded-md bg-surface-2 p-2.5 text-xs text-muted-foreground">
-                  ℹ️ <strong>{pnlQuery.data.unmatched_sell_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT</strong> terjual
-                  tanpa catatan pembelian sebelumnya (kemungkinan stok awal sebelum bot aktif). Bagian ini dilewati dari perhitungan profit.
-                </p>
-              ) : null}
             </div>
-          </div>
-        </section>
+          )}
 
-        <footer className="mt-12 border-t border-border pt-6 text-xs leading-relaxed text-muted-foreground">
-          Data pasar Binance P2P diambil secara langsung dari endpoint publik. Transaksi C2C disinkronkan secara aman via Binance API Key (Read-Only). Semua kalkulasi profit dihitung otomatis menggunakan standar FIFO cost-basis akuntansi.
-        </footer>
-      </div>
-    </main>
-  );
-}
+          {/* ── TAB 2: ORDER BOOK & ANALISIS PASAR ───────────────────────────── */}
+          {activeTab === "market" && s && (
+            <div className="space-y-6">
+              {/* Order book kompetitor */}
+              <div className="panel p-5">
+                <Tabs defaultValue="sell">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/80 pb-3">
+                    <div>
+                      <h3 className="text-sm font-bold text-foreground uppercase tracking-wide">
+                        Order Book Kompetitor Real-Time
+                      </h3>
+                      <p className="text-xs text-muted-foreground">
+                        Iklan kompetitor yang lolos filter likuiditas & outlier di pasar P2P.
+                      </p>
+                    </div>
+                    <TabsList className="bg-surface-2">
+                      <TabsTrigger value="sell" className="text-xs">
+                        Acuan Iklan JUAL ({s.sell_ref_count_clean})
+                      </TabsTrigger>
+                      <TabsTrigger value="buy" className="text-xs">
+                        Acuan Iklan BELI ({s.buy_ref_count_clean})
+                      </TabsTrigger>
+                    </TabsList>
+                  </div>
 
-function Row({
-  label,
-  value,
-  icon,
-}: {
-  label: string;
-  value: string;
-  icon?: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-start justify-between gap-4 border-b border-border/60 pb-2 last:border-0 last:pb-0">
-      <span className="flex items-center gap-2 text-sm text-muted-foreground">
-        {icon}
-        {label}
-      </span>
-      <span className="num text-right text-sm font-medium text-foreground/90">{value}</span>
+                  <TabsContent value="sell" className="mt-4">
+                    <AdsTable ads={s.top_sell_ref_ads} side="ask" />
+                  </TabsContent>
+
+                  <TabsContent value="buy" className="mt-4">
+                    <AdsTable ads={s.top_buy_ref_ads} side="bid" />
+                  </TabsContent>
+                </Tabs>
+              </div>
+
+              {/* Grafik Riwayat Fair Price & Intel Pasar */}
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+                {/* Grafik Fair Price */}
+                <div className="panel p-5 lg:col-span-8 space-y-4">
+                  <div className="flex items-center justify-between border-b border-border/80 pb-2">
+                    <div>
+                      <h3 className="text-sm font-bold text-foreground uppercase tracking-wide">
+                        Pergerakan Fair Price USDT/IDR
+                      </h3>
+                      <p className="text-xs text-muted-foreground">
+                        Titik temu pasar P2P berbasis weighted mid-price order book.
+                      </p>
+                    </div>
+                    <span className="num font-bold text-sm text-primary">{fmtRp2(s.fair_price)}</span>
+                  </div>
+
+                  <div className="h-56 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="fairGrad" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="var(--color-primary)" stopOpacity={0.4} />
+                            <stop offset="95%" stopColor="var(--color-primary)" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <YAxis domain={fairDomain} hide />
+                        <Tooltip
+                          contentStyle={{
+                            background: "oklch(0.18 0.02 260 / 95%)",
+                            border: "1px solid oklch(1 0 0 / 12%)",
+                            borderRadius: "0.5rem",
+                            fontSize: "0.75rem",
+                          }}
+                          formatter={(v: any) => [fmtRp2(Number(v)), "Fair Price"]}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="fair"
+                          stroke="var(--color-primary)"
+                          strokeWidth={2}
+                          fillOpacity={1}
+                          fill="url(#fairGrad)"
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+                {/* Sinyal Pasar & Kedalaman Likuiditas */}
+                <div className="panel p-5 lg:col-span-4 space-y-4 flex flex-col justify-between">
+                  <div>
+                    <h3 className="text-sm font-bold text-foreground uppercase tracking-wide border-b border-border/80 pb-2">
+                      Sinyal & Intel Pasar
+                    </h3>
+
+                    <div className="mt-3 space-y-3 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Bias Pasar:</span>
+                        <span className="font-bold text-foreground">{biasLabel(s.signals.bias)}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Tingkat Keyakinan:</span>
+                        <span className="font-bold text-foreground">{confidenceLabel(s.signals.confidence)}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Likuiditas Beli:</span>
+                        <span className="font-bold text-bid">{liquidityLabel(s.buy_depth.depth_sufficient)}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Likuiditas Jual:</span>
+                        <span className="font-bold text-ask">{liquidityLabel(s.sell_depth.depth_sufficient)}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg bg-surface-2/60 p-3 text-[0.7rem] text-muted-foreground">
+                    💡 <strong>Tips Merchant:</strong> Pasang harga iklan Beli pada <strong className="text-bid">{fmtRp2(s.rec_buy)}</strong> dan Jual pada <strong className="text-ask">{fmtRp2(s.rec_sell)}</strong> untuk perputaran maksimal.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── TAB 3: KALKULATOR SIMULASI MARGIN ───────────────────────────── */}
+          {activeTab === "calculator" && (
+            <MarginCalculator
+              defaultBuyPrice={s?.rec_buy || 16200}
+              defaultSellPrice={s?.rec_sell || 16350}
+            />
+          )}
+
+          {/* ── TAB 4: KONTEKS BERITA ───────────────────────────────────────── */}
+          {activeTab === "news" && s && (
+            <div className="panel p-5 space-y-4">
+              <div className="flex items-center gap-2 border-b border-border/80 pb-2">
+                <Newspaper className="size-4 text-primary" />
+                <h3 className="text-sm font-bold text-foreground uppercase tracking-wide">
+                  Konteks Berita Pasar Terkini
+                </h3>
+              </div>
+
+              <ul className="divide-y divide-border/40 space-y-2">
+                {s.news_items.map((n) => (
+                  <li key={n.link || n.title} className="pt-2">
+                    <a
+                      href={n.link}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="text-xs text-foreground/90 hover:text-primary hover:underline transition-colors flex items-center justify-between gap-2"
+                    >
+                      <span>{n.title}</span>
+                      <ExternalLink className="size-3 shrink-0 text-muted-foreground" />
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </main>
     </div>
   );
 }
-
