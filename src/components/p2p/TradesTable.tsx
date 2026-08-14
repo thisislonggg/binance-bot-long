@@ -1,4 +1,4 @@
-import { Pencil, RefreshCw, Search, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Pencil, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { fmtRp2 } from "@/lib/p2p-engine";
@@ -23,6 +23,8 @@ export function TradesTable({
   const [sourceFilter, setSourceFilter] = useState<"all" | "binance_sync" | "manual">("all");
   const [sideFilter, setSideFilter] = useState<"all" | "buy" | "sell">("all");
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
 
   const filteredTrades = useMemo(() => {
     return trades.filter((t) => {
@@ -40,6 +42,14 @@ export function TradesTable({
     });
   }, [trades, sourceFilter, sideFilter, search]);
 
+  const totalPages = Math.max(1, Math.ceil(filteredTrades.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+
+  const paginatedTrades = useMemo(() => {
+    const start = (safePage - 1) * pageSize;
+    return filteredTrades.slice(start, start + pageSize);
+  }, [filteredTrades, safePage, pageSize]);
+
   if (!trades.length) {
     return <p className="px-1 py-6 text-sm text-muted-foreground">{emptyLabel}</p>;
   }
@@ -51,7 +61,10 @@ export function TradesTable({
         <div className="flex flex-wrap items-center gap-1.5 text-xs">
           <button
             type="button"
-            onClick={() => setSourceFilter("all")}
+            onClick={() => {
+              setSourceFilter("all");
+              setPage(1);
+            }}
             className={cn(
               "rounded-md px-2.5 py-1 font-medium transition-colors",
               sourceFilter === "all"
@@ -63,7 +76,10 @@ export function TradesTable({
           </button>
           <button
             type="button"
-            onClick={() => setSourceFilter("binance_sync")}
+            onClick={() => {
+              setSourceFilter("binance_sync");
+              setPage(1);
+            }}
             className={cn(
               "inline-flex items-center gap-1 rounded-md px-2.5 py-1 font-medium transition-colors",
               sourceFilter === "binance_sync"
@@ -76,7 +92,10 @@ export function TradesTable({
           </button>
           <button
             type="button"
-            onClick={() => setSourceFilter("manual")}
+            onClick={() => {
+              setSourceFilter("manual");
+              setPage(1);
+            }}
             className={cn(
               "rounded-md px-2.5 py-1 font-medium transition-colors",
               sourceFilter === "manual"
@@ -91,7 +110,10 @@ export function TradesTable({
 
           <button
             type="button"
-            onClick={() => setSideFilter(sideFilter === "buy" ? "all" : "buy")}
+            onClick={() => {
+              setSideFilter(sideFilter === "buy" ? "all" : "buy");
+              setPage(1);
+            }}
             className={cn(
               "rounded-md px-2 py-1 text-[0.7rem] font-semibold tracking-wider uppercase transition-colors",
               sideFilter === "buy" ? "bg-bid/20 text-bid" : "text-muted-foreground hover:text-foreground",
@@ -101,7 +123,10 @@ export function TradesTable({
           </button>
           <button
             type="button"
-            onClick={() => setSideFilter(sideFilter === "sell" ? "all" : "sell")}
+            onClick={() => {
+              setSideFilter(sideFilter === "sell" ? "all" : "sell");
+              setPage(1);
+            }}
             className={cn(
               "rounded-md px-2 py-1 text-[0.7rem] font-semibold tracking-wider uppercase transition-colors",
               sideFilter === "sell" ? "bg-ask/20 text-ask" : "text-muted-foreground hover:text-foreground",
@@ -111,15 +136,36 @@ export function TradesTable({
           </button>
         </div>
 
-        <div className="relative w-full sm:w-44">
-          <Search className="absolute top-1/2 left-2.5 size-3 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Cari transaksi..."
-            className="w-full rounded-md border-0 bg-surface-2 py-1 pr-2.5 pl-8 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
-          />
+        <div className="flex items-center gap-2">
+          <div className="relative w-full sm:w-44">
+            <Search className="absolute top-1/2 left-2.5 size-3 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
+              placeholder="Cari transaksi..."
+              className="w-full rounded-md border-0 bg-surface-2 py-1 pr-2.5 pl-8 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
+            />
+          </div>
+
+          <select
+            value={pageSize}
+            onChange={(e) => {
+              setPageSize(Number(e.target.value));
+              setPage(1);
+            }}
+            className="rounded-md border border-border/80 bg-surface-2 px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
+            title="Jumlah transaksi per halaman"
+          >
+            <option value={25}>25 / hal</option>
+            <option value={50}>50 / hal</option>
+            <option value={100}>100 / hal</option>
+            <option value={200}>200 / hal</option>
+            <option value={500}>500 / hal</option>
+          </select>
         </div>
       </div>
 
@@ -136,14 +182,14 @@ export function TradesTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {filteredTrades.length === 0 ? (
+            {paginatedTrades.length === 0 ? (
               <tr>
                 <td colSpan={6} className="py-6 text-center text-xs text-muted-foreground">
                   Tidak ada transaksi yang cocok dengan filter.
                 </td>
               </tr>
             ) : (
-              filteredTrades.map((t) => (
+              paginatedTrades.map((t) => (
                 <tr key={t.id} className={cn("align-top", editingId === t.id && "bg-primary/5")}>
                   <td className="num py-2.5 pr-3 text-muted-foreground">
                     {new Date(t.ts).toLocaleString("id-ID", {
@@ -221,7 +267,47 @@ export function TradesTable({
           </tbody>
         </table>
       </div>
+
+      {/* Pagination Controls */}
+      {totalPages > 1 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3 text-xs text-muted-foreground">
+          <span>
+            Menampilkan{" "}
+            <strong className="text-foreground/90">
+              {(safePage - 1) * pageSize + 1}–{Math.min(safePage * pageSize, filteredTrades.length)}
+            </strong>{" "}
+            dari <strong className="text-foreground/90">{filteredTrades.length}</strong> transaksi
+          </span>
+
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={safePage <= 1}
+              className="inline-flex size-7 items-center justify-center rounded-md border border-border bg-surface-2 text-foreground/80 transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
+              title="Halaman sebelumnya"
+            >
+              <ChevronLeft className="size-3.5" />
+            </button>
+
+            <span className="px-2 font-medium">
+              Hal {safePage} dari {totalPages}
+            </span>
+
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={safePage >= totalPages}
+              className="inline-flex size-7 items-center justify-center rounded-md border border-border bg-surface-2 text-foreground/80 transition-colors hover:bg-surface-3 disabled:cursor-not-allowed disabled:opacity-40"
+              title="Halaman berikutnya"
+            >
+              <ChevronRight className="size-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
 

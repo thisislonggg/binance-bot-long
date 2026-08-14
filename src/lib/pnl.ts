@@ -231,8 +231,9 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       avg_profit_per_usdt_idr: avgProfitPerUsdt,
       unmatched_sell_usdt: unmatchedSell,
       total_trades_count: trades.length,
-      recent_trades: trades.slice(-200).reverse(),
+      recent_trades: trades.slice().reverse(),
     };
   },
 );
+
 
