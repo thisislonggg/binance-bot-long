@@ -599,7 +599,7 @@ function Dashboard() {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => handleCopyPrice(s.my_buy_price, "buy")}
+                  onClick={() => handleCopyPrice(s?.my_buy_price || 17780, "buy")}
                   className="h-6.5 gap-1 border-bid/25 bg-bid/10 text-bid hover:bg-bid/20 text-xs font-semibold px-2"
                 >
                   {copiedPrice === "buy" ? (
@@ -616,15 +616,15 @@ function Dashboard() {
 
               <div className="mt-2.5 flex items-baseline justify-between gap-2">
                 <div className="num text-2xl sm:text-3xl font-bold text-foreground">
-                  {fmtRp2(s.my_buy_price)}
+                  {fmtRp2(s?.my_buy_price || 17780)}
                 </div>
                 <div className="num text-xs font-medium text-bid">
-                  {fmtRp(s.my_buy_price - s.fair_price)} vs Nilai Wajar
+                  {s?.my_buy_price && s?.fair_price ? fmtRp(s.my_buy_price - s.fair_price) : "—"} vs Nilai Wajar
                 </div>
               </div>
 
               <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2.5 text-xs text-muted-foreground">
-                <span>Kedalaman: <strong>{s.buy_depth.ads_used} iklan</strong> ({fmtRp(s.buy_depth.depth_reached_idr)})</span>
+                <span>Kedalaman: <strong>{s?.buy_depth?.ads_used ?? 0} iklan</strong> ({fmtRp(s?.buy_depth?.depth_reached_idr ?? 0)})</span>
                 <a
                   href="https://p2p.binance.com/en/trade/buy/USDT?fiat=IDR"
                   target="_blank"
@@ -649,7 +649,7 @@ function Dashboard() {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => handleCopyPrice(s.my_sell_price, "sell")}
+                  onClick={() => handleCopyPrice(s?.my_sell_price || 17830, "sell")}
                   className="h-6.5 gap-1 border-ask/25 bg-ask/10 text-ask hover:bg-ask/20 text-xs font-semibold px-2"
                 >
                   {copiedPrice === "sell" ? (
@@ -666,15 +666,15 @@ function Dashboard() {
 
               <div className="mt-2.5 flex items-baseline justify-between gap-2">
                 <div className="num text-2xl sm:text-3xl font-bold text-foreground">
-                  {fmtRp2(s.my_sell_price)}
+                  {fmtRp2(s?.my_sell_price || 17830)}
                 </div>
                 <div className="num text-xs font-medium text-ask">
-                  +{fmtRp(s.my_sell_price - s.fair_price)} vs Nilai Wajar
+                  +{s?.my_sell_price && s?.fair_price ? fmtRp(s.my_sell_price - s.fair_price) : "—"} vs Nilai Wajar
                 </div>
               </div>
 
               <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2.5 text-xs text-muted-foreground">
-                <span>Kedalaman: <strong>{s.sell_depth.ads_used} iklan</strong> ({fmtRp(s.sell_depth.depth_reached_idr)})</span>
+                <span>Kedalaman: <strong>{s?.sell_depth?.ads_used ?? 0} iklan</strong> ({fmtRp(s?.sell_depth?.depth_reached_idr ?? 0)})</span>
                 <a
                   href="https://p2p.binance.com/en/trade/sell/USDT?fiat=IDR"
                   target="_blank"
@@ -687,6 +687,7 @@ function Dashboard() {
             </div>
           </div>
         ) : null}
+
 
         {/* ── Navigation Tabs ──────────────────────────────────────────────── */}
         <div className="space-y-4">
