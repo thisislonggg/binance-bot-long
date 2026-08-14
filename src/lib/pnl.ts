@@ -168,17 +168,16 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       return num;
     };
 
-    // Tracking inventaris modal bergerak (Weighted Moving Average Inventory / AVCO)
-    let activeStockUsdt = 0;
-    let activeAvgCostIdr = 0;
-    let lastKnownBuyPrice = 0;
+    // ── Algoritma Perputaran Modal Merchant (Recent Cycle / LIFO Matching) ────
+    // Merchant P2P menjual inventaris yang baru saja dibeli di putaran aktif.
+    type BuyLot = { id: number; ts: string; price: number; amount: number };
+    const buyStack: BuyLot[] = [];
 
     const realized: {
       ts: string;
       profit_idr: number;
       matched_usdt: number;
       sell_idr: number;
-      unit_profit: number;
     }[] = [];
 
     let totalBuy = 0;
@@ -187,6 +186,7 @@ export const getPnlSummary = createServerFn({ method: "POST" })
     let totalSellIdr = 0;
     let unmatchedSell = 0;
     let totalMatchedSellUsdt = 0;
+    let lastKnownBuyPrice = 0;
 
     for (const rawTrade of trades) {
       const price = normalizePrice(rawTrade.price);
@@ -194,17 +194,9 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       if (amount <= 0 || price <= 0) continue;
 
       if (rawTrade.side === "buy") {
-        const buyTotalCost = amount * price;
+        buyStack.push({ id: rawTrade.id, ts: rawTrade.ts, price, amount });
         totalBuy += amount;
-        totalBuyIdr += buyTotalCost;
-
-        // Perbarui rata-rata modal stok aktif
-        if (activeStockUsdt > 0) {
-          activeAvgCostIdr = (activeStockUsdt * activeAvgCostIdr + buyTotalCost) / (activeStockUsdt + amount);
-        } else {
-          activeAvgCostIdr = price;
-        }
-        activeStockUsdt += amount;
+        totalBuyIdr += amount * price;
         lastKnownBuyPrice = price;
         continue;
       }
@@ -214,52 +206,45 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       totalSell += amount;
       totalSellIdr += tradeSellIdr;
 
+      let remaining = amount;
       let tradeProfit = 0;
-      let matchedAmount = 0;
 
-      if (activeStockUsdt > 0) {
-        matchedAmount = Math.min(activeStockUsdt, amount);
-        let costBasis = activeAvgCostIdr;
-
-        // Safety clamp: margin normal P2P USDT/IDR berkisar antara -Rp 500 s.d +Rp 1000/USDT
-        // Jika selisih harga > Rp 2.500 akibat anomali data masa lalu, gunakan modal harga wajar
-        if (price - costBasis > 2500) {
-          costBasis = lastKnownBuyPrice > 0 && Math.abs(price - lastKnownBuyPrice) < 1500
+      // Cocokkan ke lot BELI yang paling baru/terdekat sebelum penjualan ini
+      while (remaining > 1e-6 && buyStack.length > 0) {
+        const lot = buyStack[buyStack.length - 1]!;
+        const take = Math.min(lot.amount, remaining);
+        
+        let buyPrice = lot.price;
+        // Safety guard: jika selisih beli vs jual > Rp 500 (anomali tanggal lama), gunakan modal wajar
+        if (price - buyPrice > 500) {
+          buyPrice = lastKnownBuyPrice > 0 && Math.abs(price - lastKnownBuyPrice) < 300
             ? lastKnownBuyPrice
-            : price - 120;
+            : price - 40;
         }
 
-        const profitMatched = (price - costBasis) * matchedAmount;
-        tradeProfit += profitMatched;
-        activeStockUsdt -= matchedAmount;
-
-        // Jika jual lebih banyak daripada stok beli tercatat (unmatched sell portion)
-        if (amount > matchedAmount) {
-          const leftover = amount - matchedAmount;
-          unmatchedSell += leftover;
-          const fallbackCost = lastKnownBuyPrice > 0 && Math.abs(price - lastKnownBuyPrice) < 1500
-            ? lastKnownBuyPrice
-            : price - 100;
-          tradeProfit += (price - fallbackCost) * leftover;
+        tradeProfit += (price - buyPrice) * take;
+        lot.amount -= take;
+        remaining -= take;
+        if (lot.amount <= 1e-6) {
+          buyStack.pop();
         }
-      } else {
-        // Tidak ada stok tercatat (misal modal awal sebelum bot aktif)
-        unmatchedSell += amount;
-        const fallbackCost = lastKnownBuyPrice > 0 && Math.abs(price - lastKnownBuyPrice) < 1500
+      }
+
+      // Jika ada porsi jual yang tidak memiliki pasangan beli tercatat
+      if (remaining > 1e-6) {
+        unmatchedSell += remaining;
+        const fallbackCost = lastKnownBuyPrice > 0 && Math.abs(price - lastKnownBuyPrice) < 300
           ? lastKnownBuyPrice
-          : price - 100; // Asumsi margin wajar merchant ~Rp 100/USDT
-        tradeProfit += (price - fallbackCost) * amount;
+          : price - 40; // Rata-rata margin sehat merchant ~Rp 35-40/USDT
+        tradeProfit += (price - fallbackCost) * remaining;
       }
 
       totalMatchedSellUsdt += amount;
-      const unitProfit = amount > 0 ? tradeProfit / amount : 0;
-
       realized.push({
         ts: rawTrade.ts,
         profit_idr: tradeProfit,
         matched_usdt: amount,
         sell_idr: tradeSellIdr,
-        unit_profit: unitProfit,
       });
     }
 
@@ -324,8 +309,10 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       }
     }
 
-    const openAmount = Math.max(0, activeStockUsdt);
-    const openAvgCost = openAmount > 0 ? activeAvgCostIdr : (lastKnownBuyPrice || 0);
+    const openAmount = buyStack.reduce((s, l) => s + l.amount, 0);
+    const openAvgCost = openAmount > 0
+      ? buyStack.reduce((s, l) => s + l.amount * l.price, 0) / openAmount
+      : (lastKnownBuyPrice || 0);
 
     const avgProfitPerUsdt = totalMatchedSellUsdt > 0 ? allTimeProfit / totalMatchedSellUsdt : 0;
 
