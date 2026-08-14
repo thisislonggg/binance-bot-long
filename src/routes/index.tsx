@@ -49,9 +49,14 @@ import {
   type Snapshot,
 } from "@/lib/p2p-engine";
 import { login } from "@/lib/auth";
-import { getBinanceSyncStatus, syncBinanceTrades, type SyncResult } from "@/lib/binance-sync";
-import { importBinanceCsvTrades } from "@/lib/csv-import";
+import {
+  getBinanceSyncStatus,
+  importBinanceCsvTrades,
+  syncBinanceTrades,
+  type SyncResult,
+} from "@/lib/binance-sync";
 import { getMarketSnapshot } from "@/lib/p2p.functions";
+
 
 import { deleteTrade, getPnlSummary, logTrade, updateTrade, type Trade, type TradeSide } from "@/lib/pnl";
 
