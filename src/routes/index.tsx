@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Copy,
   Gauge,
+  History,
   Layers,
   Lock,
   LogOut,
@@ -194,15 +195,25 @@ function Dashboard() {
   });
 
   const syncMutation = useMutation({
-    mutationFn: (isSilent?: boolean) => syncFn({ data: { sessionToken: sessionToken ?? undefined } }),
-    onSuccess: (res, isSilent) => {
+    mutationFn: (vars?: { isSilent?: boolean; fullHistory?: boolean }) =>
+      syncFn({
+        data: {
+          sessionToken: sessionToken ?? undefined,
+          fullHistory: vars?.fullHistory ?? false,
+        },
+      }),
+    onSuccess: (res, vars) => {
       setSyncResult(res);
       syncStatusQuery.refetch();
       pnlQuery.refetch();
       if (res.ok && res.added > 0) {
-        toast.success(`${res.added} transaksi baru otomatis dicatat dari Binance!`);
-      } else if (!isSilent && res.ok && res.added === 0) {
-        toast.info("Semua transaksi Binance sudah up-to-date.");
+        toast.success(`${res.added} transaksi berhasil ditarik dari Binance!`);
+      } else if (!vars?.isSilent && res.ok && res.added === 0) {
+        toast.info(
+          vars?.fullHistory
+            ? "Semua riwayat 6 bulan terakhir sudah ada di database."
+            : "Semua transaksi Binance sudah up-to-date.",
+        );
       }
     },
     onError: handleAuthError,
@@ -210,7 +221,13 @@ function Dashboard() {
 
   const handleBinanceSync = () => {
     setSyncResult(null);
-    syncMutation.mutate(false);
+    syncMutation.mutate({ isSilent: false, fullHistory: false });
+  };
+
+  const handleFullHistorySync = () => {
+    setSyncResult(null);
+    toast.loading("Menarik seluruh histori transaksi 6 bulan terakhir dari Binance...");
+    syncMutation.mutate({ isSilent: false, fullHistory: true });
   };
 
   // Sync otomatis saat startup jika API key tersedia
@@ -218,7 +235,7 @@ function Dashboard() {
   useEffect(() => {
     if (!sessionToken || !syncStatusQuery.data?.available || initialSyncedRef.current) return;
     initialSyncedRef.current = true;
-    syncMutation.mutate(true);
+    syncMutation.mutate({ isSilent: true, fullHistory: true });
   }, [sessionToken, syncStatusQuery.data?.available]);
 
   // Interval auto-sync berkala
@@ -227,7 +244,7 @@ function Dashboard() {
     const id = setInterval(() => {
       setSyncCountdown((c) => {
         if (c <= 1) {
-          syncMutation.mutate(true);
+          syncMutation.mutate({ isSilent: true, fullHistory: false });
           return BINANCE_SYNC_SECONDS;
         }
         return c - 1;
@@ -235,6 +252,7 @@ function Dashboard() {
     }, 1000);
     return () => clearInterval(id);
   }, [autoSyncBinance, sessionToken, syncStatusQuery.data?.available]);
+
 
   const resetTradeForm = () => {
     setEditingTradeId(null);
@@ -809,7 +827,7 @@ function Dashboard() {
             </div>
 
             {syncStatusQuery.data?.available ? (
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2.5">
                 <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-2 px-3 py-1.5">
                   <Switch
                     id="auto-sync"
@@ -817,7 +835,7 @@ function Dashboard() {
                     onCheckedChange={setAutoSyncBinance}
                   />
                   <Label htmlFor="auto-sync" className="text-xs cursor-pointer text-muted-foreground">
-                    Auto-sync Binance{" "}
+                    Auto-sync{" "}
                     {autoSyncBinance ? (
                       <span className="text-foreground/90 font-medium">({syncCountdown}s)</span>
                     ) : (
@@ -833,10 +851,22 @@ function Dashboard() {
                   className="gap-1.5 text-xs font-medium"
                 >
                   <RefreshCw className={syncMutation.isPending ? "size-3.5 animate-spin" : "size-3.5"} />
-                  {syncMutation.isPending ? "Menyinkronkan…" : "Sync Sekarang"}
+                  {syncMutation.isPending ? "Menyinkronkan…" : "Sync Baru"}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleFullHistorySync}
+                  disabled={syncMutation.isPending}
+                  className="gap-1.5 text-xs font-medium border-primary/40 text-primary hover:bg-primary/10"
+                  title="Tarik seluruh riwayat transaksi Binance C2C selama 6 bulan terakhir"
+                >
+                  <History className="size-3.5" />
+                  Tarik 6 Bulan Penuh
                 </Button>
               </div>
             ) : null}
+
           </div>
 
           {/* Sync Status Banner */}

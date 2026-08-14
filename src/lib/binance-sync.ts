@@ -140,7 +140,11 @@ async function saveLastSyncTs(ts: number): Promise<void> {
 
 // ── Eksekusi Core Sync ───────────────────────────────────────────────────────
 
-export async function executeBinanceSync(apiKey: string, apiSecret: string): Promise<SyncResult> {
+export async function executeBinanceSync(
+  apiKey: string,
+  apiSecret: string,
+  forceFullHistory = false,
+): Promise<SyncResult> {
   const db = getSupabase();
   if (!db) return { ok: false, added: 0, skipped: 0, error: "Supabase belum dikonfigurasi" };
 
@@ -148,18 +152,22 @@ export async function executeBinanceSync(apiKey: string, apiSecret: string): Pro
   const now = Date.now();
   const MS_30_DAYS = 30 * 24 * 60 * 60 * 1000;
 
-  // Tentukan window waktu (jika sync pertama, tarik s.d 90 hari ke belakang bertahap)
+  // Tentukan window waktu
+  // Binance mengizinkan data maksimal 6 bulan (180 hari = 6 chunk x 30 hari)
   type Window = { start: number; end: number };
   const windows: Window[] = [];
 
-  if (!lastSync) {
-    // 3 chunk x 30 hari = 90 hari
-    windows.push({ start: now - 3 * MS_30_DAYS, end: now - 2 * MS_30_DAYS });
-    windows.push({ start: now - 2 * MS_30_DAYS, end: now - 1 * MS_30_DAYS });
-    windows.push({ start: now - 1 * MS_30_DAYS, end: now });
+  if (!lastSync || forceFullHistory) {
+    // Tarik 6 chunk x 30 hari = 180 hari (6 bulan penuh batas maksimal Binance)
+    for (let i = 6; i >= 1; i--) {
+      windows.push({
+        start: now - i * MS_30_DAYS,
+        end: now - (i - 1) * MS_30_DAYS,
+      });
+    }
   } else {
-    // Overlap 5 menit untuk menangani order yang baru saja settled
-    let curStart = lastSync - 5 * 60 * 1000;
+    // Overlap 10 menit untuk memastikan order yang baru saja diselesaikan tercatat
+    let curStart = lastSync - 10 * 60 * 1000;
     while (curStart < now) {
       const curEnd = Math.min(curStart + MS_30_DAYS, now);
       windows.push({ start: curStart, end: curEnd });
@@ -243,7 +251,10 @@ export async function executeBinanceSync(apiKey: string, apiSecret: string): Pro
 
 // ── Server Functions ─────────────────────────────────────────────────────────
 
-const syncInputSchema = z.object({ sessionToken: z.string().optional() });
+const syncInputSchema = z.object({
+  sessionToken: z.string().optional(),
+  fullHistory: z.boolean().optional(),
+});
 
 export type SyncResult = {
   ok: boolean;
@@ -265,7 +276,7 @@ export const syncBinanceTrades = createServerFn({ method: "POST" })
       return { ok: false, added: 0, skipped: 0, not_configured: true };
     }
 
-    return executeBinanceSync(apiKey, apiSecret);
+    return executeBinanceSync(apiKey, apiSecret, data.fullHistory);
   });
 
 // ── Status: apakah sync tersedia + kapan terakhir sync ──────────────────────
@@ -285,3 +296,4 @@ export const getBinanceSyncStatus = createServerFn({ method: "POST" })
     const lastSyncTs = available ? await getLastSyncTs() : null;
     return { available, last_sync_ts: lastSyncTs };
   });
+
