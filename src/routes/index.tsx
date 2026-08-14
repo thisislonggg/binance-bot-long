@@ -805,15 +805,35 @@ function Dashboard() {
           {/* ── TAB 1: LAPORAN PNL & TRANSAKSI OTOMATIS ─────────────────────── */}
           {activeTab === "pnl" && (
             <div className="space-y-6">
-              {/* Financial Metric Cards Grid */}
-              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
+              {/* Financial Metric Cards Grid (WIB Timezone Aware) */}
+              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
                 <StatCard
                   label="Profit Hari Ini"
                   value={pnl ? `+${fmtRp(pnl.today_profit_idr)}` : "—"}
-                  subvalue={pnl ? `${fmtRp(pnl.total_sell_idr)} total omset` : undefined}
+                  subvalue={
+                    pnl
+                      ? `${pnl.today_trades_count} transaksi (${fmtRp(pnl.today_turnover_idr)} omset)`
+                      : undefined
+                  }
                   tone="bid"
                   icon={<Sparkles className="size-4" />}
-                  hint="Keuntungan riil terealisasi hari ini"
+                  hint="Sejak 00:00 WIB hari ini"
+                />
+
+                <StatCard
+                  label="Profit Kemarin"
+                  value={pnl ? `+${fmtRp(pnl.yesterday_profit_idr)}` : "—"}
+                  tone="primary"
+                  icon={<History className="size-4" />}
+                  hint="Rekap 24 jam penuh kemarin (WIB)"
+                />
+
+                <StatCard
+                  label="Rolling 24 Jam"
+                  value={pnl ? `+${fmtRp(pnl.last_24h_profit_idr)}` : "—"}
+                  tone="bid"
+                  icon={<TrendingUp className="size-4" />}
+                  hint="Performa 24 jam non-stop"
                 />
 
                 <StatCard
@@ -821,21 +841,21 @@ function Dashboard() {
                   value={pnl ? `+${fmtRp(pnl.week_profit_idr)}` : "—"}
                   subvalue={pnl ? `+${fmtRp(pnl.month_profit_idr)} (30 hari)` : undefined}
                   tone="primary"
-                  icon={<TrendingUp className="size-4" />}
+                  icon={<Activity className="size-4" />}
                   hint="Perputaran 7 hari terakhir"
                 />
 
                 <StatCard
-                  label="Profit Sepanjang Masa"
+                  label="Sepanjang Masa"
                   value={pnl ? `+${fmtRp(pnl.all_time_profit_idr)}` : "—"}
                   subvalue={pnl ? `${pnl.total_trades_count} total transaksi` : undefined}
                   tone="primary"
                   icon={<Wallet className="size-4" />}
-                  hint="Total keuntungan terealisasi"
+                  hint="Total laba terealisasi (FIFO)"
                 />
 
                 <StatCard
-                  label="Stok Terbuka & Modal Beli"
+                  label="Stok Terbuka"
                   value={pnl ? `${pnl.open_position_usdt.toLocaleString("id-ID", { maximumFractionDigits: 1 })} USDT` : "—"}
                   subvalue={
                     pnl && pnl.open_position_usdt > 0
@@ -847,6 +867,7 @@ function Dashboard() {
                   hint={pnl ? `Avg margin: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT` : undefined}
                 />
               </div>
+
 
               {/* Sync Actions & Manual Trade Trigger Toolbar */}
               <div className="panel p-4 flex flex-wrap items-center justify-between gap-3">

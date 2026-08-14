@@ -29,9 +29,13 @@ export type Trade = {
 export type PnlSummary = {
   configured: boolean;
   today_profit_idr: number;
+  yesterday_profit_idr: number;
+  last_24h_profit_idr: number;
   week_profit_idr: number;
   month_profit_idr: number;
   all_time_profit_idr: number;
+  today_trades_count: number;
+  today_turnover_idr: number;
   open_position_usdt: number;
   open_position_avg_cost_idr: number;
   total_buy_usdt: number;
@@ -47,9 +51,13 @@ export type PnlSummary = {
 const EMPTY_SUMMARY: PnlSummary = {
   configured: false,
   today_profit_idr: 0,
+  yesterday_profit_idr: 0,
+  last_24h_profit_idr: 0,
   week_profit_idr: 0,
   month_profit_idr: 0,
   all_time_profit_idr: 0,
+  today_trades_count: 0,
+  today_turnover_idr: 0,
   open_position_usdt: 0,
   open_position_avg_cost_idr: 0,
   total_buy_usdt: 0,
@@ -133,10 +141,10 @@ export const deleteTrade = createServerFn({ method: "POST" })
 // Ambil histori transaksi secukupnya untuk matching FIFO yang akurat.
 const TRADES_LOOKBACK_LIMIT = 5000;
 
-const pnlSummarySchema = z.object({ sessionToken: z.string().optional() });
+const getPnlInputSchema = z.object({ sessionToken: z.string().optional() });
 
 export const getPnlSummary = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => pnlSummarySchema.parse(data))
+  .inputValidator((data: unknown) => getPnlInputSchema.parse(data))
   .handler(async ({ data }): Promise<PnlSummary> => {
     await requireSession(data.sessionToken);
 
@@ -154,7 +162,7 @@ export const getPnlSummary = createServerFn({ method: "POST" })
 
     type Lot = { price: number; amount: number };
     const openLots: Lot[] = [];
-    const realized: { ts: string; profit_idr: number; matched_usdt: number }[] = [];
+    const realized: { ts: string; profit_idr: number; matched_usdt: number; sell_idr: number }[] = [];
     let totalBuy = 0;
     let totalSell = 0;
     let totalBuyIdr = 0;
@@ -171,7 +179,8 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       }
 
       totalSell += t.amount_usdt;
-      totalSellIdr += t.amount_usdt * t.price;
+      const tradeSellIdr = t.amount_usdt * t.price;
+      totalSellIdr += tradeSellIdr;
       let remaining = t.amount_usdt;
       let profit = 0;
       let matchedInThisTrade = 0;
@@ -188,27 +197,65 @@ export const getPnlSummary = createServerFn({ method: "POST" })
 
       totalMatchedSellUsdt += matchedInThisTrade;
       unmatchedSell += remaining;
-      realized.push({ ts: t.ts, profit_idr: profit, matched_usdt: matchedInThisTrade });
+      realized.push({ 
+        ts: t.ts, 
+        profit_idr: profit, 
+        matched_usdt: matchedInThisTrade,
+        sell_idr: tradeSellIdr,
+      });
     }
 
-    const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const startOfWeek = new Date(startOfToday);
-    startOfWeek.setDate(startOfWeek.getDate() - 6); // 7 hari rolling
-    const startOfMonth = new Date(startOfToday);
-    startOfMonth.setDate(startOfMonth.getDate() - 29); // 30 hari rolling
+    // ── Batas Waktu Berbasis Zona Waktu Indonesia (WIB UTC+7) ────────────────
+    const WIB_OFFSET_MS = 7 * 60 * 60 * 1000;
+    const nowMs = Date.now();
+    const nowWib = new Date(nowMs + WIB_OFFSET_MS);
+
+    const y = nowWib.getUTCFullYear();
+    const m = nowWib.getUTCMonth();
+    const d = nowWib.getUTCDate();
+
+    // Awal Hari Ini: Tepat jam 00:00:00 WIB
+    const startOfTodayMs = Date.UTC(y, m, d) - WIB_OFFSET_MS;
+    const startOfToday = new Date(startOfTodayMs);
+
+    // Kemarin: 00:00:00 WIB kemarin s.d 23:59:59 WIB kemarin
+    const startOfYesterdayMs = startOfTodayMs - 24 * 60 * 60 * 1000;
+    const startOfYesterday = new Date(startOfYesterdayMs);
+
+    // Rolling 24 Jam Non-stop
+    const startOfLast24hMs = nowMs - 24 * 60 * 60 * 1000;
+    const startOfLast24h = new Date(startOfLast24hMs);
+
+    // Rolling 7 Hari (Mingguan)
+    const startOfWeekMs = startOfTodayMs - 6 * 24 * 60 * 60 * 1000;
+    const startOfWeek = new Date(startOfWeekMs);
+
+    // Rolling 30 Hari (Bulanan)
+    const startOfMonthMs = startOfTodayMs - 29 * 24 * 60 * 60 * 1000;
+    const startOfMonth = new Date(startOfMonthMs);
 
     let todayProfit = 0;
+    let yesterdayProfit = 0;
+    let last24hProfit = 0;
     let weekProfit = 0;
     let monthProfit = 0;
     let allTimeProfit = 0;
+    let todayTradesCount = 0;
+    let todayTurnoverIdr = 0;
 
     for (const r of realized) {
       const d = new Date(r.ts);
       allTimeProfit += r.profit_idr;
+
       if (d >= startOfMonth) monthProfit += r.profit_idr;
       if (d >= startOfWeek) weekProfit += r.profit_idr;
-      if (d >= startOfToday) todayProfit += r.profit_idr;
+      if (d >= startOfLast24h) last24hProfit += r.profit_idr;
+      if (d >= startOfYesterday && d < startOfToday) yesterdayProfit += r.profit_idr;
+      if (d >= startOfToday) {
+        todayProfit += r.profit_idr;
+        todayTurnoverIdr += r.sell_idr;
+        todayTradesCount++;
+      }
     }
 
     const openAmount = openLots.reduce((s, l) => s + l.amount, 0);
@@ -219,9 +266,13 @@ export const getPnlSummary = createServerFn({ method: "POST" })
     return {
       configured: true,
       today_profit_idr: todayProfit,
+      yesterday_profit_idr: yesterdayProfit,
+      last_24h_profit_idr: last24hProfit,
       week_profit_idr: weekProfit,
       month_profit_idr: monthProfit,
       all_time_profit_idr: allTimeProfit,
+      today_trades_count: todayTradesCount,
+      today_turnover_idr: todayTurnoverIdr,
       open_position_usdt: openAmount,
       open_position_avg_cost_idr: openAmount > 0 ? openCost / openAmount : 0,
       total_buy_usdt: totalBuy,
@@ -235,5 +286,3 @@ export const getPnlSummary = createServerFn({ method: "POST" })
     };
   },
 );
-
-
