@@ -206,7 +206,11 @@ function Dashboard() {
       setSyncResult(res);
       syncStatusQuery.refetch();
       pnlQuery.refetch();
-      if (res.ok && res.added > 0) {
+      if (res.not_configured) {
+        toast.error("Binance API Key & Secret belum diisi di file .env atau hosting!");
+      } else if (!res.ok && res.error) {
+        toast.error(`Gagal sync Binance: ${res.error}`);
+      } else if (res.ok && res.added > 0) {
         toast.success(`${res.added} transaksi berhasil ditarik dari Binance!`);
       } else if (!vars?.isSilent && res.ok && res.added === 0) {
         toast.info(
@@ -216,6 +220,7 @@ function Dashboard() {
         );
       }
     },
+
     onError: handleAuthError,
   });
 

@@ -292,10 +292,21 @@ export const syncBinanceTrades = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<SyncResult> => {
     await requireSession(data.sessionToken);
 
-    const apiKey = process.env["BINANCE_API_KEY"];
-    const apiSecret = process.env["BINANCE_API_SECRET"];
-    if (!apiKey || !apiSecret) {
-      return { ok: false, added: 0, skipped: 0, not_configured: true };
+    const apiKey = process.env["BINANCE_API_KEY"]?.trim();
+    const apiSecret = process.env["BINANCE_API_SECRET"]?.trim();
+    if (
+      !apiKey ||
+      !apiSecret ||
+      apiKey === "your_binance_api_key_here" ||
+      apiSecret === "your_binance_api_secret_here"
+    ) {
+      return {
+        ok: false,
+        added: 0,
+        skipped: 0,
+        not_configured: true,
+        error: "BINANCE_API_KEY & BINANCE_API_SECRET belum diisi di file .env atau hosting!",
+      };
     }
 
     return executeBinanceSync(apiKey, apiSecret, data.fullHistory);
@@ -314,9 +325,17 @@ export const getBinanceSyncStatus = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => statusInputSchema.parse(data))
   .handler(async ({ data }): Promise<SyncStatus> => {
     await requireSession(data.sessionToken);
-    const available = Boolean(process.env["BINANCE_API_KEY"] && process.env["BINANCE_API_SECRET"]);
+    const apiKey = process.env["BINANCE_API_KEY"]?.trim();
+    const apiSecret = process.env["BINANCE_API_SECRET"]?.trim();
+    const available = Boolean(
+      apiKey &&
+      apiSecret &&
+      apiKey !== "your_binance_api_key_here" &&
+      apiSecret !== "your_binance_api_secret_here",
+    );
     const lastSyncTs = available ? await getLastSyncTs() : null;
     return { available, last_sync_ts: lastSyncTs };
   });
+
 
 
