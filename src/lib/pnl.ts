@@ -35,6 +35,8 @@ export type PnlSummary = {
   all_time_profit_idr: number;
   today_trades_count: number;
   today_turnover_idr: number;
+  today_fees_idr: number;
+  total_fees_idr: number;
   open_position_usdt: number;
   open_position_avg_cost_idr: number;
   total_buy_usdt: number;
@@ -57,6 +59,8 @@ const EMPTY_SUMMARY: PnlSummary = {
   all_time_profit_idr: 0,
   today_trades_count: 0,
   today_turnover_idr: 0,
+  today_fees_idr: 0,
+  total_fees_idr: 0,
   open_position_usdt: 0,
   open_position_avg_cost_idr: 0,
   total_buy_usdt: 0,
@@ -138,6 +142,7 @@ export const deleteTrade = createServerFn({ method: "POST" })
   });
 
 const TRADES_LOOKBACK_LIMIT = 5000;
+const BINANCE_FEE_RATE = 0.0008; // 0.08% Maker fee setiap Beli dan Jual
 
 const getPnlInputSchema = z.object({ sessionToken: z.string().optional() });
 
@@ -176,6 +181,7 @@ export const getPnlSummary = createServerFn({ method: "POST" })
     const realized: {
       ts: string;
       profit_idr: number;
+      fee_idr: number;
       matched_usdt: number;
       sell_idr: number;
     }[] = [];
@@ -208,6 +214,7 @@ export const getPnlSummary = createServerFn({ method: "POST" })
 
       let remaining = amount;
       let tradeProfit = 0;
+      let tradeFees = 0;
 
       // Cocokkan ke lot BELI yang paling baru/terdekat sebelum penjualan ini
       while (remaining > 1e-6 && buyStack.length > 0) {
@@ -222,7 +229,16 @@ export const getPnlSummary = createServerFn({ method: "POST" })
             : price - 40;
         }
 
-        tradeProfit += (price - buyPrice) * take;
+        // Potongan Fee Binance: 0.08% saat beli dan 0.08% saat jual
+        const buyFee = take * buyPrice * BINANCE_FEE_RATE;
+        const sellFee = take * price * BINANCE_FEE_RATE;
+        const cycleFee = buyFee + sellFee;
+        tradeFees += cycleFee;
+
+        const grossPnl = (price - buyPrice) * take;
+        const netPnl = grossPnl - cycleFee;
+
+        tradeProfit += netPnl;
         lot.amount -= take;
         remaining -= take;
         if (lot.amount <= 1e-6) {
@@ -236,13 +252,23 @@ export const getPnlSummary = createServerFn({ method: "POST" })
         const fallbackCost = lastKnownBuyPrice > 0 && Math.abs(price - lastKnownBuyPrice) < 300
           ? lastKnownBuyPrice
           : price - 40; // Rata-rata margin sehat merchant ~Rp 35-40/USDT
-        tradeProfit += (price - fallbackCost) * remaining;
+
+        const buyFee = remaining * fallbackCost * BINANCE_FEE_RATE;
+        const sellFee = remaining * price * BINANCE_FEE_RATE;
+        const cycleFee = buyFee + sellFee;
+        tradeFees += cycleFee;
+
+        const grossPnl = (price - fallbackCost) * remaining;
+        const netPnl = grossPnl - cycleFee;
+
+        tradeProfit += netPnl;
       }
 
       totalMatchedSellUsdt += amount;
       realized.push({
         ts: rawTrade.ts,
         profit_idr: tradeProfit,
+        fee_idr: tradeFees,
         matched_usdt: amount,
         sell_idr: tradeSellIdr,
       });
@@ -285,10 +311,13 @@ export const getPnlSummary = createServerFn({ method: "POST" })
     let allTimeProfit = 0;
     let todayTradesCount = 0;
     let todayTurnoverIdr = 0;
+    let todayFeesIdr = 0;
+    let totalFeesIdr = 0;
 
     for (const r of realized) {
       const d = new Date(r.ts);
       allTimeProfit += r.profit_idr;
+      totalFeesIdr += r.fee_idr;
 
       if (d >= startOfMonth) {
         monthProfit += r.profit_idr;
@@ -305,6 +334,7 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       if (d >= startOfToday) {
         todayProfit += r.profit_idr;
         todayTurnoverIdr += r.sell_idr;
+        todayFeesIdr += r.fee_idr;
         todayTradesCount++;
       }
     }
@@ -326,6 +356,8 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       all_time_profit_idr: allTimeProfit,
       today_trades_count: todayTradesCount,
       today_turnover_idr: todayTurnoverIdr,
+      today_fees_idr: todayFeesIdr,
+      total_fees_idr: totalFeesIdr,
       open_position_usdt: openAmount,
       open_position_avg_cost_idr: openAvgCost,
       total_buy_usdt: totalBuy,

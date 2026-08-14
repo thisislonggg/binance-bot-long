@@ -21,14 +21,21 @@ export function MarginCalculator({
     if (defaultSellPrice > 0) setSellPrice(defaultSellPrice);
   }, [defaultBuyPrice, defaultSellPrice]);
 
+  const BINANCE_FEE_RATE = 0.0008; // 0.08% Maker Fee Beli & Jual
+
   const capitalIdr = usdtAmount * buyPrice;
   const revenueIdr = usdtAmount * sellPrice;
-  const profitPerCycleIdr = revenueIdr - capitalIdr;
-  const marginPct = capitalIdr > 0 ? ((revenueIdr - capitalIdr) / capitalIdr) * 100 : 0;
-  const marginPerUsdt = sellPrice - buyPrice;
+  const buyFeeIdr = capitalIdr * BINANCE_FEE_RATE;
+  const sellFeeIdr = revenueIdr * BINANCE_FEE_RATE;
+  const totalFeePerCycle = buyFeeIdr + sellFeeIdr;
 
-  const dailyProfitIdr = profitPerCycleIdr * dailyTurnover;
-  const monthlyProfitIdr = dailyProfitIdr * 30;
+  const grossProfitPerCycleIdr = revenueIdr - capitalIdr;
+  const netProfitPerCycleIdr = grossProfitPerCycleIdr - totalFeePerCycle;
+  const netMarginPct = capitalIdr > 0 ? (netProfitPerCycleIdr / capitalIdr) * 100 : 0;
+  const netMarginPerUsdt = usdtAmount > 0 ? netProfitPerCycleIdr / usdtAmount : 0;
+
+  const dailyNetProfitIdr = netProfitPerCycleIdr * dailyTurnover;
+  const monthlyNetProfitIdr = dailyNetProfitIdr * 30;
 
   const quickAmounts = [500, 1000, 2500, 5000, 10000];
 
@@ -42,14 +49,14 @@ export function MarginCalculator({
           <div>
             <h3 className="text-base font-bold text-foreground">Kalkulator Simulasi Margin & Perputaran Modal</h3>
             <p className="text-xs text-muted-foreground">
-              Hitung estimasi potensi profit harian & bulanan berdasarkan spread harga beli vs jual.
+              Hitung estimasi potensi profit bersih setelah dipotong Maker Fee Binance 0.08% (Beli + Jual).
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
           <Sparkles className="size-3.5" />
-          <span>Spread: {fmtRp(marginPerUsdt)} / USDT ({marginPct.toFixed(2)}%)</span>
+          <span>Net Spread: +{fmtRp(netMarginPerUsdt)} / USDT ({netMarginPct.toFixed(2)}%)</span>
         </div>
       </div>
 
@@ -141,9 +148,9 @@ export function MarginCalculator({
 
         {/* Hasil Perhitungan / Output Proyeksi (Right Side) */}
         <div className="rounded-xl border border-border/80 bg-surface-2/40 p-5 space-y-4 lg:col-span-6 flex flex-col justify-between">
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             <div className="flex items-center justify-between text-xs text-muted-foreground border-b border-border/40 pb-2">
-              <span>Total Modal Rupiah (Awal)</span>
+              <span>Total Modal Beli</span>
               <span className="num font-bold text-foreground text-sm">{fmtRp(capitalIdr)}</span>
             </div>
             <div className="flex items-center justify-between text-xs text-muted-foreground border-b border-border/40 pb-2">
@@ -151,8 +158,12 @@ export function MarginCalculator({
               <span className="num font-bold text-foreground text-sm">{fmtRp(revenueIdr)}</span>
             </div>
             <div className="flex items-center justify-between text-xs text-muted-foreground border-b border-border/40 pb-2">
-              <span>Keuntungan Bersih per Putaran</span>
-              <span className="num font-bold text-bid text-base">+{fmtRp(profitPerCycleIdr)}</span>
+              <span>Fee Binance (0.08% Beli + 0.08% Jual)</span>
+              <span className="num font-semibold text-ask text-xs">-{fmtRp(totalFeePerCycle)}</span>
+            </div>
+            <div className="flex items-center justify-between text-xs text-muted-foreground border-b border-border/40 pb-2">
+              <span>Laba Bersih per Putaran</span>
+              <span className="num font-bold text-bid text-base">+{fmtRp(netProfitPerCycleIdr)}</span>
             </div>
           </div>
 
@@ -161,10 +172,10 @@ export function MarginCalculator({
             <div className="rounded-lg border border-bid/25 bg-bid/10 p-3.5">
               <div className="flex items-center gap-1 text-[0.65rem] font-bold tracking-wider text-bid uppercase">
                 <TrendingUp className="size-3" />
-                <span>Estimasi Profit / Hari</span>
+                <span>Net Profit / Hari</span>
               </div>
               <div className="num mt-1.5 text-lg font-extrabold text-bid">
-                +{fmtRp(dailyProfitIdr)}
+                +{fmtRp(dailyNetProfitIdr)}
               </div>
               <div className="text-[0.65rem] text-muted-foreground mt-0.5">
                 {dailyTurnover}x putaran ({fmtRp(capitalIdr * dailyTurnover)} volume)
@@ -174,13 +185,13 @@ export function MarginCalculator({
             <div className="rounded-lg border border-primary/25 bg-primary/10 p-3.5">
               <div className="flex items-center gap-1 text-[0.65rem] font-bold tracking-wider text-primary uppercase">
                 <Sparkles className="size-3" />
-                <span>Proyeksi Profit / Bulan</span>
+                <span>Proyeksi Net / Bulan</span>
               </div>
               <div className="num mt-1.5 text-lg font-extrabold text-primary">
-                +{fmtRp(monthlyProfitIdr)}
+                +{fmtRp(monthlyNetProfitIdr)}
               </div>
               <div className="text-[0.65rem] text-muted-foreground mt-0.5">
-                ROI: {(marginPct * dailyTurnover * 30).toFixed(1)}% / bulan
+                Net ROI: {(netMarginPct * dailyTurnover * 30).toFixed(1)}% / bulan
               </div>
             </div>
           </div>
