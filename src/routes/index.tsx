@@ -28,7 +28,9 @@ import { Area, AreaChart, ResponsiveContainer, Tooltip, YAxis } from "recharts";
 import { toast } from "sonner";
 
 import { AdsTable } from "@/components/p2p/AdsTable";
+import { ArbitrageScanner } from "@/components/p2p/ArbitrageScanner";
 import { MarginCalculator } from "@/components/p2p/MarginCalculator";
+
 import { StatCard } from "@/components/p2p/StatCard";
 import { TradesTable } from "@/components/p2p/TradesTable";
 import { Button } from "@/components/ui/button";
@@ -164,7 +166,8 @@ function Dashboard() {
   // Polling pasar & history chart
   const [history, setHistory] = useState<HistoryPoint[]>(loadHistory);
   const [copiedPrice, setCopiedPrice] = useState<"buy" | "sell" | null>(null);
-  const [activeTab, setActiveTab] = useState<"pnl" | "market" | "calculator" | "news">("pnl");
+  const [activeTab, setActiveTab] = useState<"pnl" | "market" | "calculator" | "arbitrage" | "news">("pnl");
+
   const [newsCategoryFilter, setNewsCategoryFilter] = useState<"all" | "kurs_rupiah" | "kebijakan_fed_bi" | "pasar_kripto">("all");
 
 
@@ -779,6 +782,19 @@ function Dashboard() {
                 Simulasi Margin
               </button>
 
+              <button
+                type="button"
+                onClick={() => setActiveTab("arbitrage")}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  activeTab === "arbitrage"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <TrendingUp className="size-3.5" />
+                Radar Arbitrase
+              </button>
+
               {((s?.analyzed_news && s.analyzed_news.length > 0) || (s?.news_items && s.news_items.length > 0)) ? (
                 <button
                   type="button"
@@ -793,6 +809,7 @@ function Dashboard() {
                   Berita & Dampak Pasar ({s?.analyzed_news?.length || s?.news_items?.length || 0})
                 </button>
               ) : null}
+
             </div>
           </div>
 
@@ -1189,8 +1206,22 @@ function Dashboard() {
             />
           )}
 
-          {/* ── TAB 4: BERITA & ANALISIS DAMPAK PASAR ───────────────────────── */}
+          {/* ── TAB 4: RADAR ARBITRASE LINTAS BURSA ─────────────────────────── */}
+          {activeTab === "arbitrage" && (
+            <ArbitrageScanner
+              myBuyPrice={s?.my_buy_price || 17780}
+              mySellPrice={s?.my_sell_price || 17830}
+              indodaxSpotPrice={s?.cross_platform?.indodax_usdt_idr_spot || 0}
+              coingeckoPrice={s?.cross_platform?.coingecko_usdt_idr || 0}
+              forexRate={17825}
+              onRefresh={() => snapshotQuery.refetch()}
+              isRefreshing={snapshotQuery.isFetching}
+            />
+          )}
+
+          {/* ── TAB 5: BERITA & ANALISIS DAMPAK PASAR ───────────────────────── */}
           {activeTab === "news" && (
+
             <div className="space-y-4">
               {/* Barometer Sentimen Makro */}
               {s?.macro_sentiment && (
