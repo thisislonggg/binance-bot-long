@@ -10,6 +10,7 @@ import {
   Copy,
   ExternalLink,
   FileSpreadsheet,
+  Globe,
   History,
   Layers,
   Lock,
@@ -17,9 +18,11 @@ import {
   Newspaper,
   Plus,
   RefreshCw,
+  ShieldCheck,
   TrendingUp,
   Wallet,
 } from "lucide-react";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, YAxis } from "recharts";
 import { toast } from "sonner";
@@ -122,6 +125,36 @@ function BrandLogo({ className = "size-7" }: { className?: string }) {
   );
 }
 
+function ImpactBadge({ impact }: { impact?: string }) {
+  if (impact === "bullish_usdt") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.5 text-[0.65rem] font-bold text-emerald-400">
+        <ArrowUpRight className="size-3" /> Bullish USDT (+)
+      </span>
+    );
+  }
+  if (impact === "bearish_usdt") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-rose-500/15 border border-rose-500/30 px-2 py-0.5 text-[0.65rem] font-bold text-rose-400">
+        <ArrowDownRight className="size-3" /> Bearish USDT (-)
+      </span>
+    );
+  }
+  if (impact === "volatility") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 text-[0.65rem] font-bold text-amber-400">
+        <Activity className="size-3" /> Volatilitas (⚡)
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded bg-surface-3 border border-border px-2 py-0.5 text-[0.65rem] font-medium text-muted-foreground">
+      Netral (—)
+    </span>
+  );
+}
+
+
 function Dashboard() {
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [authInitialized, setAuthInitialized] = useState(false);
@@ -132,6 +165,8 @@ function Dashboard() {
   const [history, setHistory] = useState<HistoryPoint[]>(loadHistory);
   const [copiedPrice, setCopiedPrice] = useState<"buy" | "sell" | null>(null);
   const [activeTab, setActiveTab] = useState<"pnl" | "market" | "calculator" | "news">("pnl");
+  const [newsCategoryFilter, setNewsCategoryFilter] = useState<"all" | "kurs_rupiah" | "kebijakan_fed_bi" | "pasar_kripto">("all");
+
 
   // State Form Transaksi Manual
   const [showManualForm, setShowManualForm] = useState(false);
@@ -744,7 +779,7 @@ function Dashboard() {
                 Simulasi Margin
               </button>
 
-              {s?.news_items && s.news_items.length > 0 ? (
+              {((s?.analyzed_news && s.analyzed_news.length > 0) || (s?.news_items && s.news_items.length > 0)) ? (
                 <button
                   type="button"
                   onClick={() => setActiveTab("news")}
@@ -754,8 +789,8 @@ function Dashboard() {
                       : "bg-surface-2 text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  <Newspaper className="size-3.5" />
-                  Berita Pasar ({s.news_items.length})
+                  <Globe className="size-3.5" />
+                  Berita & Dampak Pasar ({s?.analyzed_news?.length || s?.news_items?.length || 0})
                 </button>
               ) : null}
             </div>
@@ -1154,35 +1189,185 @@ function Dashboard() {
             />
           )}
 
-          {/* ── TAB 4: BERITA PASAR ─────────────────────────────────────────── */}
-          {activeTab === "news" && s?.news_items && (
-            <div className="panel p-4 space-y-3">
-              <div className="border-b border-border pb-2">
-                <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
-                  Berita Terkait Pasar & Nilai Tukar
-                </h3>
-                <p className="text-xs text-muted-foreground">
-                  Informasi terkini seputar pergerakan Rupiah dan pasar kripto Indonesia.
-                </p>
-              </div>
+          {/* ── TAB 4: BERITA & ANALISIS DAMPAK PASAR ───────────────────────── */}
+          {activeTab === "news" && (
+            <div className="space-y-4">
+              {/* Barometer Sentimen Makro */}
+              {s?.macro_sentiment && (
+                <div className="panel p-4.5 space-y-3.5 border-primary/30">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2.5">
+                    <div className="flex items-center gap-2">
+                      <Globe className="size-4 text-primary" />
+                      <div>
+                        <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
+                          Barometer Sentimen Makro USDT/IDR
+                        </h3>
+                        <p className="text-xs text-muted-foreground">
+                          Kompilasi sentimen berita kurs Rupiah, Dolar AS, kebijakan moneter, dan pasar kripto.
+                        </p>
+                      </div>
+                    </div>
 
-              <div className="divide-y divide-border">
-                {s.news_items.map((n, idx) => (
-                  <div key={idx} className="py-2.5 first:pt-0 last:pb-0 flex items-center justify-between gap-3">
-                    <span className="text-xs text-foreground">{n.title}</span>
-                    <a
-                      href={n.link}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="inline-flex items-center gap-1 text-xs text-primary hover:underline shrink-0 font-medium"
-                    >
-                      Baca <ExternalLink className="size-3" />
-                    </a>
+                    <ImpactBadge impact={
+                      s.macro_sentiment.overall_sentiment === "bullish"
+                        ? "bullish_usdt"
+                        : s.macro_sentiment.overall_sentiment === "bearish"
+                          ? "bearish_usdt"
+                          : s.macro_sentiment.overall_sentiment === "volatile"
+                            ? "volatility"
+                            : "neutral"
+                    } />
                   </div>
-                ))}
+
+                  {/* Summary Metric Grid */}
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <div className="rounded border border-emerald-500/25 bg-emerald-500/10 p-3">
+                      <div className="text-[0.7rem] font-medium text-emerald-400">Sinyal Bullish USDT</div>
+                      <div className="mt-1 text-xl font-bold text-foreground">{s.macro_sentiment.bullish_count} Berita</div>
+                      <p className="mt-1 text-[0.65rem] text-muted-foreground">Pelemahan Rupiah / Permintaan Kripto Naik</p>
+                    </div>
+
+                    <div className="rounded border border-rose-500/25 bg-rose-500/10 p-3">
+                      <div className="text-[0.7rem] font-medium text-rose-400">Sinyal Bearish USDT</div>
+                      <div className="mt-1 text-xl font-bold text-foreground">{s.macro_sentiment.bearish_count} Berita</div>
+                      <p className="mt-1 text-[0.65rem] text-muted-foreground">Penguatan Rupiah / Koreksi Dolar AS</p>
+                    </div>
+
+                    <div className="rounded border border-amber-500/25 bg-amber-500/10 p-3">
+                      <div className="text-[0.7rem] font-medium text-amber-400">Volatilitas / Regulasi</div>
+                      <div className="mt-1 text-xl font-bold text-foreground">{s.macro_sentiment.volatility_count} Berita</div>
+                      <p className="mt-1 text-[0.65rem] text-muted-foreground">Kebijakan Moneter / OJK / Perpajakan</p>
+                    </div>
+                  </div>
+
+                  {/* Merchant Action Directive */}
+                  <div className="rounded border border-border bg-surface-2 p-3 text-xs flex items-start gap-2.5">
+                    <ShieldCheck className="size-4 text-primary shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-semibold text-foreground">Panduan Aksi Merchant: </span>
+                      <span className="text-muted-foreground">{s.macro_sentiment.action_summary}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Feed Berita Teranalisis */}
+              <div className="panel p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-border pb-2.5">
+                  <div>
+                    <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
+                      Analisis Dampak Berita Finansial
+                    </h3>
+                    <p className="text-xs text-muted-foreground">
+                      Setiap berita dianalisis dampaknya secara langsung terhadap kurs & spread P2P.
+                    </p>
+                  </div>
+
+                  {/* Kategori Filter */}
+                  <div className="flex flex-wrap gap-1">
+                    {(
+                      [
+                        { id: "all", label: "Semua" },
+                        { id: "kurs_rupiah", label: "Kurs & Valas" },
+                        { id: "kebijakan_fed_bi", label: "BI & The Fed" },
+                        { id: "pasar_kripto", label: "Pasar Kripto" },
+                      ] as const
+                    ).map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => setNewsCategoryFilter(c.id)}
+                        className={`rounded px-2.5 py-1 text-[0.7rem] font-medium transition-colors ${
+                          newsCategoryFilter === c.id
+                            ? "bg-primary text-primary-foreground font-semibold"
+                            : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* News Items List */}
+                <div className="space-y-3 pt-1">
+                  {(s?.analyzed_news && s.analyzed_news.length > 0
+                    ? s.analyzed_news
+                    : (s?.news_items || []).map((n) => ({
+                        title: n.title,
+                        link: n.link,
+                        source: "Berita Finansial",
+                        published_time: "Baru saja",
+                        impact: "neutral" as const,
+                        impact_label: "Netral",
+                        impact_level: "low" as const,
+                        impact_summary: "Pergerakan kurs relatif stabil mengikuti penawaran normal pasar.",
+                        merchant_advice: "Pasang iklan dengan spread standar untuk menjaga konsistensi perputaran.",
+                        category: "umum" as const,
+                      }))
+                  )
+                    .filter((n) => (newsCategoryFilter === "all" ? true : n.category === newsCategoryFilter))
+                    .map((n, idx) => (
+                      <div
+                        key={idx}
+                        className="rounded-lg border border-border bg-surface-2/60 p-3.5 space-y-2.5 transition-colors hover:border-border/90"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <ImpactBadge impact={n.impact} />
+                            <span className="rounded bg-surface-3 px-1.5 py-0.5 text-[0.65rem] text-muted-foreground font-medium">
+                              {n.impact_level === "high" ? "Dampak Tinggi" : n.impact_level === "medium" ? "Dampak Sedang" : "Dampak Rendah"}
+                            </span>
+                          </div>
+
+                          <span className="text-[0.65rem] text-muted-foreground">
+                            {n.source} • {n.published_time}
+                          </span>
+                        </div>
+
+                        {/* Title */}
+                        <div className="flex items-start justify-between gap-3">
+                          <a
+                            href={n.link}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            className="text-xs font-semibold text-foreground hover:text-primary transition-colors flex-1"
+                          >
+                            {n.title}
+                          </a>
+                          <a
+                            href={n.link}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            className="inline-flex items-center gap-1 text-[0.7rem] text-primary hover:underline shrink-0 font-medium"
+                          >
+                            Buka Sumber <ExternalLink className="size-3" />
+                          </a>
+                        </div>
+
+                        {/* Analysis Box */}
+                        <div className="grid grid-cols-1 gap-2 rounded bg-surface-3/50 p-2.5 sm:grid-cols-2 text-xs">
+                          <div>
+                            <span className="text-[0.65rem] font-semibold text-muted-foreground uppercase tracking-wider block">
+                              Dampak ke Harga USDT/IDR:
+                            </span>
+                            <p className="text-xs text-foreground mt-0.5 leading-relaxed">{n.impact_summary}</p>
+                          </div>
+
+                          <div>
+                            <span className="text-[0.65rem] font-semibold text-primary uppercase tracking-wider block">
+                              Panduan Tindakan Merchant:
+                            </span>
+                            <p className="text-xs text-foreground mt-0.5 leading-relaxed">{n.merchant_advice}</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                </div>
               </div>
             </div>
           )}
+
         </div>
       </main>
     </div>

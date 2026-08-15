@@ -55,6 +55,8 @@ export type DepthInfo = {
   ads_used: number;
 };
 
+import type { AnalyzedNews, MacroSentiment } from "./news-analyzer";
+
 export type Snapshot = {
   timestamp: string;
   fair_price: number;
@@ -92,6 +94,8 @@ export type Snapshot = {
   price_outlook: { outlook: string; votes_up: number; votes_down: number; total_votes: number };
   cross_platform_gap_pct: number;
   news_items: { title: string; link: string }[];
+  analyzed_news?: AnalyzedNews[];
+  macro_sentiment?: MacroSentiment;
   sell_ref_dominant_cluster: Ad[];
   buy_ref_dominant_cluster: Ad[];
   sell_ref_count_raw: number;
@@ -105,6 +109,7 @@ export type Snapshot = {
   top_buy_ref_ads: Ad[];
   history: HistoryPoint[];
 };
+
 
 /* ---------- helper statistik ---------- */
 const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
@@ -423,10 +428,13 @@ export function buildSnapshot(input: {
   buyRefRaw: Ad[]; // tab "Sell" = kompetitor BELI → acuan iklan BELI saya
   crossPlatform: Record<string, number>;
   newsItems: { title: string; link: string }[];
+  analyzedNews?: AnalyzedNews[];
+  macroSentiment?: MacroSentiment;
   history: HistoryPoint[];
   capitalUsdt: number;
   buyFeeIdr: number;
 }): Snapshot {
+
   const now = new Date().toISOString();
   const { sellRefRaw, buyRefRaw, history } = input;
 
@@ -552,6 +560,8 @@ export function buildSnapshot(input: {
     price_outlook: outlook,
     cross_platform_gap_pct: crossPlatformGapPct,
     news_items: input.newsItems,
+    analyzed_news: input.analyzedNews,
+    macro_sentiment: input.macroSentiment,
     sell_ref_dominant_cluster: priceCluster(sellClean),
     buy_ref_dominant_cluster: priceCluster(buyClean),
     sell_ref_count_raw: sellRefRaw.length,
@@ -566,6 +576,7 @@ export function buildSnapshot(input: {
     history: nextHistory,
   };
 }
+
 
 /* ---------- formatter tampilan ---------- */
 export const fmtRp = (x: number) =>

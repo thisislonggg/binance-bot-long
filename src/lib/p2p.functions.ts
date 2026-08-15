@@ -116,19 +116,41 @@ async function fetchCrossPlatform(): Promise<Record<string, number>> {
   return refs;
 }
 
-async function fetchNews(): Promise<{ title: string; link: string }[]> {
-  const query = "rupiah OR USDT OR tether OR kripto Indonesia OR stablecoin";
+import {
+  analyzeNewsHeadline,
+  computeMacroSentiment,
+  type AnalyzedNews,
+  type MacroSentiment,
+} from "./news-analyzer";
+
+async function fetchNews(): Promise<{
+  rawItems: { title: string; link: string }[];
+  analyzedNews: AnalyzedNews[];
+  macroSentiment: MacroSentiment;
+}> {
+  const query = "rupiah OR USDT OR tether OR Bank Indonesia OR The Fed OR dolar AS OR kripto Indonesia";
   try {
     const resp = await fetch(
       `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=id&gl=ID&ceid=ID:id`,
-      { headers: { "User-Agent": "Mozilla/5.0" } },
+      {
+        headers: { "User-Agent": "Mozilla/5.0" },
+        signal: AbortSignal.timeout(4000),
+      },
     );
-    if (!resp.ok) return [];
+    if (!resp.ok) {
+      return {
+        rawItems: [],
+        analyzedNews: [],
+        macroSentiment: computeMacroSentiment([]),
+      };
+    }
     const xml = await resp.text();
-    const items: { title: string; link: string }[] = [];
+    const rawItems: { title: string; link: string }[] = [];
+    const analyzedNews: AnalyzedNews[] = [];
     const itemRe = /<item>([\s\S]*?)<\/item>/g;
     let m: RegExpExecArray | null;
-    while ((m = itemRe.exec(xml)) && items.length < 3) {
+
+    while ((m = itemRe.exec(xml)) && analyzedNews.length < 8) {
       const block = m[1] ?? "";
       const title = (/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/.exec(block)?.[1] ?? "")
         .replace(/&amp;/g, "&")
@@ -136,13 +158,28 @@ async function fetchNews(): Promise<{ title: string; link: string }[]> {
         .replace(/&quot;/g, '"')
         .trim();
       const link = (/<link>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/link>/.exec(block)?.[1] ?? "").trim();
-      if (title) items.push({ title, link });
+      const source = (/<source[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/source>/.exec(block)?.[1] ?? "")
+        .replace(/&amp;/g, "&")
+        .trim();
+      const pubDate = (/<pubDate>([\s\S]*?)<\/pubDate>/.exec(block)?.[1] ?? "").trim();
+
+      if (title && link) {
+        rawItems.push({ title, link });
+        analyzedNews.push(analyzeNewsHeadline(title, link, source || "Berita Pasar", pubDate));
+      }
     }
-    return items;
+
+    const macroSentiment = computeMacroSentiment(analyzedNews);
+    return { rawItems, analyzedNews, macroSentiment };
   } catch {
-    return [];
+    return {
+      rawItems: [],
+      analyzedNews: [],
+      macroSentiment: computeMacroSentiment([]),
+    };
   }
 }
+
 
 // Ambil N titik history terakhir dari Supabase. Kalau Supabase belum
 // dikonfigurasi, balikin array kosong -> fallback ke history yang dikirim client.
@@ -189,8 +226,7 @@ export const getMarketSnapshot = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => inputSchema.parse(data))
   .handler(async ({ data }): Promise<Snapshot> => {
     await requireSession(data.sessionToken);
-    const [sellRefRaw, buyRefRaw, crossPlatform, newsItems, dbHistory] = await Promise.all([
-
+    const [sellRefRaw, buyRefRaw, crossPlatform, newsResult, dbHistory] = await Promise.all([
       fetchP2pAds("BUY"), // kompetitor JUAL -> acuan iklan JUAL saya
       fetchP2pAds("SELL"), // kompetitor BELI -> acuan iklan BELI saya
       fetchCrossPlatform(),
@@ -206,7 +242,9 @@ export const getMarketSnapshot = createServerFn({ method: "POST" })
       sellRefRaw,
       buyRefRaw,
       crossPlatform,
-      newsItems,
+      newsItems: newsResult.rawItems,
+      analyzedNews: newsResult.analyzedNews,
+      macroSentiment: newsResult.macroSentiment,
       history,
       capitalUsdt: data.capitalUsdt,
       buyFeeIdr: data.buyFeeIdr,
@@ -217,3 +255,4 @@ export const getMarketSnapshot = createServerFn({ method: "POST" })
 
     return snapshot;
   });
+
