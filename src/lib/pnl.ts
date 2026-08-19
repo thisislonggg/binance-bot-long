@@ -6,9 +6,17 @@ import { getSupabase } from "./supabase";
 
 /**
  * Pencatatan harga eksekusi transaksi nyata + hitung profit harian/mingguan/bulanan/sepanjang masa
- * menggunakan Moving Average Inventory (AVCO) & Zona Waktu Indonesia (WIB UTC+7)
- * agar transaksi yang melintasi tengah malam (beli jam 23:00, jual jam 00:05)
- * tetap mendapatkan harga modal yang akurat dan profit yang presisi.
+ * menggunakan LIFO Matching (lot beli terbaru dipakai dulu) agar sesuai dengan pola merchant P2P
+ * yang membeli → langsung jual di putaran pendek.
+ *
+ * KONSEP FEE:
+ * - Fee beli 0.08% → MASUK ke cost basis (HPP). Artinya, modal USDT yang tercatat di stok sudah
+ *   termasuk fee beli. Ini membuat "Sisa Stok" di dashboard akurat sebagai harga modal sesungguhnya.
+ * - Fee jual 0.08% → dikurangkan dari profit saat matching.
+ * - Profit Bersih = harga jual × (1 - fee_rate) × amount  −  HPP × amount
+ *   di mana HPP = harga beli × (1 + fee_rate)
+ *
+ * ZONA WAKTU: Indonesia (WIB UTC+7) untuk batas hari/minggu/bulan.
  */
 
 export type TradeSide = "buy" | "sell";
@@ -38,7 +46,10 @@ export type PnlSummary = {
   today_fees_idr: number;
   total_fees_idr: number;
   open_position_usdt: number;
+  /** HPP per USDT = harga beli rata-rata + fee beli. Ini adalah modal sesungguhnya per USDT. */
   open_position_avg_cost_idr: number;
+  /** Nilai IDR total stok yang belum terjual, dihitung dari HPP (termasuk fee beli). */
+  open_position_total_cost_idr: number;
   total_buy_usdt: number;
   total_sell_usdt: number;
   total_buy_idr: number;
@@ -63,6 +74,7 @@ const EMPTY_SUMMARY: PnlSummary = {
   total_fees_idr: 0,
   open_position_usdt: 0,
   open_position_avg_cost_idr: 0,
+  open_position_total_cost_idr: 0,
   total_buy_usdt: 0,
   total_sell_usdt: 0,
   total_buy_idr: 0,
@@ -142,7 +154,31 @@ export const deleteTrade = createServerFn({ method: "POST" })
   });
 
 const TRADES_LOOKBACK_LIMIT = 5000;
-const BINANCE_FEE_RATE = 0.0008; // 0.08% Maker fee setiap Beli dan Jual
+
+/**
+ * Fee Binance P2P: 0.08% untuk Maker (biasanya merchant).
+ * Fee beli DIMASUKKAN ke HPP (harga pokok pembelian).
+ * Fee jual DIKURANGKAN dari hasil penjualan saat menghitung profit.
+ */
+const BINANCE_FEE_RATE = 0.0008; // 0.08%
+
+/**
+ * Harga Pokok Pembelian (HPP) per USDT.
+ * HPP = harga beli × (1 + fee_rate)
+ * Contoh: beli Rp 16.200, HPP = 16.200 × 1.0008 = Rp 16.212,96
+ */
+function calcHpp(buyPrice: number): number {
+  return buyPrice * (1 + BINANCE_FEE_RATE);
+}
+
+/**
+ * Hasil bersih per USDT setelah fee jual.
+ * Net Sell = harga jual × (1 - fee_rate)
+ * Contoh: jual Rp 16.250, net = 16.250 × 0.9992 = Rp 16.237
+ */
+function calcNetSell(sellPrice: number): number {
+  return sellPrice * (1 - BINANCE_FEE_RATE);
+}
 
 const getPnlInputSchema = z.object({ sessionToken: z.string().optional() });
 
@@ -163,19 +199,19 @@ export const getPnlSummary = createServerFn({ method: "POST" })
 
     const trades = tradesData as Trade[];
 
-    // Normalisasi harga agar aman dari anomali angka desimal/satuan ribuan
-    const normalizePrice = (p: number): number => {
-      let num = Number(p) || 0;
-      if (num <= 0) return 16200;
-      if (num > 0 && num < 100) num *= 1000; // Contoh: 16.25 -> 16250
-      if (num >= 100 && num < 1000) num *= 100; // Contoh: 162.5 -> 16250
-      if (num >= 1000 && num < 5000) num *= 10; // Contoh: 1625 -> 16250
-      return num;
+    // ── Algoritma LIFO Matching ─────────────────────────────────────────────
+    // Merchant P2P biasanya menjual stok yang baru saja dibeli di putaran aktif,
+    // sehingga LIFO (lot terbaru dipakai dulu) lebih sesuai dengan realita.
+    //
+    // BuyLot menyimpan HPP (sudah termasuk fee beli), bukan harga beli mentah.
+    // Ini agar "Sisa Stok" langsung mencerminkan modal sesungguhnya.
+    type BuyLot = {
+      id: number;
+      ts: string;
+      rawBuyPrice: number; // harga beli mentah dari input
+      hpp: number;         // HPP = rawBuyPrice × (1 + fee_rate)
+      amount: number;
     };
-
-    // ── Algoritma Perputaran Modal Merchant (Recent Cycle / LIFO Matching) ────
-    // Merchant P2P menjual inventaris yang baru saja dibeli di putaran aktif.
-    type BuyLot = { id: number; ts: string; price: number; amount: number };
     const buyStack: BuyLot[] = [];
 
     const realized: {
@@ -192,115 +228,105 @@ export const getPnlSummary = createServerFn({ method: "POST" })
     let totalSellIdr = 0;
     let unmatchedSell = 0;
     let totalMatchedSellUsdt = 0;
-    let lastKnownBuyPrice = 0;
+    let lastKnownHpp = 0; // HPP dari lot beli terakhir, untuk fallback unmatched
 
     for (const rawTrade of trades) {
-      const price = normalizePrice(rawTrade.price);
-      const amount = Number(rawTrade.amount_usdt) || 0;
-      if (amount <= 0 || price <= 0) continue;
+      const price = Number(rawTrade.price);
+      const amount = Number(rawTrade.amount_usdt);
+
+      // Skip data tidak valid
+      if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(amount) || amount <= 0) continue;
 
       if (rawTrade.side === "buy") {
-        buyStack.push({ id: rawTrade.id, ts: rawTrade.ts, price, amount });
+        const hpp = calcHpp(price);
+        buyStack.push({ id: rawTrade.id, ts: rawTrade.ts, rawBuyPrice: price, hpp, amount });
         totalBuy += amount;
-        totalBuyIdr += amount * price;
-        lastKnownBuyPrice = price;
+        totalBuyIdr += amount * price; // catat nilai IDR beli mentah (sebelum fee)
+        lastKnownHpp = hpp;
         continue;
       }
 
-      // Sisi JUAL (SELL)
+      // ── Sisi JUAL ──────────────────────────────────────────────────────────
       const tradeSellIdr = amount * price;
       totalSell += amount;
       totalSellIdr += tradeSellIdr;
 
       let remaining = amount;
       let tradeProfit = 0;
-      let tradeFees = 0;
+      let tradeFeeIdr = 0;
 
-      // Cocokkan ke lot BELI yang paling baru/terdekat sebelum penjualan ini
-      while (remaining > 1e-6 && buyStack.length > 0) {
+      // LIFO: ambil dari akhir stack (lot terbaru)
+      while (remaining > 1e-8 && buyStack.length > 0) {
         const lot = buyStack[buyStack.length - 1]!;
         const take = Math.min(lot.amount, remaining);
-        
-        let buyPrice = lot.price;
-        // Safety guard: jika selisih beli vs jual > Rp 500 (anomali tanggal lama), gunakan modal wajar
-        if (price - buyPrice > 500) {
-          buyPrice = lastKnownBuyPrice > 0 && Math.abs(price - lastKnownBuyPrice) < 300
-            ? lastKnownBuyPrice
-            : price - 40;
-        }
 
-        // Potongan Fee Binance: 0.08% saat beli dan 0.08% saat jual
-        const buyFee = take * buyPrice * BINANCE_FEE_RATE;
-        const sellFee = take * price * BINANCE_FEE_RATE;
-        const cycleFee = buyFee + sellFee;
-        tradeFees += cycleFee;
+        // Fee jual untuk porsi ini
+        const sellFeeForTake = take * price * BINANCE_FEE_RATE;
+        // Fee beli sudah masuk ke HPP, jadi total fee yang di-track = fee beli + fee jual
+        const buyFeeForTake = take * lot.rawBuyPrice * BINANCE_FEE_RATE;
+        tradeFeeIdr += buyFeeForTake + sellFeeForTake;
 
-        const grossPnl = (price - buyPrice) * take;
-        const netPnl = grossPnl - cycleFee;
+        // Profit = (net sell per USDT - HPP per USDT) × amount
+        // HPP sudah termasuk fee beli:
+        //   Profit = harga jual × (1 - fee_rate) × take  −  HPP × take
+        const netSellPerUsdt = calcNetSell(price);
+        const profitForTake = (netSellPerUsdt - lot.hpp) * take;
+        tradeProfit += profitForTake;
 
-        tradeProfit += netPnl;
         lot.amount -= take;
         remaining -= take;
-        if (lot.amount <= 1e-6) {
+        if (lot.amount <= 1e-8) {
           buyStack.pop();
         }
       }
 
-      // Jika ada porsi jual yang tidak memiliki pasangan beli tercatat
-      if (remaining > 1e-6) {
+      // Porsi jual yang tidak ada pasangan beli (stok awal belum dicatat / unmatched)
+      if (remaining > 1e-8) {
         unmatchedSell += remaining;
-        const fallbackCost = lastKnownBuyPrice > 0 && Math.abs(price - lastKnownBuyPrice) < 300
-          ? lastKnownBuyPrice
-          : price - 40; // Rata-rata margin sehat merchant ~Rp 35-40/USDT
 
-        const buyFee = remaining * fallbackCost * BINANCE_FEE_RATE;
-        const sellFee = remaining * price * BINANCE_FEE_RATE;
-        const cycleFee = buyFee + sellFee;
-        tradeFees += cycleFee;
+        // Gunakan HPP terakhir yang diketahui sebagai cost basis fallback.
+        // Jika tidak ada riwayat beli sama sekali, lewati (profit = 0, lebih konservatif).
+        if (lastKnownHpp > 0) {
+          const sellFeeForRemaining = remaining * price * BINANCE_FEE_RATE;
+          const rawBuyPriceFallback = lastKnownHpp / (1 + BINANCE_FEE_RATE);
+          const buyFeeForRemaining = remaining * rawBuyPriceFallback * BINANCE_FEE_RATE;
+          tradeFeeIdr += buyFeeForRemaining + sellFeeForRemaining;
 
-        const grossPnl = (price - fallbackCost) * remaining;
-        const netPnl = grossPnl - cycleFee;
-
-        tradeProfit += netPnl;
+          const netSellPerUsdt = calcNetSell(price);
+          const profitForRemaining = (netSellPerUsdt - lastKnownHpp) * remaining;
+          tradeProfit += profitForRemaining;
+        }
       }
 
       totalMatchedSellUsdt += amount;
       realized.push({
         ts: rawTrade.ts,
         profit_idr: tradeProfit,
-        fee_idr: tradeFees,
+        fee_idr: tradeFeeIdr,
         matched_usdt: amount,
         sell_idr: tradeSellIdr,
       });
     }
 
-    // ── Batas Waktu Berbasis Zona Waktu Indonesia (WIB UTC+7) ────────────────
+    // ── Batas Waktu Berbasis WIB (UTC+7) ─────────────────────────────────────
     const WIB_OFFSET_MS = 7 * 60 * 60 * 1000;
     const nowMs = Date.now();
     const nowWib = new Date(nowMs + WIB_OFFSET_MS);
 
     const y = nowWib.getUTCFullYear();
-    const m = nowWib.getUTCMonth();
-    const d = nowWib.getUTCDate();
+    const mo = nowWib.getUTCMonth();
+    const day = nowWib.getUTCDate();
 
-    // Awal Hari Ini: Tepat jam 00:00:00 WIB
-    const startOfTodayMs = Date.UTC(y, m, d) - WIB_OFFSET_MS;
-    const startOfToday = new Date(startOfTodayMs);
-
-    // Kemarin: 00:00:00 WIB kemarin s.d 23:59:59 WIB kemarin
+    const startOfTodayMs = Date.UTC(y, mo, day) - WIB_OFFSET_MS;
     const startOfYesterdayMs = startOfTodayMs - 24 * 60 * 60 * 1000;
-    const startOfYesterday = new Date(startOfYesterdayMs);
-
-    // Rolling 24 Jam Non-stop
     const startOfLast24hMs = nowMs - 24 * 60 * 60 * 1000;
-    const startOfLast24h = new Date(startOfLast24hMs);
-
-    // Rolling 7 Hari (Mingguan)
     const startOfWeekMs = startOfTodayMs - 6 * 24 * 60 * 60 * 1000;
-    const startOfWeek = new Date(startOfWeekMs);
-
-    // Rolling 30 Hari (Bulanan)
     const startOfMonthMs = startOfTodayMs - 29 * 24 * 60 * 60 * 1000;
+
+    const startOfToday = new Date(startOfTodayMs);
+    const startOfYesterday = new Date(startOfYesterdayMs);
+    const startOfLast24h = new Date(startOfLast24hMs);
+    const startOfWeek = new Date(startOfWeekMs);
     const startOfMonth = new Date(startOfMonthMs);
 
     let todayProfit = 0;
@@ -319,18 +345,10 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       allTimeProfit += r.profit_idr;
       totalFeesIdr += r.fee_idr;
 
-      if (d >= startOfMonth) {
-        monthProfit += r.profit_idr;
-      }
-      if (d >= startOfWeek) {
-        weekProfit += r.profit_idr;
-      }
-      if (d >= startOfLast24h) {
-        last24hProfit += r.profit_idr;
-      }
-      if (d >= startOfYesterday && d < startOfToday) {
-        yesterdayProfit += r.profit_idr;
-      }
+      if (d >= startOfMonth) monthProfit += r.profit_idr;
+      if (d >= startOfWeek) weekProfit += r.profit_idr;
+      if (d >= startOfLast24h) last24hProfit += r.profit_idr;
+      if (d >= startOfYesterday && d < startOfToday) yesterdayProfit += r.profit_idr;
       if (d >= startOfToday) {
         todayProfit += r.profit_idr;
         todayTurnoverIdr += r.sell_idr;
@@ -339,10 +357,14 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       }
     }
 
+    // ── Sisa Stok (Open Position) ─────────────────────────────────────────────
+    // openAmount        : total USDT yang belum terjual
+    // openAvgHpp        : rata-rata HPP per USDT di stok (sudah termasuk fee beli)
+    // openTotalCostIdr  : nilai IDR total stok berdasarkan HPP
     const openAmount = buyStack.reduce((s, l) => s + l.amount, 0);
-    const openAvgCost = openAmount > 0
-      ? buyStack.reduce((s, l) => s + l.amount * l.price, 0) / openAmount
-      : (lastKnownBuyPrice || 0);
+    const openTotalHppIdr = buyStack.reduce((s, l) => s + l.amount * l.hpp, 0);
+    const openAvgHpp = openAmount > 0 ? openTotalHppIdr / openAmount : (lastKnownHpp || 0);
+    const openTotalCostIdr = openTotalHppIdr;
 
     const avgProfitPerUsdt = totalMatchedSellUsdt > 0 ? allTimeProfit / totalMatchedSellUsdt : 0;
 
@@ -359,7 +381,8 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       today_fees_idr: todayFeesIdr,
       total_fees_idr: totalFeesIdr,
       open_position_usdt: openAmount,
-      open_position_avg_cost_idr: openAvgCost,
+      open_position_avg_cost_idr: openAvgHpp,        // HPP per USDT (termasuk fee beli)
+      open_position_total_cost_idr: openTotalCostIdr, // Nilai IDR total stok
       total_buy_usdt: totalBuy,
       total_sell_usdt: totalSell,
       total_buy_idr: totalBuyIdr,

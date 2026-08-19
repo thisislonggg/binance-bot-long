@@ -864,12 +864,18 @@ function Dashboard() {
                   label="Sisa Stok USDT"
                   value={pnl ? `${pnl.open_position_usdt.toLocaleString("id-ID", { maximumFractionDigits: 1 })} USDT` : "—"}
                   subvalue={
-                    pnl && pnl.open_position_usdt > 0
-                      ? `Modal: ${fmtRp2(pnl.open_position_avg_cost_idr)}`
+                    pnl && pnl.open_position_usdt > 0.001
+                      ? `Modal: ${fmtRp2(pnl.open_position_avg_cost_idr)}/USDT · ${fmtRp(pnl.open_position_total_cost_idr)} total`
                       : "Stok seimbang"
                   }
                   tone="neutral"
-                  hint={pnl ? `Margin avg: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT` : undefined}
+                  hint={
+                    pnl && pnl.open_position_usdt > 0.001
+                      ? `HPP sudah termasuk fee beli 0.08% · Margin avg: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT`
+                      : pnl
+                        ? `Margin avg: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT`
+                        : undefined
+                  }
                 />
               </div>
 
