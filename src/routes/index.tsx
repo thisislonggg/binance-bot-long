@@ -26,6 +26,7 @@ import {
   ShieldCheck,
   TrendingUp,
   Wallet,
+  Zap,
 } from "lucide-react";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -869,9 +870,105 @@ function Dashboard() {
                   </span>
                 </div>
               </div>
+
+              {/* ── Sinkronisasi Benchmark Multi-Platform & Panduan Ambil Stok ── */}
+              <div className="panel p-3.5 border-border/70 bg-surface-2/40 space-y-2.5 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Globe className="size-3.5 text-primary" />
+                    <span className="font-bold text-foreground">Sinkronisasi Pasar Multi-Platform:</span>
+                  </div>
+                  <span className="text-[0.68rem] text-muted-foreground">
+                    Acuan Nilai Wajar: <strong className="text-foreground">{fmtRp2(s.fair_price)}</strong>
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 text-center">
+                  {/* Indodax Spot */}
+                  <div className="rounded border border-border/60 bg-surface/80 p-2">
+                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                      🇮🇩 Indodax Spot
+                    </div>
+                    <div className="num font-bold text-foreground mt-0.5">
+                      {s.cross_platform?.indodax_usdt_idr_spot ? fmtRp(s.cross_platform.indodax_usdt_idr_spot) : "—"}
+                    </div>
+                    <div className="text-[0.62rem] text-muted-foreground">
+                      {s.cross_platform?.indodax_bid ? `B: ${fmtRp(s.cross_platform.indodax_bid)}` : "USDT/IDR"}
+                    </div>
+                  </div>
+
+                  {/* Bybit Benchmark */}
+                  <div className="rounded border border-border/60 bg-surface/80 p-2">
+                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                      🌐 Bybit
+                    </div>
+                    <div className="num font-bold text-foreground mt-0.5">
+                      {s.cross_platform?.bybit_usdt_idr ? fmtRp(s.cross_platform.bybit_usdt_idr) : "—"}
+                    </div>
+                    <div className="text-[0.62rem] text-muted-foreground">USDT/IDR Est</div>
+                  </div>
+
+                  {/* OKX Benchmark */}
+                  <div className="rounded border border-border/60 bg-surface/80 p-2">
+                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                      🌐 OKX
+                    </div>
+                    <div className="num font-bold text-foreground mt-0.5">
+                      {s.cross_platform?.okx_usdt_idr ? fmtRp(s.cross_platform.okx_usdt_idr) : "—"}
+                    </div>
+                    <div className="text-[0.62rem] text-muted-foreground">USDT/IDR Est</div>
+                  </div>
+
+                  {/* CoinGecko */}
+                  <div className="rounded border border-border/60 bg-surface/80 p-2">
+                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                      🪙 CoinGecko
+                    </div>
+                    <div className="num font-bold text-foreground mt-0.5">
+                      {s.cross_platform?.coingecko_usdt_idr ? fmtRp(s.cross_platform.coingecko_usdt_idr) : "—"}
+                    </div>
+                    <div className="text-[0.62rem] text-muted-foreground">Tether Global IDR</div>
+                  </div>
+
+                  {/* Forex Kurs USD/IDR */}
+                  <div className="rounded border border-border/60 bg-surface/80 p-2 col-span-2 sm:col-span-1">
+                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                      🏦 Kurs USD/IDR
+                    </div>
+                    <div className="num font-bold text-foreground mt-0.5">
+                      {s.cross_platform?.forex_usd_idr ? fmtRp(s.cross_platform.forex_usd_idr) : "—"}
+                    </div>
+                    <div className="text-[0.62rem] text-muted-foreground">Pasar Uang Antar Bank</div>
+                  </div>
+                </div>
+
+                {/* Advice Ambil Stok */}
+                <div className="rounded-md border border-primary/20 bg-primary/5 p-2.5 flex items-start gap-2 text-xs">
+                  <div className="mt-0.5 rounded bg-primary/20 p-1 text-primary">
+                    <Zap className="size-3.5" />
+                  </div>
+                  <div>
+                    <strong className="text-foreground">Strategi Optimal Ambil Stok USDT:</strong>{" "}
+                    <span className="text-muted-foreground">
+                      Pasang Iklan Beli di harga{" "}
+                      <strong className="text-bid font-bold">{fmtRp2(buyAd)}</strong> (+1 Rupiah di atas kompetitor teratas)
+                      untuk menempati antrian pertama (Rank #1) tanpa overpay. HPP modal efektif setelah fee:{" "}
+                      <strong className="text-foreground">{fmtRp2(buyHpp)}/USDT</strong>.
+                      {s.cross_platform?.indodax_usdt_idr_spot ? (
+                        buyAd < s.cross_platform.indodax_usdt_idr_spot ? (
+                          <> Ambil via P2P lebih hemat <strong className="text-bid">{fmtRp(s.cross_platform.indodax_usdt_idr_spot - buyAd)}/USDT</strong> dibanding beli di Spot Indodax.</>
+                        ) : (
+                          <> Harga Spot Indodax sedang bersaing ({fmtRp(s.cross_platform.indodax_usdt_idr_spot)}).</>
+                        )
+                      ) : null}
+                    </span>
+                  </div>
+                </div>
+              </div>
             </div>
           );
         })() : null}
+
 
 
 

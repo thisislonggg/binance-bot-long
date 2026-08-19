@@ -447,12 +447,36 @@ export function buildSnapshot(input: {
   const mySellZone = bestZone(sellSorted, 5);
   const myBuyZone = bestZone(buySorted, 5);
 
+  // ── 1. Referensi Harga Pasar Kompetitor Teratas & Klaster Dominan ────────
+  // buySorted: sorted descending (pembeli USDT tertinggi di rank 0)
+  // sellSorted: sorted ascending (penjual USDT terendah di rank 0)
+  const topBuyCompetitor = buySorted[0]?.price ?? NaN;
+  const topSellCompetitor = sellSorted[0]?.price ?? NaN;
+
+  const buyDominantCluster = priceCluster(buyClean);
+  const clusterBuyPrice = buyDominantCluster.length ? Math.max(...buyDominantCluster.map((a) => a.price)) : topBuyCompetitor;
+
+  const sellDominantCluster = priceCluster(sellClean);
+  const clusterSellPrice = sellDominantCluster.length ? Math.min(...sellDominantCluster.map((a) => a.price)) : topSellCompetitor;
+
+  // ── 2. Integrasi Benchmark Multi-Platform (Indodax, Bybit, OKX, CoinGecko, Forex) ──
+  const validCrossPrices = Object.values(input.crossPlatform).filter((v) => Number.isFinite(v) && v > 0);
+  const crossBenchmark = validCrossPrices.length ? mean(validCrossPrices) : NaN;
+
+  // Fair price: Konsensus tertimbang likuiditas order book + anchor cross-platform
   const lwpSell = liquidityWeightedPrice(sellClean);
   const lwpBuy = liquidityWeightedPrice(buyClean);
-  const fairPrice =
+  let fairPrice =
     Number.isFinite(lwpSell) && Number.isFinite(lwpBuy)
       ? (lwpSell + lwpBuy) / 2
       : ([lwpSell, lwpBuy].find((v) => Number.isFinite(v)) ?? NaN);
+
+  if (Number.isFinite(fairPrice) && Number.isFinite(crossBenchmark)) {
+    // 70% bobot P2P orderbook + 30% bobot cross-platform benchmark
+    fairPrice = fairPrice * 0.7 + crossBenchmark * 0.3;
+  } else if (!Number.isFinite(fairPrice) && Number.isFinite(crossBenchmark)) {
+    fairPrice = crossBenchmark;
+  }
 
   const totalLiquidity = [...sellClean, ...buyClean].reduce((s, a) => s + a.available_idr, 0);
   const liquidityClass = classifyLiquidity(totalLiquidity);
@@ -468,11 +492,52 @@ export function buildSnapshot(input: {
   const sellDepth = depthAwareReferencePrice(sellSorted, depthTargetIdr);
   const buyDepth = depthAwareReferencePrice(buySorted, depthTargetIdr);
 
-  const buyRefPrice = Number.isFinite(buyDepth.price) ? buyDepth.price : myBuyZone[1];
-  const sellRefPrice = Number.isFinite(sellDepth.price) ? sellDepth.price : mySellZone[0];
-  const candidateBuy = Number.isFinite(buyRefPrice) ? buyRefPrice + input.buyFeeIdr : NaN;
-  const candidateSell = sellRefPrice;
+  // ── 3. Kalkulasi Target Beli (Ambil Stok) & Target Jual (Lepas Stok) ──────
+  // Target Beli (Iklan BELI):
+  // Menempati Rank #1 di orderbook dengan pasang +1 Rupiah di atas kompetitor teratas.
+  // Tidak boleh overpay di atas pasar!
+  let candidateBuy: number;
+  if (Number.isFinite(topBuyCompetitor)) {
+    const isOutlierJump = clusterBuyPrice && topBuyCompetitor > clusterBuyPrice && (topBuyCompetitor - clusterBuyPrice) / clusterBuyPrice > 0.003;
+    const refBuyBase = isOutlierJump ? clusterBuyPrice : (Number.isFinite(buyDepth.price) ? Math.max(buyDepth.price, topBuyCompetitor) : topBuyCompetitor);
 
+    // Pasang +1 IDR di atas kompetitor untuk memenangkan antrian orderbook (rank 1 fill priority)
+    candidateBuy = Math.round(refBuyBase + 1);
+
+    // Proteksi batas atas: Jangan beli di atas fair price atau terlalu dekat dengan harga jual
+    if (Number.isFinite(topSellCompetitor)) {
+      candidateBuy = Math.min(candidateBuy, Math.round(topSellCompetitor - 15));
+    }
+    if (Number.isFinite(fairPrice)) {
+      candidateBuy = Math.min(candidateBuy, Math.round(fairPrice - 2));
+    }
+  } else if (Number.isFinite(fairPrice)) {
+    candidateBuy = Math.round(fairPrice - 20);
+  } else {
+    candidateBuy = NaN;
+  }
+
+  // Target Jual (Iklan JUAL):
+  // Menempati Rank #1 di orderbook dengan pasang -1 Rupiah di bawah kompetitor terendah.
+  let candidateSell: number;
+  if (Number.isFinite(topSellCompetitor)) {
+    const isOutlierDrop = clusterSellPrice && topSellCompetitor < clusterSellPrice && (clusterSellPrice - topSellCompetitor) / clusterSellPrice > 0.003;
+    const refSellBase = isOutlierDrop ? clusterSellPrice : (Number.isFinite(sellDepth.price) ? Math.min(sellDepth.price, topSellCompetitor) : topSellCompetitor);
+
+    // Pasang -1 IDR di bawah kompetitor untuk memenangkan antrian sell orderbook (rank 1)
+    candidateSell = Math.round(refSellBase - 1);
+
+    // Proteksi batas bawah: Jangan jual di bawah fair price
+    if (Number.isFinite(fairPrice)) {
+      candidateSell = Math.max(candidateSell, Math.round(fairPrice + 2));
+    }
+  } else if (Number.isFinite(fairPrice)) {
+    candidateSell = Math.round(fairPrice + 20);
+  } else {
+    candidateSell = NaN;
+  }
+
+  // ── 4. Penegakan Minimum Margin & Proteksi Fee 2 Arah (0.16%) ──────────────
   let marginAdjusted = false;
   let minMarginUsed = NaN;
   let marginBreakdown: Record<string, number> = {};
@@ -491,18 +556,24 @@ export function buildSnapshot(input: {
       liquidityClass,
       capitalSharePct,
     });
-    if (naturalMargin >= minMarginUsed) {
+
+    // Minimum spread absolut yang wajib dipertahankan (menutup 0.16% fee ~Rp 26 + minimal profit)
+    const absoluteMinSpread = Math.max(minMarginUsed, Math.round(base * 0.0018));
+
+    if (naturalMargin >= absoluteMinSpread) {
       myBuyPrice = candidateBuy;
       mySellPrice = candidateSell;
     } else {
-      const mid = (candidateBuy + candidateSell) / 2;
-      myBuyPrice = mid - minMarginUsed / 2;
-      mySellPrice = mid + minMarginUsed / 2;
+      // Jika spread pasar terlalu sempit, lebarkan secara proporsional dari titik tengah
+      const deficit = absoluteMinSpread - naturalMargin;
+      myBuyPrice = Math.round(candidateBuy - deficit / 2);
+      mySellPrice = Math.round(candidateSell + deficit / 2);
       marginAdjusted = true;
+      minMarginUsed = absoluteMinSpread;
     }
   }
 
-  const myBuyPricePreFee = Number.isFinite(myBuyPrice) ? myBuyPrice - input.buyFeeIdr : NaN;
+  const myBuyPricePreFee = myBuyPrice;
   const spreadAbs =
     Number.isFinite(mySellPrice) && Number.isFinite(myBuyPrice) ? mySellPrice - myBuyPrice : NaN;
   const spreadPct =
@@ -560,10 +631,10 @@ export function buildSnapshot(input: {
     price_outlook: outlook,
     cross_platform_gap_pct: crossPlatformGapPct,
     news_items: input.newsItems,
-    analyzed_news: input.analyzedNews,
+    analyzed_news: input.analyzedNews ?? [],
     macro_sentiment: input.macroSentiment,
-    sell_ref_dominant_cluster: priceCluster(sellClean),
-    buy_ref_dominant_cluster: priceCluster(buyClean),
+    sell_ref_dominant_cluster: sellDominantCluster,
+    buy_ref_dominant_cluster: buyDominantCluster,
     sell_ref_count_raw: sellRefRaw.length,
     sell_ref_count_clean: sellClean.length,
     buy_ref_count_raw: buyRefRaw.length,

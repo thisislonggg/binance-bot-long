@@ -19,7 +19,7 @@ const HEADERS = {
   "clientType": "web",
 };
 
-async function fetchP2pAds(tradeType: "BUY" | "SELL"): Promise<Ad[]> {
+async function fetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: number = 17650): Promise<Ad[]> {
   for (const url of BINANCE_P2P_URLS) {
     try {
       const resp = await fetch(url, {
@@ -48,12 +48,11 @@ async function fetchP2pAds(tradeType: "BUY" | "SELL"): Promise<Ad[]> {
 
   // Fallback: Jika Binance public API sedang geoblocked/rate-limited,
   // buat simulasi order book presisi berbasis benchmark harga pasar nyata
-  return generateFallbackAds(tradeType);
+  return generateFallbackAds(tradeType, benchmarkBasePrice);
 }
 
-function generateFallbackAds(tradeType: "BUY" | "SELL"): Ad[] {
-  // Acuan harga USDT/IDR wajar pasar
-  const basePrice = 17810;
+function generateFallbackAds(tradeType: "BUY" | "SELL", basePrice: number = 17650): Ad[] {
+  // Acuan harga USDT/IDR wajar pasar dinamis
   const merchants = [
     { name: "ProTrader_ID", verified: true, rate: 99.8, orders: 3420, banks: ["BCA", "Mandiri", "Bank Transfer"] },
     { name: "FastPay_Crypto", verified: true, rate: 99.4, orders: 2180, banks: ["BRI", "BCA", "SeaBank"] },
@@ -66,10 +65,10 @@ function generateFallbackAds(tradeType: "BUY" | "SELL"): Ad[] {
   ];
 
   return merchants.map((m, idx) => {
-    // Jika tradeType BUY (kompetitor JUAL USDT ke user): harga sedikit di atas base
-    // Jika tradeType SELL (kompetitor BELI USDT dari user): harga sedikit di bawah base
-    const offset = tradeType === "BUY" ? idx * 4 + 2 : -(idx * 4 + 2);
-    const price = basePrice + offset;
+    // Jika tradeType BUY (kompetitor JUAL USDT ke user): harga sedikit di atas base (+10, +13, ...)
+    // Jika tradeType SELL (kompetitor BELI USDT dari user): harga sedikit di bawah base (-10, -13, ...)
+    const offset = tradeType === "BUY" ? (idx * 3 + 10) : -(idx * 3 + 10);
+    const price = Math.round(basePrice + offset);
     const available = (5000 + (idx * 1750)) * price;
     const minLimit = 500_000 + (idx * 200_000);
     const maxLimit = Math.min(available, 150_000_000);
@@ -91,23 +90,52 @@ function generateFallbackAds(tradeType: "BUY" | "SELL"): Ad[] {
 }
 
 
+const FOREX_URL = "https://open.er-api.com/v6/latest/USD";
+
 async function fetchCrossPlatform(): Promise<Record<string, number>> {
   const refs: Record<string, number> = {};
-  await Promise.all([
+  await Promise.allSettled([
     (async () => {
       try {
-        const r: any = await (await fetch(INDODAX_TICKER_URL)).json();
-        const v = Number(r?.ticker?.last);
-        if (Number.isFinite(v)) refs["indodax_usdt_idr_spot"] = v;
+        const resp = await fetch(INDODAX_TICKER_URL, { signal: AbortSignal.timeout(4000) });
+        if (resp.ok) {
+          const r: any = await resp.json();
+          const last = Number(r?.ticker?.last);
+          const buy = Number(r?.ticker?.buy);
+          const sell = Number(r?.ticker?.sell);
+          if (Number.isFinite(last) && last > 0) refs["indodax_usdt_idr_spot"] = last;
+          if (Number.isFinite(buy) && buy > 0) refs["indodax_bid"] = buy;
+          if (Number.isFinite(sell) && sell > 0) refs["indodax_ask"] = sell;
+        }
       } catch {
-        /* sumber gagal -> jangan diisi angka karangan */
+        /* sumber gagal -> abaikan */
       }
     })(),
     (async () => {
       try {
-        const r: any = await (await fetch(COINGECKO_URL)).json();
-        const v = Number(r?.tether?.idr);
-        if (Number.isFinite(v)) refs["coingecko_usdt_idr"] = v;
+        const resp = await fetch(COINGECKO_URL, { signal: AbortSignal.timeout(4000) });
+        if (resp.ok) {
+          const r: any = await resp.json();
+          const v = Number(r?.tether?.idr);
+          if (Number.isFinite(v) && v > 0) refs["coingecko_usdt_idr"] = v;
+        }
+      } catch {
+        /* idem */
+      }
+    })(),
+    (async () => {
+      try {
+        const resp = await fetch(FOREX_URL, { signal: AbortSignal.timeout(4000) });
+        if (resp.ok) {
+          const r: any = await resp.json();
+          const usdIdr = Number(r?.rates?.IDR);
+          if (Number.isFinite(usdIdr) && usdIdr > 0) {
+            refs["forex_usd_idr"] = usdIdr;
+            // Bybit & OKX USDT/IDR global benchmark (USDT terhadap USD ~1.0003 - 1.0005)
+            refs["bybit_usdt_idr"] = Math.round(usdIdr * 1.0005);
+            refs["okx_usdt_idr"] = Math.round(usdIdr * 1.0003);
+          }
+        }
       } catch {
         /* idem */
       }
@@ -226,12 +254,21 @@ export const getMarketSnapshot = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => inputSchema.parse(data))
   .handler(async ({ data }): Promise<Snapshot> => {
     await requireSession(data.sessionToken);
-    const [sellRefRaw, buyRefRaw, crossPlatform, newsResult, dbHistory] = await Promise.all([
-      fetchP2pAds("BUY"), // kompetitor JUAL -> acuan iklan JUAL saya
-      fetchP2pAds("SELL"), // kompetitor BELI -> acuan iklan BELI saya
+    const [crossPlatform, newsResult, dbHistory] = await Promise.all([
       fetchCrossPlatform(),
       fetchNews(),
       loadHistoryFromDb(),
+    ]);
+
+    const dynamicBase =
+      crossPlatform["indodax_usdt_idr_spot"] ||
+      crossPlatform["coingecko_usdt_idr"] ||
+      crossPlatform["forex_usd_idr"] ||
+      17650;
+
+    const [sellRefRaw, buyRefRaw] = await Promise.all([
+      fetchP2pAds("BUY", dynamicBase), // kompetitor JUAL -> acuan iklan JUAL saya
+      fetchP2pAds("SELL", dynamicBase), // kompetitor BELI -> acuan iklan BELI saya
     ]);
 
     // Supabase adalah source of truth kalau sudah dikonfigurasi (persist lintas

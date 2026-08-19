@@ -393,7 +393,7 @@ export function ArbitrageScanner({
           </div>
 
           <span className="rounded bg-surface-2 border border-border px-2.5 py-1 text-xs font-semibold text-primary">
-            Rute: {activeRoute.title}
+            Rute: {activeRoute?.title ?? "P2P Arbitrage"}
           </span>
         </div>
 
@@ -423,17 +423,17 @@ export function ArbitrageScanner({
           </div>
 
           <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Harga Beli Acuan ({activeRoute.buy_platform})</Label>
+            <Label className="text-xs text-muted-foreground">Harga Beli Acuan ({activeRoute?.buy_platform ?? "Platform Beli"})</Label>
             <div className="rounded border border-border bg-surface-2 px-3 py-1.5 text-xs font-bold num text-bid h-8.5 flex items-center">
-              {fmtRp2(activeRoute.buy_price)}
+              {fmtRp2(activeRoute?.buy_price ?? 0)}
             </div>
             <span className="text-[0.65rem] text-muted-foreground">Termasuk fee platform</span>
           </div>
 
           <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Harga Jual Acuan ({activeRoute.sell_platform})</Label>
+            <Label className="text-xs text-muted-foreground">Harga Jual Acuan ({activeRoute?.sell_platform ?? "Platform Jual"})</Label>
             <div className="rounded border border-border bg-surface-2 px-3 py-1.5 text-xs font-bold num text-ask h-8.5 flex items-center">
-              {fmtRp2(activeRoute.sell_price)}
+              {fmtRp2(activeRoute?.sell_price ?? 0)}
             </div>
             <span className="text-[0.65rem] text-muted-foreground">Termasuk fee platform</span>
           </div>
