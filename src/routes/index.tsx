@@ -23,7 +23,10 @@ import {
   PiggyBank,
   Plus,
   RefreshCw,
+  RotateCcw,
+  Settings2,
   ShieldCheck,
+  Sliders,
   TrendingUp,
   Wallet,
   Zap,
@@ -72,6 +75,8 @@ import {
   logTrade,
   normalizeTradePrice,
   parseFlexibleNumber,
+  resetCustomStockCost,
+  setCustomStockCost,
   setInitialCapital,
   updateTrade,
   type TradeSide,
@@ -211,14 +216,19 @@ function Dashboard() {
   const deleteTradeFn = useServerFn(deleteTrade);
   const syncFn = useServerFn(syncBinanceTrades);
   const syncStatusFn = useServerFn(getBinanceSyncStatus);
-  const fundingBalanceFn = useServerFn(getBinanceFundingBalance);
   const setCapitalFn = useServerFn(setInitialCapital);
+  const setCustomCostFn = useServerFn(setCustomStockCost);
+  const resetCustomCostFn = useServerFn(resetCustomStockCost);
   const importCsvFn = useServerFn(importBinanceCsvTrades);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // State Modal Awal (Capital Management)
   const [isEditingCapital, setIsEditingCapital] = useState(false);
   const [capitalInputStr, setCapitalInputStr] = useState("");
+
+  // State Atur & Reset Harga Modal Stok (HPP)
+  const [isEditingStockCost, setIsEditingStockCost] = useState(false);
+  const [stockCostInputStr, setStockCostInputStr] = useState("");
 
   useEffect(() => {
     try {
@@ -333,6 +343,79 @@ function Dashboard() {
     },
     onError: handleAuthError,
   });
+
+  // Mutasi Atur & Reset Harga Modal Stok (HPP)
+  const setStockCostMutation = useMutation({
+    mutationFn: (costIdr: number) =>
+      setCustomCostFn({
+        data: {
+          sessionToken: sessionToken ?? undefined,
+          costIdr,
+        },
+      }),
+    onSuccess: (res) => {
+      pnlQuery.refetch();
+      setIsEditingStockCost(false);
+      if (res.ok) {
+        if (res.costIdr > 0) {
+          toast.success(`Harga modal stok berhasil diatur ke ${fmtRp2(res.costIdr)}/USDT.`);
+        } else {
+          toast.success("Harga modal stok berhasil di-reset ke kalkulasi otomatis (AVCO).");
+        }
+      } else {
+        toast.error("Gagal menyimpan harga modal stok.");
+      }
+    },
+    onError: handleAuthError,
+  });
+
+  const resetStockCostMutation = useMutation({
+    mutationFn: () =>
+      resetCustomCostFn({
+        data: {
+          sessionToken: sessionToken ?? undefined,
+        },
+      }),
+    onSuccess: (res) => {
+      pnlQuery.refetch();
+      setIsEditingStockCost(false);
+      if (res.ok) {
+        toast.success("Harga modal stok berhasil di-reset ke kalkulasi otomatis (AVCO riil).");
+      } else {
+        toast.error("Gagal me-reset harga modal stok.");
+      }
+    },
+    onError: handleAuthError,
+  });
+
+  const handleStartEditStockCost = () => {
+    const current = pnl?.open_position_avg_cost_idr ?? 0;
+    setStockCostInputStr(current > 0 ? String(Math.round(current)) : "");
+    setIsEditingStockCost(true);
+  };
+
+  const handleSaveStockCost = (e: React.FormEvent) => {
+    e.preventDefault();
+    const val = parseFlexibleNumber(stockCostInputStr);
+    if (val <= 0) {
+      resetStockCostMutation.mutate();
+    } else {
+      setStockCostMutation.mutate(val);
+    }
+  };
+
+  const handleResetToAutoCost = () => {
+    resetStockCostMutation.mutate();
+  };
+
+  const handleSetToFairPriceCost = () => {
+    const fair = snapshotQuery.data?.fair_price;
+    if (fair && fair > 0) {
+      setStockCostMutation.mutate(Math.round(fair));
+    } else {
+      toast.error("Nilai wajar pasar belum tersedia.");
+    }
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1299,14 +1382,14 @@ function Dashboard() {
                     if ((fb!.free ?? 0) > 0) parts.push(`Bebas: ${fb!.free!.toLocaleString("id-ID", { maximumFractionDigits: 2 })}`);
                     if ((fb!.locked ?? 0) > 0) parts.push(`Escrow: ${fb!.locked!.toLocaleString("id-ID", { maximumFractionDigits: 2 })}`);
                     if (avgCost > 0) {
-                      parts.push(`Modal: ${fmtRp2(avgCost)}/USDT`);
+                      parts.push(`Modal: ${fmtRp2(avgCost)}/USDT${pnl?.is_custom_stock_cost ? " (Manual)" : ""}`);
                       if (totalCostIdr > 0) parts.push(`(${fmtRp(totalCostIdr)})`);
                     }
                     stockSubvalue = parts.length > 0 ? parts.join(" · ") : (stockUsdt === 0 ? "Stok kosong" : "Semua bebas");
                   } else if (pnl && (pnl.open_position_usdt ?? 0) > 0.001 && avgCost > 0) {
-                    stockSubvalue = `Modal: ${fmtRp2(avgCost)}/USDT · ${fmtRp(totalCostIdr)} total`;
+                    stockSubvalue = `Modal: ${fmtRp2(avgCost)}/USDT${pnl?.is_custom_stock_cost ? " (Manual)" : ""} · ${fmtRp(totalCostIdr)} total`;
                   } else if (avgCost > 0) {
-                    stockSubvalue = `Modal ~${fmtRp2(avgCost)}/USDT · Stok seimbang`;
+                    stockSubvalue = `Modal ~${fmtRp2(avgCost)}/USDT${pnl?.is_custom_stock_cost ? " (Manual)" : ""} · Stok seimbang`;
                   } else {
                     stockSubvalue = "Stok seimbang";
                   }
@@ -1326,16 +1409,195 @@ function Dashboard() {
                       tone="neutral"
                       hint={hint}
                       badge={
-                        useFunding
-                          ? { text: "Live", variant: "bid" }
-                          : fb?.error
-                            ? { text: "API Error", variant: "ask" }
-                            : undefined
+                        pnl?.is_custom_stock_cost
+                          ? { text: "Modal Manual", variant: "primary" }
+                          : useFunding
+                            ? { text: "Live", variant: "bid" }
+                            : fb?.error
+                              ? { text: "API Error", variant: "ask" }
+                              : undefined
+                      }
+                      action={
+                        <div className="flex items-center gap-1">
+                          {pnl?.is_custom_stock_cost && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleResetToAutoCost();
+                              }}
+                              disabled={resetStockCostMutation.isPending}
+                              className="h-6 px-1.5 text-[0.65rem] text-muted-foreground hover:text-foreground gap-1"
+                              title="Reset ke kalkulasi otomatis (AVCO)"
+                            >
+                              <RotateCcw className="size-2.5" />
+                              Reset
+                            </Button>
+                          )}
+                          <Button
+                            size="sm"
+                            variant={isEditingStockCost ? "default" : "outline"}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (isEditingStockCost) {
+                                setIsEditingStockCost(false);
+                              } else {
+                                handleStartEditStockCost();
+                              }
+                            }}
+                            className="h-6 px-2 text-[0.65rem] font-semibold bg-surface-2 hover:bg-surface-3 border-border/80 text-foreground gap-1"
+                          >
+                            <Sliders className="size-2.5" />
+                            {isEditingStockCost ? "Tutup" : (pnl?.is_custom_stock_cost ? "Atur Modal" : "Atur / Reset")}
+                          </Button>
+                        </div>
                       }
                     />
                   );
                 })()}
               </div>
+
+              {/* ── Panel Pengaturan & Reset Harga Modal Stok (HPP) ─────────── */}
+              {isEditingStockCost && (() => {
+                const fb = fundingBalanceQuery.data;
+                const useFunding = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
+                const stockUsdt = useFunding ? fb!.usdt! : (pnl?.open_position_usdt ?? 0);
+                const avgCost = pnl && pnl.open_position_avg_cost_idr > 0 ? pnl.open_position_avg_cost_idr : 0;
+                const totalCostIdr = stockUsdt > 0 && avgCost > 0 ? stockUsdt * avgCost : (pnl?.open_position_total_cost_idr ?? 0);
+
+                return (
+                  <div className="panel p-4.5 border-primary/30 bg-surface-2/60 space-y-4 animate-in fade-in-50">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-3">
+                      <div className="flex items-center gap-2">
+                        <div className="rounded-md bg-primary/15 p-1.5 text-primary border border-primary/30">
+                          <Sliders className="size-4" />
+                        </div>
+                        <div>
+                          <h3 className="text-xs font-bold text-foreground uppercase tracking-wider flex items-center gap-2">
+                            Pengaturan & Reset Harga Modal Stok (HPP)
+                            {pnl?.is_custom_stock_cost ? (
+                              <span className="rounded bg-primary/20 text-primary px-1.5 py-0.5 text-[0.6rem] font-semibold">
+                                Mode Manual Aktif
+                              </span>
+                            ) : (
+                              <span className="rounded bg-surface-3 text-muted-foreground px-1.5 py-0.5 text-[0.6rem] font-semibold">
+                                Mode Otomatis (AVCO)
+                              </span>
+                            )}
+                          </h3>
+                          <p className="text-xs text-muted-foreground">
+                            Tentukan harga modal per USDT secara manual atau reset kembali ke kalkulasi otomatis transaksi riil.
+                          </p>
+                        </div>
+                      </div>
+
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setIsEditingStockCost(false)}
+                        className="h-7 text-xs text-muted-foreground"
+                      >
+                        Tutup
+                      </Button>
+                    </div>
+
+                    {/* 3 Info Metrik Stok & Modal */}
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 text-xs">
+                      <div className="rounded-lg border border-border/70 bg-surface p-3 space-y-1">
+                        <span className="text-[0.65rem] text-muted-foreground uppercase font-semibold">Saldo Stok Aktif</span>
+                        <div className="num font-bold text-foreground text-sm">
+                          {stockUsdt > 0 ? `${stockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT` : "0 USDT"}
+                        </div>
+                        <span className="text-[0.65rem] text-muted-foreground">
+                          {useFunding ? "Sinkron Live Binance Funding Wallet" : "Estimasi Akumulasi Transaksi"}
+                        </span>
+                      </div>
+
+                      <div className="rounded-lg border border-border/70 bg-surface p-3 space-y-1">
+                        <span className="text-[0.65rem] text-muted-foreground uppercase font-semibold">Harga Modal Aktif Saat Ini</span>
+                        <div className="num font-bold text-bid text-sm">
+                          {avgCost > 0 ? fmtRp2(avgCost) : "—"} / USDT
+                        </div>
+                        <span className="text-[0.65rem] text-muted-foreground">
+                          {pnl?.is_custom_stock_cost ? "Nilai manual yang Anda tentukan" : "Rata-rata tertimbang (AVCO riil)"}
+                        </span>
+                      </div>
+
+                      <div className="rounded-lg border border-border/70 bg-surface p-3 space-y-1">
+                        <span className="text-[0.65rem] text-muted-foreground uppercase font-semibold">Total Modal Terikat di Stok</span>
+                        <div className="num font-bold text-foreground text-sm">
+                          {fmtRp(totalCostIdr)}
+                        </div>
+                        <span className="text-[0.65rem] text-muted-foreground">
+                          Stok USDT × Harga Modal Aktif
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Form & Tombol Aksi Cepat */}
+                    <div className="space-y-3 pt-1">
+                      <form onSubmit={handleSaveStockCost} className="flex flex-wrap items-center gap-2.5">
+                        <div className="space-y-1 flex-1 min-w-[240px]">
+                          <Label className="text-xs text-muted-foreground">Input Harga Modal Baru (Rp / USDT):</Label>
+                          <Input
+                            type="text"
+                            placeholder="contoh: 16250 atau 17.650"
+                            value={stockCostInputStr}
+                            onChange={(e) => setStockCostInputStr(e.target.value)}
+                            className="h-8.5 bg-surface text-xs font-bold num"
+                            autoFocus
+                          />
+                        </div>
+
+                        <div className="flex items-end gap-2 pt-5">
+                          <Button
+                            type="submit"
+                            size="sm"
+                            disabled={setStockCostMutation.isPending}
+                            className="h-8.5 text-xs font-semibold px-4"
+                          >
+                            {setStockCostMutation.isPending ? "Menyimpan…" : "Simpan Harga Modal"}
+                          </Button>
+                        </div>
+                      </form>
+
+                      {/* Quick Actions Bar */}
+                      <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border/50">
+                        <span className="text-xs text-muted-foreground font-medium">Aksi Cepat:</span>
+
+                        {/* Tombol Reset ke Otomatis AVCO */}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={handleResetToAutoCost}
+                          disabled={resetStockCostMutation.isPending || !pnl?.is_custom_stock_cost}
+                          className="h-7.5 text-xs gap-1.5 bg-surface hover:bg-surface-3 border-border"
+                        >
+                          <RotateCcw className="size-3 text-primary" />
+                          Reset ke Otomatis AVCO ({pnl?.auto_stock_avg_cost_idr ? fmtRp2(pnl.auto_stock_avg_cost_idr) : "Rp 0"})
+                        </Button>
+
+                        {/* Tombol Set ke Nilai Wajar Pasar */}
+                        {snapshotQuery.data?.fair_price && snapshotQuery.data.fair_price > 0 && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={handleSetToFairPriceCost}
+                            disabled={setStockCostMutation.isPending}
+                            className="h-7.5 text-xs gap-1.5 bg-surface hover:bg-surface-3 border-border"
+                          >
+                            <Zap className="size-3 text-amber-400" />
+                            Set ke Nilai Wajar Pasar ({fmtRp2(snapshotQuery.data.fair_price)})
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Toolbar Aksi */}
               <div className="panel p-3.5 flex flex-wrap items-center justify-between gap-2.5">

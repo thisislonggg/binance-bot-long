@@ -130,6 +130,12 @@ export type PnlSummary = {
   open_position_avg_cost_idr: number;
   /** Nilai IDR total stok yang belum terjual, dihitung dari HPP (termasuk fee beli). */
   open_position_total_cost_idr: number;
+  /** Harga modal rata-rata otomatis dari kalkulasi AVCO transaksi */
+  auto_stock_avg_cost_idr: number;
+  /** Harga modal kustom jika pengguna mengatur manual / override */
+  custom_stock_cost_idr: number;
+  /** True jika pengguna sedang memakai harga modal manual */
+  is_custom_stock_cost: boolean;
   /** Modal awal yang diinput pengguna (IDR) */
   initial_capital_idr: number;
   /** Sisa kas/fiat IDR yang belum terpakai untuk beli stok */
@@ -169,6 +175,9 @@ const EMPTY_SUMMARY: PnlSummary = {
   open_position_usdt: 0,
   open_position_avg_cost_idr: 0,
   open_position_total_cost_idr: 0,
+  auto_stock_avg_cost_idr: 0,
+  custom_stock_cost_idr: 0,
+  is_custom_stock_cost: false,
   initial_capital_idr: 0,
   free_cash_idr: 0,
   total_equity_idr: 0,
@@ -186,7 +195,8 @@ const EMPTY_SUMMARY: PnlSummary = {
   recent_trades: [],
 };
 
-const INITIAL_CAPITAL_KEY = "initial_capital_idr";
+export const INITIAL_CAPITAL_KEY = "initial_capital_idr";
+export const CUSTOM_STOCK_COST_KEY = "custom_stock_cost_idr";
 
 const getCapitalInputSchema = z.object({ sessionToken: z.string().optional() });
 
@@ -223,6 +233,42 @@ export const setInitialCapital = createServerFn({ method: "POST" })
         { onConflict: "key" },
       );
     return { ok: !error, initial_capital_idr: data.initialCapitalIdr };
+  });
+
+const setCustomCostSchema = z.object({
+  sessionToken: z.string().optional(),
+  costIdr: z.number().nonnegative(),
+});
+
+export const setCustomStockCost = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => setCustomCostSchema.parse(data))
+  .handler(async ({ data }): Promise<{ ok: boolean; costIdr: number }> => {
+    await requireSession(data.sessionToken);
+    const db = getSupabase();
+    if (!db) return { ok: false, costIdr: data.costIdr };
+
+    if (data.costIdr <= 0) {
+      await db.from("user_settings").delete().eq("key", CUSTOM_STOCK_COST_KEY);
+      return { ok: true, costIdr: 0 };
+    }
+
+    const { error } = await db
+      .from("user_settings")
+      .upsert(
+        { key: CUSTOM_STOCK_COST_KEY, value: String(data.costIdr) } as any,
+        { onConflict: "key" },
+      );
+    return { ok: !error, costIdr: data.costIdr };
+  });
+
+export const resetCustomStockCost = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => getCapitalInputSchema.parse(data))
+  .handler(async ({ data }): Promise<{ ok: boolean }> => {
+    await requireSession(data.sessionToken);
+    const db = getSupabase();
+    if (!db) return { ok: false };
+    const { error } = await db.from("user_settings").delete().eq("key", CUSTOM_STOCK_COST_KEY);
+    return { ok: !error };
   });
 
 const logTradeSchema = z.object({
@@ -497,9 +543,21 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       }
     }
 
-    // ── Sisa Stok & Modal (Open Position) dari AVCO ───────────────────────────
+    // ── Ambil Custom Harga Modal (HPP Override) dari user_settings jika diatur pengguna ──
+    let customStockCostIdr = 0;
+    const { data: costRow } = await db
+      .from("user_settings")
+      .select("value")
+      .eq("key", CUSTOM_STOCK_COST_KEY)
+      .maybeSingle();
+    const parsedCustomCost = parseFlexibleNumber((costRow as any)?.value);
+    if (parsedCustomCost > 0) customStockCostIdr = parsedCustomCost;
+
+    // ── Sisa Stok & Modal (Open Position) dari AVCO / Override ─────────────────
     const openAmount = Math.max(0, inventory);
-    const openAvgHpp = avgHpp > 0 ? avgHpp : (lastBuyHpp > 0 ? lastBuyHpp : 0);
+    const autoAvgHpp = avgHpp > 0 ? avgHpp : (lastBuyHpp > 0 ? lastBuyHpp : 0);
+    const isCustomCost = customStockCostIdr > 0;
+    const openAvgHpp = isCustomCost ? customStockCostIdr : autoAvgHpp;
     const openTotalCostIdr = openAmount * openAvgHpp;
     const avgBuyPrice = totalBuy > 0 ? totalBuyIdr / totalBuy : 0;
     const avgSellPrice = totalSell > 0 ? totalSellIdr / totalSell : 0;
@@ -544,8 +602,11 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       today_fees_idr: todayFeesIdr,
       total_fees_idr: totalFeesIdr,
       open_position_usdt: openAmount,
-      open_position_avg_cost_idr: openAvgHpp,        // HPP per USDT (termasuk fee beli)
-      open_position_total_cost_idr: openTotalCostIdr, // Nilai IDR total stok
+      open_position_avg_cost_idr: openAvgHpp,        // HPP per USDT aktif (manual / auto)
+      open_position_total_cost_idr: openTotalCostIdr, // Nilai IDR total stok aktif
+      auto_stock_avg_cost_idr: autoAvgHpp,          // HPP per USDT dari AVCO otomatis
+      custom_stock_cost_idr: customStockCostIdr,    // Nilai override jika ada
+      is_custom_stock_cost: isCustomCost,           // Flag apakah sedang override manual
       initial_capital_idr: initialCapitalIdr,
       free_cash_idr: freeCashIdr,
       total_equity_idr: totalEquityIdr,
@@ -562,6 +623,7 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       total_trades_count: rawTrades.length,
       recent_trades: normalizedTrades.slice().reverse(),
     };
+
   },
 );
 
