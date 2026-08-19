@@ -580,7 +580,112 @@ export const importBinanceCsvTrades = createServerFn({ method: "POST" })
     };
   });
 
+// ── Funding Wallet Balance (Sisa Stok Real-time) ────────────────────────────
+
+/**
+ * Ambil saldo USDT di Funding Wallet Binance secara real-time.
+ *
+ * Endpoint: POST /sapi/v1/asset/get-funding-asset
+ * Izin API: "Enable Reading" sudah cukup.
+ *
+ * Funding Wallet adalah dompet yang digunakan untuk P2P:
+ *   - BELI USDT P2P → USDT masuk ke Funding Wallet
+ *   - JUAL USDT P2P → USDT keluar dari Funding Wallet
+ *
+ * Dengan membaca saldo ini, "Sisa Stok" di dashboard menjadi 100% akurat
+ * tanpa perlu mengandalkan kalkulasi LIFO dari riwayat transaksi.
+ */
+
+const BINANCE_FUNDING_URL = "https://api.binance.com/sapi/v1/asset/get-funding-asset";
+
+type FundingAsset = {
+  asset: string;
+  free: string;
+  locked: string;
+  freeze: string;
+  withdrawing: string;
+  btcValuation?: string;
+};
 
 
+export type FundingBalance = {
+  /** Saldo USDT di Funding Wallet. null jika API tidak dikonfigurasi atau error. */
+  usdt: number | null;
+  /**
+   * Rincian: USDT bebas digunakan, USDT terkunci di order P2P aktif,
+   * total = free + locked + freeze
+   */
+  free: number | null;
+  locked: number | null;
+  error?: string;
+  not_configured?: boolean;
+};
 
+const fundingBalanceInputSchema = z.object({ sessionToken: z.string().optional() });
 
+export const getBinanceFundingBalance = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => fundingBalanceInputSchema.parse(data))
+  .handler(async ({ data }): Promise<FundingBalance> => {
+    await requireSession(data.sessionToken);
+
+    const apiKey = process.env["BINANCE_API_KEY"]?.trim();
+    const apiSecret = process.env["BINANCE_API_SECRET"]?.trim();
+
+    if (
+      !apiKey ||
+      !apiSecret ||
+      apiKey === "your_binance_api_key_here" ||
+      apiSecret === "your_binance_api_secret_here"
+    ) {
+      return { usdt: null, free: null, locked: null, not_configured: true };
+    }
+
+    try {
+      const timestamp = Date.now();
+      const params = `asset=USDT&timestamp=${timestamp}&recvWindow=10000`;
+      const signature = createHmac("sha256", apiSecret).update(params).digest("hex");
+      const url = `${BINANCE_FUNDING_URL}?${params}&signature=${signature}`;
+
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "X-MBX-APIKEY": apiKey },
+      });
+
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        return {
+          usdt: null,
+          free: null,
+          locked: null,
+          error: `HTTP ${resp.status}: ${body.slice(0, 200)}`,
+        };
+      }
+
+      const json = await resp.json() as FundingAsset[];
+      if (!Array.isArray(json)) {
+        return { usdt: null, free: null, locked: null, error: "Respons API tidak diharapkan" };
+      }
+
+      const usdtAsset = json.find((a) => a.asset === "USDT");
+      if (!usdtAsset) {
+        // Tidak ada USDT di Funding Wallet (saldo 0)
+        return { usdt: 0, free: 0, locked: 0 };
+      }
+
+      const free = parseFloat(usdtAsset.free) || 0;
+      const locked = parseFloat(usdtAsset.locked) || 0;
+      const freeze = parseFloat(usdtAsset.freeze) || 0;
+      return {
+        usdt: free + locked + freeze,
+        free,
+        locked,
+      };
+    } catch (err) {
+      return {
+        usdt: null,
+        free: null,
+        locked: null,
+        error: String(err),
+      };
+    }
+  });

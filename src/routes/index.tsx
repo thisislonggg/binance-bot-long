@@ -51,9 +51,11 @@ import {
 } from "@/lib/p2p-engine";
 import { login } from "@/lib/auth";
 import {
+  getBinanceFundingBalance,
   getBinanceSyncStatus,
   importBinanceCsvTrades,
   syncBinanceTrades,
+  type FundingBalance,
   type SyncResult,
 } from "@/lib/binance-sync";
 import { getMarketSnapshot } from "@/lib/p2p.functions";
@@ -193,6 +195,7 @@ function Dashboard() {
   const deleteTradeFn = useServerFn(deleteTrade);
   const syncFn = useServerFn(syncBinanceTrades);
   const syncStatusFn = useServerFn(getBinanceSyncStatus);
+  const fundingBalanceFn = useServerFn(getBinanceFundingBalance);
   const importCsvFn = useServerFn(importBinanceCsvTrades);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -249,6 +252,15 @@ function Dashboard() {
     queryFn: () => syncStatusFn({ data: { sessionToken: sessionToken ?? undefined } }),
     enabled: Boolean(sessionToken),
     staleTime: 60_000,
+  });
+
+  // Query Saldo Funding Wallet (real-time, poll setiap 30 detik)
+  const fundingBalanceQuery = useQuery({
+    queryKey: ["binance-funding-balance"],
+    queryFn: () => fundingBalanceFn({ data: { sessionToken: sessionToken ?? undefined } }),
+    enabled: Boolean(sessionToken) && Boolean(syncStatusQuery.data?.available),
+    refetchInterval: 30_000,
+    staleTime: 20_000,
   });
 
   // Mutasi Sync Binance API
@@ -860,23 +872,60 @@ function Dashboard() {
                   hint="Laba bersih setelah fee"
                 />
 
-                <StatCard
-                  label="Sisa Stok USDT"
-                  value={pnl ? `${pnl.open_position_usdt.toLocaleString("id-ID", { maximumFractionDigits: 1 })} USDT` : "—"}
-                  subvalue={
-                    pnl && pnl.open_position_usdt > 0.001
-                      ? `Modal: ${fmtRp2(pnl.open_position_avg_cost_idr)}/USDT · ${fmtRp(pnl.open_position_total_cost_idr)} total`
-                      : "Stok seimbang"
+                {/* ── Sisa Stok: gunakan Funding Wallet jika API aktif, LIFO sebagai fallback ── */}
+                {(() => {
+                  const fb = fundingBalanceQuery.data;
+                  const useFunding = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
+                  const stockUsdt = useFunding ? fb!.usdt! : (pnl?.open_position_usdt ?? null);
+                  const stockLabel = useFunding ? "Saldo Funding" : "Sisa Stok (estimasi)";
+                  const stockValue =
+                    stockUsdt !== null
+                      ? `${stockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT`
+                      : "—";
+
+                  // Subvalue: untuk Funding = rincian free/locked, untuk LIFO = harga modal
+                  let stockSubvalue: string;
+                  if (useFunding) {
+                    const parts: string[] = [];
+                    if ((fb!.free ?? 0) > 0) parts.push(`Bebas: ${fb!.free!.toLocaleString("id-ID", { maximumFractionDigits: 2 })}`);
+                    if ((fb!.locked ?? 0) > 0) parts.push(`Escrow: ${fb!.locked!.toLocaleString("id-ID", { maximumFractionDigits: 2 })}`);
+                    if (parts.length > 0) {
+                      stockSubvalue = parts.join(" · ");
+                    } else {
+                      stockSubvalue = stockUsdt === 0 ? "Stok kosong" : "Semua bebas";
+                    }
+                    // Tambah HPP dari kalkulasi LIFO sebagai konteks harga modal
+                    if (pnl && (pnl.open_position_avg_cost_idr > 0)) {
+                      stockSubvalue += ` · Modal ~${fmtRp2(pnl.open_position_avg_cost_idr)}/USDT`;
+                    }
+                  } else if (pnl && (pnl.open_position_usdt ?? 0) > 0.001) {
+                    stockSubvalue = `Modal: ${fmtRp2(pnl.open_position_avg_cost_idr)}/USDT · ${fmtRp(pnl.open_position_total_cost_idr)} total`;
+                  } else {
+                    stockSubvalue = "Stok seimbang";
                   }
-                  tone="neutral"
-                  hint={
-                    pnl && pnl.open_position_usdt > 0.001
-                      ? `HPP sudah termasuk fee beli 0.08% · Margin avg: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT`
-                      : pnl
-                        ? `Margin avg: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT`
-                        : undefined
-                  }
-                />
+
+                  // Hint: info fee
+                  const hintFee = `Fee beli 0.08% + jual 0.08% = 0.16% / putaran`;
+                  const hintProfit = pnl ? `Margin avg bersih: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT` : "";
+                  const hint = pnl ? `${hintFee} · ${hintProfit}` : hintFee;
+
+                  return (
+                    <StatCard
+                      label={stockLabel}
+                      value={stockValue}
+                      subvalue={stockSubvalue}
+                      tone="neutral"
+                      hint={hint}
+                      badge={
+                        useFunding
+                          ? { text: "Live", variant: "bid" }
+                          : fb?.error
+                            ? { text: "API Error", variant: "ask" }
+                            : undefined
+                      }
+                    />
+                  );
+                })()}
               </div>
 
               {/* Toolbar Aksi */}
