@@ -289,7 +289,7 @@ function Dashboard() {
   const fundingBalanceQuery = useQuery({
     queryKey: ["binance-funding-balance"],
     queryFn: () => fundingBalanceFn({ data: { sessionToken: sessionToken ?? undefined } }),
-    enabled: Boolean(sessionToken) && Boolean(syncStatusQuery.data?.available),
+    enabled: Boolean(sessionToken),
     refetchInterval: 30_000,
     staleTime: 20_000,
   });
@@ -1142,11 +1142,11 @@ function Dashboard() {
               {(() => {
                 const initialCapital = pnl?.initial_capital_idr ?? 0;
                 const fb = fundingBalanceQuery.data;
-                // Stok selalu bersumber dari Live Funding Wallet Binance
-                const stockUsdt = (fb && fb.usdt !== null && !fb.error) ? fb.usdt : 0;
+                const isFundingLive = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
+                const stockUsdt = isFundingLive ? fb!.usdt! : (pnl?.open_position_usdt ?? 0);
                 const avgCost = pnl && pnl.open_position_avg_cost_idr > 0 ? pnl.open_position_avg_cost_idr : 0;
 
-                // Modal terikat di stok = saldo funding live * HPP modal rata-rata
+                // Modal terikat di stok = saldo funding live (atau akumulasi) * HPP modal rata-rata
                 const stockCapitalIdr = stockUsdt > 0 && avgCost > 0 ? stockUsdt * avgCost : 0;
                 const allTimeProfit = pnl?.all_time_profit_idr ?? 0;
 
@@ -1359,12 +1359,12 @@ function Dashboard() {
                   hint="Laba bersih setelah fee"
                 />
 
-                {/* ── Sisa Stok & Modal: Selalu Live Funding Wallet Binance ── */}
+                {/* ── Sisa Stok & Modal: Live Funding Wallet Binance / Akumulasi ── */}
                 {(() => {
                   const fb = fundingBalanceQuery.data;
-                  // Stok USDT selalu bersumber langsung dari saldo Live Funding Wallet Binance
-                  const stockUsdt = (fb && fb.usdt !== null && !fb.error) ? fb.usdt : 0;
-                  const stockLabel = "Saldo Funding (Stok)";
+                  const isFundingLive = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
+                  const stockUsdt = isFundingLive ? fb!.usdt! : (pnl?.open_position_usdt ?? 0);
+                  const stockLabel = isFundingLive ? "Saldo Funding (Stok)" : "Saldo Stok (USDT)";
                   const stockValue = `${stockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT`;
 
                   const avgCost = pnl && pnl.open_position_avg_cost_idr > 0 ? pnl.open_position_avg_cost_idr : 0;
@@ -1372,13 +1372,17 @@ function Dashboard() {
 
                   // Subvalue: rincian saldo live funding (bebas & escrow) & modal HPP
                   const parts: string[] = [];
-                  if (fb && (fb.free ?? 0) > 0) parts.push(`Bebas: ${fb.free!.toLocaleString("id-ID", { maximumFractionDigits: 2 })}`);
-                  if (fb && (fb.locked ?? 0) > 0) parts.push(`Escrow: ${fb.locked!.toLocaleString("id-ID", { maximumFractionDigits: 2 })}`);
+                  if (isFundingLive) {
+                    if ((fb!.free ?? 0) > 0) parts.push(`Bebas: ${fb!.free!.toLocaleString("id-ID", { maximumFractionDigits: 2 })}`);
+                    if ((fb!.locked ?? 0) > 0) parts.push(`Escrow: ${fb!.locked!.toLocaleString("id-ID", { maximumFractionDigits: 2 })}`);
+                  }
                   if (avgCost > 0) {
                     parts.push(`Modal: ${fmtRp2(avgCost)}/USDT${pnl?.is_custom_stock_cost ? " (Manual)" : ""}`);
                     if (totalCostIdr > 0) parts.push(`(${fmtRp(totalCostIdr)})`);
                   }
-                  const stockSubvalue = parts.length > 0 ? parts.join(" · ") : (stockUsdt === 0 ? "Stok kosong" : "Live Funding");
+                  const stockSubvalue = parts.length > 0
+                    ? parts.join(" · ")
+                    : (stockUsdt === 0 ? "Stok kosong" : (isFundingLive ? "Live Funding" : "Stok tercatat"));
 
                   // Hint: info fee & margin
                   const hintFee = `Fee beli 0.08% + jual 0.08% = 0.16% / putaran`;
@@ -1397,7 +1401,9 @@ function Dashboard() {
                       badge={
                         pnl?.is_custom_stock_cost
                           ? { text: "Modal Manual", variant: "primary" }
-                          : { text: "Live", variant: "bid" }
+                          : isFundingLive
+                            ? { text: "Live", variant: "bid" }
+                            : undefined
                       }
                       action={
                         <div className="flex items-center gap-1">
@@ -1443,7 +1449,8 @@ function Dashboard() {
               {/* ── Panel Pengaturan & Reset Harga Modal Stok (HPP) ─────────── */}
               {isEditingStockCost && (() => {
                 const fb = fundingBalanceQuery.data;
-                const stockUsdt = (fb && fb.usdt !== null && !fb.error) ? fb.usdt : 0;
+                const isFundingLive = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
+                const stockUsdt = isFundingLive ? fb!.usdt! : (pnl?.open_position_usdt ?? 0);
                 const avgCost = pnl && pnl.open_position_avg_cost_idr > 0 ? pnl.open_position_avg_cost_idr : 0;
                 const totalCostIdr = stockUsdt > 0 && avgCost > 0 ? stockUsdt * avgCost : 0;
 
@@ -1491,7 +1498,7 @@ function Dashboard() {
                           {stockUsdt > 0 ? `${stockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT` : "0 USDT"}
                         </div>
                         <span className="text-[0.65rem] text-muted-foreground">
-                          {useFunding ? "Sinkron Live Binance Funding Wallet" : "Estimasi Akumulasi Transaksi"}
+                          {isFundingLive ? "Sinkron Live Binance Funding Wallet" : "Estimasi Akumulasi Transaksi"}
                         </span>
                       </div>
 
@@ -1515,6 +1522,7 @@ function Dashboard() {
                         </span>
                       </div>
                     </div>
+
 
                     {/* Form & Tombol Aksi Cepat */}
                     <div className="space-y-3 pt-1">

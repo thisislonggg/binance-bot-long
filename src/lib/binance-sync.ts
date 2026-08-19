@@ -645,13 +645,16 @@ export const getBinanceFundingBalance = createServerFn({ method: "POST" })
 
     try {
       const timestamp = Date.now();
-      const params = `asset=USDT&timestamp=${timestamp}&recvWindow=10000`;
+      const params = `asset=USDT&timestamp=${timestamp}&recvWindow=60000`;
       const signature = createHmac("sha256", apiSecret).update(params).digest("hex");
       const url = `${BINANCE_FUNDING_URL}?${params}&signature=${signature}`;
 
       const resp = await fetch(url, {
         method: "POST",
-        headers: { "X-MBX-APIKEY": apiKey },
+        headers: {
+          "X-MBX-APIKEY": apiKey,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
       });
 
       if (!resp.ok) {
@@ -664,24 +667,27 @@ export const getBinanceFundingBalance = createServerFn({ method: "POST" })
         };
       }
 
-      const json = await resp.json() as FundingAsset[];
+      const json = (await resp.json()) as FundingAsset[];
       if (!Array.isArray(json)) {
         return { usdt: null, free: null, locked: null, error: "Respons API tidak diharapkan" };
       }
 
-      const usdtAsset = json.find((a) => a.asset === "USDT");
+      const usdtAsset = json.find((a) => a.asset?.toUpperCase() === "USDT");
       if (!usdtAsset) {
-        // Tidak ada USDT di Funding Wallet (saldo 0)
+        // Jika tidak ada USDT di Funding Wallet (saldo 0)
         return { usdt: 0, free: 0, locked: 0 };
       }
 
       const free = parseFloat(usdtAsset.free) || 0;
       const locked = parseFloat(usdtAsset.locked) || 0;
       const freeze = parseFloat(usdtAsset.freeze) || 0;
+      const withdrawing = parseFloat(usdtAsset.withdrawing) || 0;
+      const total = free + locked + freeze + withdrawing;
+
       return {
-        usdt: free + locked + freeze,
+        usdt: total,
         free,
-        locked,
+        locked: locked + freeze + withdrawing,
       };
     } catch (err) {
       return {
@@ -692,3 +698,4 @@ export const getBinanceFundingBalance = createServerFn({ method: "POST" })
       };
     }
   });
+
