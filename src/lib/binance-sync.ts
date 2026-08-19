@@ -19,6 +19,7 @@ import { createHmac } from "crypto";
 import { z } from "zod";
 
 import { requireSession } from "./auth";
+import { normalizeTradePrice, parseFlexibleNumber } from "./pnl";
 import { getSupabase } from "./supabase";
 
 const DEFAULT_BINANCE_URL = "https://api.binance.com/sapi/v1/c2c/orderMatch/listUserOrderHistory";
@@ -227,12 +228,13 @@ export async function executeBinanceSync(
       const orderNo = String(order.orderNumber || order.advNo || "");
       if (!orderNo) continue;
 
-      const amountUsdt = Number(order.amount || order.cryptoAmount || order.quantity);
-      const totalPrice = Number(order.totalPrice || order.fiatAmount || order.amountIdr);
-      let unitPrice = Number(order.unitPrice || order.price);
+      const amountUsdt = parseFlexibleNumber(order.amount ?? order.cryptoAmount ?? order.quantity);
+      const totalPrice = parseFlexibleNumber(order.totalPrice ?? order.fiatAmount ?? order.amountIdr);
+      let unitPrice = parseFlexibleNumber(order.unitPrice ?? order.price);
       if ((!Number.isFinite(unitPrice) || unitPrice <= 0) && totalPrice > 0 && amountUsdt > 0) {
         unitPrice = totalPrice / amountUsdt;
       }
+      unitPrice = normalizeTradePrice(unitPrice);
 
       if (!Number.isFinite(amountUsdt) || amountUsdt <= 0 || !Number.isFinite(unitPrice) || unitPrice <= 0) {
         continue;
@@ -503,38 +505,39 @@ export const importBinanceCsvTrades = createServerFn({ method: "POST" })
         continue;
       }
 
-      const amountStr = findVal(row, [
+      const rawAmount = findVal(row, [
         "amount",
         "cryptoamount",
         "quantity",
         "jumlahkripto",
         "jumlah",
         "totalquantity",
-      ]).replace(/,/g, "");
-      const amountUsdt = parseFloat(amountStr);
+      ]);
+      const amountUsdt = parseFlexibleNumber(rawAmount);
 
-      const totalStr = findVal(row, [
+      const rawTotal = findVal(row, [
         "totalprice",
         "fiatamount",
         "totalharga",
         "totalfiat",
         "fiat",
         "amountidr",
-      ]).replace(/,/g, "");
-      const totalPrice = parseFloat(totalStr);
+      ]);
+      const totalPrice = parseFlexibleNumber(rawTotal);
 
-      const priceStr = findVal(row, [
+      const rawPrice = findVal(row, [
         "unitprice",
         "price",
         "hargasatuan",
         "harga",
         "rate",
-      ]).replace(/,/g, "");
-      let unitPrice = parseFloat(priceStr);
+      ]);
+      let unitPrice = parseFlexibleNumber(rawPrice);
 
       if ((!Number.isFinite(unitPrice) || unitPrice <= 0) && totalPrice > 0 && amountUsdt > 0) {
         unitPrice = totalPrice / amountUsdt;
       }
+      unitPrice = normalizeTradePrice(unitPrice);
 
       if (!Number.isFinite(amountUsdt) || amountUsdt <= 0 || !Number.isFinite(unitPrice) || unitPrice <= 0) {
         skipped++;

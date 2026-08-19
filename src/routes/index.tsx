@@ -59,7 +59,15 @@ import {
   type SyncResult,
 } from "@/lib/binance-sync";
 import { getMarketSnapshot } from "@/lib/p2p.functions";
-import { deleteTrade, getPnlSummary, logTrade, updateTrade, type TradeSide } from "@/lib/pnl";
+import {
+  deleteTrade,
+  getPnlSummary,
+  logTrade,
+  normalizeTradePrice,
+  parseFlexibleNumber,
+  updateTrade,
+  type TradeSide,
+} from "@/lib/pnl";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -450,8 +458,9 @@ function Dashboard() {
 
   const handleTradeSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const p = parseFloat(tradePrice);
-    const a = parseFloat(tradeAmount);
+    const rawP = parseFlexibleNumber(tradePrice);
+    const a = parseFlexibleNumber(tradeAmount);
+    const p = normalizeTradePrice(rawP);
     if (!Number.isFinite(p) || p <= 0) {
       toast.error("Harga harus berupa angka positif.");
       return;
@@ -872,42 +881,47 @@ function Dashboard() {
                   hint="Laba bersih setelah fee"
                 />
 
-                {/* ── Sisa Stok: gunakan Funding Wallet jika API aktif, LIFO sebagai fallback ── */}
+                {/* ── Sisa Stok & Modal: sinkron dengan Funding Wallet jika API aktif, AVCO sebagai fallback ── */}
                 {(() => {
                   const fb = fundingBalanceQuery.data;
                   const useFunding = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
                   const stockUsdt = useFunding ? fb!.usdt! : (pnl?.open_position_usdt ?? null);
-                  const stockLabel = useFunding ? "Saldo Funding" : "Sisa Stok (estimasi)";
+                  const stockLabel = useFunding ? "Saldo Funding (Stok)" : "Sisa Stok (estimasi)";
                   const stockValue =
                     stockUsdt !== null
                       ? `${stockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT`
                       : "—";
 
-                  // Subvalue: untuk Funding = rincian free/locked, untuk LIFO = harga modal
+                  const avgCost = pnl && pnl.open_position_avg_cost_idr > 0 ? pnl.open_position_avg_cost_idr : 0;
+                  const totalCostIdr = stockUsdt !== null && avgCost > 0
+                    ? stockUsdt * avgCost
+                    : (pnl?.open_position_total_cost_idr ?? 0);
+
+                  // Subvalue: rincian modal & status inventaris
                   let stockSubvalue: string;
                   if (useFunding) {
                     const parts: string[] = [];
                     if ((fb!.free ?? 0) > 0) parts.push(`Bebas: ${fb!.free!.toLocaleString("id-ID", { maximumFractionDigits: 2 })}`);
                     if ((fb!.locked ?? 0) > 0) parts.push(`Escrow: ${fb!.locked!.toLocaleString("id-ID", { maximumFractionDigits: 2 })}`);
-                    if (parts.length > 0) {
-                      stockSubvalue = parts.join(" · ");
-                    } else {
-                      stockSubvalue = stockUsdt === 0 ? "Stok kosong" : "Semua bebas";
+                    if (avgCost > 0) {
+                      parts.push(`Modal: ${fmtRp2(avgCost)}/USDT`);
+                      if (totalCostIdr > 0) parts.push(`(${fmtRp(totalCostIdr)})`);
                     }
-                    // Tambah HPP dari kalkulasi LIFO sebagai konteks harga modal
-                    if (pnl && (pnl.open_position_avg_cost_idr > 0)) {
-                      stockSubvalue += ` · Modal ~${fmtRp2(pnl.open_position_avg_cost_idr)}/USDT`;
-                    }
-                  } else if (pnl && (pnl.open_position_usdt ?? 0) > 0.001) {
-                    stockSubvalue = `Modal: ${fmtRp2(pnl.open_position_avg_cost_idr)}/USDT · ${fmtRp(pnl.open_position_total_cost_idr)} total`;
+                    stockSubvalue = parts.length > 0 ? parts.join(" · ") : (stockUsdt === 0 ? "Stok kosong" : "Semua bebas");
+                  } else if (pnl && (pnl.open_position_usdt ?? 0) > 0.001 && avgCost > 0) {
+                    stockSubvalue = `Modal: ${fmtRp2(avgCost)}/USDT · ${fmtRp(totalCostIdr)} total`;
+                  } else if (avgCost > 0) {
+                    stockSubvalue = `Modal ~${fmtRp2(avgCost)}/USDT · Stok seimbang`;
                   } else {
                     stockSubvalue = "Stok seimbang";
                   }
 
-                  // Hint: info fee
+                  // Hint: info fee & margin
                   const hintFee = `Fee beli 0.08% + jual 0.08% = 0.16% / putaran`;
-                  const hintProfit = pnl ? `Margin avg bersih: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT` : "";
-                  const hint = pnl ? `${hintFee} · ${hintProfit}` : hintFee;
+                  const hintProfit = pnl && pnl.avg_profit_per_usdt_idr !== 0
+                    ? `Margin avg: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT`
+                    : "";
+                  const hint = hintProfit ? `${hintFee} · ${hintProfit}` : hintFee;
 
                   return (
                     <StatCard
@@ -1036,8 +1050,8 @@ function Dashboard() {
                     <div>
                       <Label className="text-[0.7rem] text-muted-foreground">Harga (IDR)</Label>
                       <Input
-                        type="number"
-                        placeholder="contoh: 17820"
+                        type="text"
+                        placeholder="contoh: 16250 atau 16.250"
                         value={tradePrice}
                         onChange={(e) => setTradePrice(e.target.value)}
                         className="mt-1 bg-surface-2 text-xs h-8"
@@ -1047,8 +1061,8 @@ function Dashboard() {
                     <div>
                       <Label className="text-[0.7rem] text-muted-foreground">Jumlah (USDT)</Label>
                       <Input
-                        type="number"
-                        placeholder="contoh: 1000"
+                        type="text"
+                        placeholder="contoh: 1000 atau 500.5"
                         value={tradeAmount}
                         onChange={(e) => setTradeAmount(e.target.value)}
                         className="mt-1 bg-surface-2 text-xs h-8"

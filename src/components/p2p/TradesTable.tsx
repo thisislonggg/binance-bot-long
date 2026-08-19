@@ -1,8 +1,8 @@
 import { ChevronLeft, ChevronRight, Pencil, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { fmtRp2 } from "@/lib/p2p-engine";
-import type { Trade } from "@/lib/pnl";
+import { fmtRp, fmtRp2 } from "@/lib/p2p-engine";
+import { normalizeTradePrice, type Trade } from "@/lib/pnl";
 import { cn } from "@/lib/utils";
 
 export function TradesTable({
@@ -209,8 +209,13 @@ export function TradesTable({
                       {t.side === "buy" ? "Beli" : "Jual"}
                     </span>
                   </td>
-                  <td className="num py-2.5 pr-3 text-right font-semibold text-foreground/90">
-                    {fmtRp2(t.price)}
+                  <td className="num py-2.5 pr-3 text-right">
+                    <div className="font-semibold text-foreground/90">
+                      {fmtRp2(normalizeTradePrice(t.price))}
+                    </div>
+                    <div className="text-[0.68rem] text-muted-foreground">
+                      {fmtRp(normalizeTradePrice(t.price) * t.amount_usdt)}
+                    </div>
                   </td>
                   <td className="num py-2.5 pr-3 text-right text-foreground/85">
                     {t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
