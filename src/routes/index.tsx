@@ -1142,12 +1142,12 @@ function Dashboard() {
               {(() => {
                 const initialCapital = pnl?.initial_capital_idr ?? 0;
                 const fb = fundingBalanceQuery.data;
-                const useFunding = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
-                const stockUsdt = useFunding ? fb!.usdt! : (pnl?.open_position_usdt ?? 0);
+                // Stok selalu bersumber dari Live Funding Wallet Binance
+                const stockUsdt = (fb && fb.usdt !== null && !fb.error) ? fb.usdt : 0;
                 const avgCost = pnl && pnl.open_position_avg_cost_idr > 0 ? pnl.open_position_avg_cost_idr : 0;
 
-                // Modal terikat di stok = stok USDT * HPP modal rata-rata
-                const stockCapitalIdr = stockUsdt > 0 && avgCost > 0 ? stockUsdt * avgCost : (pnl?.open_position_total_cost_idr ?? 0);
+                // Modal terikat di stok = saldo funding live * HPP modal rata-rata
+                const stockCapitalIdr = stockUsdt > 0 && avgCost > 0 ? stockUsdt * avgCost : 0;
                 const allTimeProfit = pnl?.all_time_profit_idr ?? 0;
 
                 // Sisa Kas Bebas = Modal Awal - Modal di Stok + Keuntungan Realisasi
@@ -1359,40 +1359,26 @@ function Dashboard() {
                   hint="Laba bersih setelah fee"
                 />
 
-                {/* ── Sisa Stok & Modal: sinkron dengan Funding Wallet jika API aktif, AVCO sebagai fallback ── */}
+                {/* ── Sisa Stok & Modal: Selalu Live Funding Wallet Binance ── */}
                 {(() => {
                   const fb = fundingBalanceQuery.data;
-                  const useFunding = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
-                  const stockUsdt = useFunding ? fb!.usdt! : (pnl?.open_position_usdt ?? null);
-                  const stockLabel = useFunding ? "Saldo Funding (Stok)" : "Sisa Stok (estimasi)";
-                  const stockValue =
-                    stockUsdt !== null
-                      ? `${stockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT`
-                      : "—";
+                  // Stok USDT selalu bersumber langsung dari saldo Live Funding Wallet Binance
+                  const stockUsdt = (fb && fb.usdt !== null && !fb.error) ? fb.usdt : 0;
+                  const stockLabel = "Saldo Funding (Stok)";
+                  const stockValue = `${stockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT`;
 
                   const avgCost = pnl && pnl.open_position_avg_cost_idr > 0 ? pnl.open_position_avg_cost_idr : 0;
-                  const totalCostIdr = stockUsdt !== null && avgCost > 0
-                    ? stockUsdt * avgCost
-                    : (pnl?.open_position_total_cost_idr ?? 0);
+                  const totalCostIdr = stockUsdt > 0 && avgCost > 0 ? stockUsdt * avgCost : 0;
 
-                  // Subvalue: rincian modal & status inventaris
-                  let stockSubvalue: string;
-                  if (useFunding) {
-                    const parts: string[] = [];
-                    if ((fb!.free ?? 0) > 0) parts.push(`Bebas: ${fb!.free!.toLocaleString("id-ID", { maximumFractionDigits: 2 })}`);
-                    if ((fb!.locked ?? 0) > 0) parts.push(`Escrow: ${fb!.locked!.toLocaleString("id-ID", { maximumFractionDigits: 2 })}`);
-                    if (avgCost > 0) {
-                      parts.push(`Modal: ${fmtRp2(avgCost)}/USDT${pnl?.is_custom_stock_cost ? " (Manual)" : ""}`);
-                      if (totalCostIdr > 0) parts.push(`(${fmtRp(totalCostIdr)})`);
-                    }
-                    stockSubvalue = parts.length > 0 ? parts.join(" · ") : (stockUsdt === 0 ? "Stok kosong" : "Semua bebas");
-                  } else if (pnl && (pnl.open_position_usdt ?? 0) > 0.001 && avgCost > 0) {
-                    stockSubvalue = `Modal: ${fmtRp2(avgCost)}/USDT${pnl?.is_custom_stock_cost ? " (Manual)" : ""} · ${fmtRp(totalCostIdr)} total`;
-                  } else if (avgCost > 0) {
-                    stockSubvalue = `Modal ~${fmtRp2(avgCost)}/USDT${pnl?.is_custom_stock_cost ? " (Manual)" : ""} · Stok seimbang`;
-                  } else {
-                    stockSubvalue = "Stok seimbang";
+                  // Subvalue: rincian saldo live funding (bebas & escrow) & modal HPP
+                  const parts: string[] = [];
+                  if (fb && (fb.free ?? 0) > 0) parts.push(`Bebas: ${fb.free!.toLocaleString("id-ID", { maximumFractionDigits: 2 })}`);
+                  if (fb && (fb.locked ?? 0) > 0) parts.push(`Escrow: ${fb.locked!.toLocaleString("id-ID", { maximumFractionDigits: 2 })}`);
+                  if (avgCost > 0) {
+                    parts.push(`Modal: ${fmtRp2(avgCost)}/USDT${pnl?.is_custom_stock_cost ? " (Manual)" : ""}`);
+                    if (totalCostIdr > 0) parts.push(`(${fmtRp(totalCostIdr)})`);
                   }
+                  const stockSubvalue = parts.length > 0 ? parts.join(" · ") : (stockUsdt === 0 ? "Stok kosong" : "Live Funding");
 
                   // Hint: info fee & margin
                   const hintFee = `Fee beli 0.08% + jual 0.08% = 0.16% / putaran`;
@@ -1411,11 +1397,7 @@ function Dashboard() {
                       badge={
                         pnl?.is_custom_stock_cost
                           ? { text: "Modal Manual", variant: "primary" }
-                          : useFunding
-                            ? { text: "Live", variant: "bid" }
-                            : fb?.error
-                              ? { text: "API Error", variant: "ask" }
-                              : undefined
+                          : { text: "Live", variant: "bid" }
                       }
                       action={
                         <div className="flex items-center gap-1">
@@ -1461,10 +1443,9 @@ function Dashboard() {
               {/* ── Panel Pengaturan & Reset Harga Modal Stok (HPP) ─────────── */}
               {isEditingStockCost && (() => {
                 const fb = fundingBalanceQuery.data;
-                const useFunding = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
-                const stockUsdt = useFunding ? fb!.usdt! : (pnl?.open_position_usdt ?? 0);
+                const stockUsdt = (fb && fb.usdt !== null && !fb.error) ? fb.usdt : 0;
                 const avgCost = pnl && pnl.open_position_avg_cost_idr > 0 ? pnl.open_position_avg_cost_idr : 0;
-                const totalCostIdr = stockUsdt > 0 && avgCost > 0 ? stockUsdt * avgCost : (pnl?.open_position_total_cost_idr ?? 0);
+                const totalCostIdr = stockUsdt > 0 && avgCost > 0 ? stockUsdt * avgCost : 0;
 
                 return (
                   <div className="panel p-4.5 border-primary/30 bg-surface-2/60 space-y-4 animate-in fade-in-50">
