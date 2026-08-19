@@ -887,13 +887,15 @@ function Dashboard() {
                   {/* Indodax Spot */}
                   <div className="rounded border border-border/60 bg-surface/80 p-2">
                     <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
-                      🇮🇩 Indodax Spot
+                      🇮🇩 Indodax Orderbook
                     </div>
                     <div className="num font-bold text-foreground mt-0.5">
-                      {s.cross_platform?.indodax_usdt_idr_spot ? fmtRp(s.cross_platform.indodax_usdt_idr_spot) : "—"}
+                      {s.cross_platform?.indodax_ask ? fmtRp(s.cross_platform.indodax_ask) : s.cross_platform?.indodax_usdt_idr_spot ? fmtRp(s.cross_platform.indodax_usdt_idr_spot) : "—"}
                     </div>
-                    <div className="text-[0.62rem] text-muted-foreground">
-                      {s.cross_platform?.indodax_bid ? `B: ${fmtRp(s.cross_platform.indodax_bid)}` : "USDT/IDR"}
+                    <div className="text-[0.62rem] text-muted-foreground flex items-center justify-center gap-1.5 mt-0.5">
+                      <span className="text-bid font-semibold">Ask: {s.cross_platform?.indodax_ask ? fmtRp(s.cross_platform.indodax_ask) : "—"}</span>
+                      <span>|</span>
+                      <span className="text-ask font-semibold">Bid: {s.cross_platform?.indodax_bid ? fmtRp(s.cross_platform.indodax_bid) : "—"}</span>
                     </div>
                   </div>
 
@@ -954,16 +956,20 @@ function Dashboard() {
                       <strong className="text-bid font-bold">{fmtRp2(buyAd)}</strong> (+1 Rupiah di atas kompetitor teratas)
                       untuk menempati antrian pertama (Rank #1) tanpa overpay. HPP modal efektif setelah fee:{" "}
                       <strong className="text-foreground">{fmtRp2(buyHpp)}/USDT</strong>.
-                      {s.cross_platform?.indodax_usdt_idr_spot ? (
-                        buyAd < s.cross_platform.indodax_usdt_idr_spot ? (
-                          <> Ambil via P2P lebih hemat <strong className="text-bid">{fmtRp(s.cross_platform.indodax_usdt_idr_spot - buyAd)}/USDT</strong> dibanding beli di Spot Indodax.</>
-                        ) : (
-                          <> Harga Spot Indodax sedang bersaing ({fmtRp(s.cross_platform.indodax_usdt_idr_spot)}).</>
-                        )
+                      {(s.cross_platform?.indodax_ask || s.cross_platform?.indodax_usdt_idr_spot) ? (
+                        (() => {
+                          const indodaxBuyPrice = s.cross_platform?.indodax_ask || s.cross_platform?.indodax_usdt_idr_spot || 0;
+                          return buyAd < indodaxBuyPrice ? (
+                            <> Ambil via P2P lebih hemat <strong className="text-bid">{fmtRp(indodaxBuyPrice - buyAd)}/USDT</strong> dibanding beli instan di Indodax (Ask: {fmtRp(indodaxBuyPrice)}).</>
+                          ) : (
+                            <> Harga beli instan Indodax sedang bersaing (Ask: {fmtRp(indodaxBuyPrice)}).</>
+                          );
+                        })()
                       ) : null}
                     </span>
                   </div>
                 </div>
+
               </div>
             </div>
           );
@@ -1667,15 +1673,21 @@ function Dashboard() {
           {/* ── TAB 4: RADAR ARBITRASE LINTAS BURSA ─────────────────────────── */}
           {activeTab === "arbitrage" && (
             <ArbitrageScanner
-              myBuyPrice={s?.my_buy_price || 17780}
-              mySellPrice={s?.my_sell_price || 17830}
+              myBuyPrice={s?.my_buy_price || 17650}
+              mySellPrice={s?.my_sell_price || 17700}
+              indodaxAsk={s?.cross_platform?.indodax_ask || 0}
+              indodaxBid={s?.cross_platform?.indodax_bid || 0}
+              indodaxLast={s?.cross_platform?.indodax_usdt_idr_spot || 0}
               indodaxSpotPrice={s?.cross_platform?.indodax_usdt_idr_spot || 0}
               coingeckoPrice={s?.cross_platform?.coingecko_usdt_idr || 0}
-              forexRate={17825}
+              forexRate={s?.cross_platform?.forex_usd_idr || 17860}
+              bybitPrice={s?.cross_platform?.bybit_usdt_idr || 0}
+              okxPrice={s?.cross_platform?.okx_usdt_idr || 0}
               onRefresh={() => snapshotQuery.refetch()}
               isRefreshing={snapshotQuery.isFetching}
             />
           )}
+
 
           {/* ── TAB 5: BERITA & ANALISIS DAMPAK PASAR ───────────────────────── */}
           {activeTab === "news" && (

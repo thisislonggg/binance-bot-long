@@ -1,7 +1,7 @@
 /**
  * Engine Radar Arbitrase Lintas Bursa (Cross-Platform Arbitrage Scanner)
- * Membandingkan spread harga USDT/IDR antara Binance P2P, Bursa Spot Lokal (Indodax),
- * serta Benchmark Pasar Global & Kurs Acuan Perbankan.
+ * Membandingkan spread harga USDT/IDR antara Binance P2P, Bursa Spot Lokal (Indodax Orderbook),
+ * serta Benchmark Pasar Global (Bybit, OKX, CoinGecko) & Kurs Valas USD/IDR.
  */
 
 import { fmtPct, fmtRp, fmtRp2 } from "./p2p-engine";
@@ -11,10 +11,14 @@ export type ExchangePrice = {
   name: string;
   type: "p2p" | "spot" | "benchmark";
   badge: string;
-  buy_price: number; // Harga kita membeli USDT di platform ini
-  sell_price: number; // Harga kita menjual USDT di platform ini
-  fee_pct: number;
-  transfer_fee_idr: number; // Estimasi biaya transfer on-chain (misal TRC20/BEP20 ~1 USDT atau Rp 17.800)
+  buy_price: number; // Harga saat kita MEMBELI USDT di platform ini (Orderbook Ask / Terendah Jual)
+  sell_price: number; // Harga saat kita MENJUAL USDT di platform ini (Orderbook Bid / Tertinggi Beli)
+  last_price?: number; // Harga transaksi pasar terakhir (Last trade)
+  spread_idr?: number; // Spread antara harga beli dan jual di bursa tersebut
+  fee_taker_pct: number;
+  fee_maker_pct: number;
+  transfer_fee_idr: number; // Biaya transfer on-chain blockchain (1 USDT)
+  notes: string;
   status: "active" | "delayed";
 };
 
@@ -46,17 +50,49 @@ export type ArbitrageScanResult = {
   p2p_status: "premium" | "discount" | "par";
 };
 
-export function computeArbitrageRoutes(params: {
+export type ArbitrageInputParams = {
   myBuyPrice: number;
   mySellPrice: number;
-  indodaxSpotPrice: number;
-  coingeckoPrice: number;
-  forexRate: number;
-}): ArbitrageScanResult {
-  const { myBuyPrice, mySellPrice, indodaxSpotPrice, coingeckoPrice, forexRate } = params;
+  indodaxAsk?: number; // Harga Ask orderbook (saat klik BUY USDT di Indodax)
+  indodaxBid?: number; // Harga Bid orderbook (saat klik SELL USDT di Indodax)
+  indodaxLast?: number; // Harga transaksi terakhir Indodax
+  indodaxSpotPrice?: number; // Fallback legacy
+  coingeckoPrice?: number;
+  forexRate?: number;
+  bybitPrice?: number;
+  okxPrice?: number;
+};
+
+export function computeArbitrageRoutes(params: ArbitrageInputParams): ArbitrageScanResult {
+  const {
+    myBuyPrice = 17650,
+    mySellPrice = 17700,
+    indodaxAsk,
+    indodaxBid,
+    indodaxLast,
+    indodaxSpotPrice,
+    coingeckoPrice = 0,
+    forexRate = 0,
+    bybitPrice = 0,
+    okxPrice = 0,
+  } = params;
   const now = new Date().toISOString();
 
-  // 1. Daftar Harga Platform
+  // ── Penentuan Harga Eksekusi Nyata Indodax ─────────────────────────────────
+  // Saat kita klik BUY di Indodax: kita bayar harga ASK orderbook terendah (ticker.sell)
+  // Saat kita klik SELL di Indodax: kita menerima harga BID orderbook tertinggi (ticker.buy)
+  // Harga last adalah harga histori transaksi sebelumnya (bisa beda dengan bid/ask)
+  const baseIndodax = indodaxLast || indodaxSpotPrice || 17650;
+  const effectiveIndodaxAsk = indodaxAsk && indodaxAsk > 0 ? indodaxAsk : baseIndodax + 1;
+  const effectiveIndodaxBid = indodaxBid && indodaxBid > 0 ? indodaxBid : baseIndodax - 1;
+  const effectiveIndodaxLast = indodaxLast || baseIndodax;
+
+  const effectiveBybit = bybitPrice > 0 ? bybitPrice : (forexRate > 0 ? Math.round(forexRate * 1.0005) : 17870);
+  const effectiveOkx = okxPrice > 0 ? okxPrice : (forexRate > 0 ? Math.round(forexRate * 1.0003) : 17865);
+  const effectiveForex = forexRate > 0 ? forexRate : 17860;
+  const effectiveCoingecko = coingeckoPrice > 0 ? coingeckoPrice : 17775;
+
+  // ── 1. Tabel Daftar Harga Multi-Bursa Real-Time ───────────────────────────
   const exchanges: ExchangePrice[] = [
     {
       id: "binance_p2p",
@@ -65,66 +101,112 @@ export function computeArbitrageRoutes(params: {
       badge: "Pasar Utama",
       buy_price: myBuyPrice, // Kita pasang iklan beli di harga ini
       sell_price: mySellPrice, // Kita pasang iklan jual di harga ini
-      fee_pct: 0.08, // 0.08% Maker Fee
+      last_price: (myBuyPrice + mySellPrice) / 2,
+      spread_idr: mySellPrice - myBuyPrice,
+      fee_taker_pct: 0,
+      fee_maker_pct: 0.08, // 0.08% Maker Fee
       transfer_fee_idr: 0,
+      notes: "Fee 0.08% per transaksi. Tanpa biaya transfer on-chain jika diputar di dalam Binance.",
       status: "active",
     },
     {
       id: "indodax_spot",
       name: "Indodax Spot (USDT/IDR)",
       type: "spot",
-      badge: "Bursa Lokal",
-      buy_price: indodaxSpotPrice > 0 ? indodaxSpotPrice + 1 : 17770, // Taker beli spot
-      sell_price: indodaxSpotPrice > 0 ? indodaxSpotPrice : 17770, // Taker jual spot
-      fee_pct: 0.1, // 0.1% spot fee
-      transfer_fee_idr: 17800, // ~1 USDT on-chain transfer
-      status: indodaxSpotPrice > 0 ? "active" : "delayed",
+      badge: "Bursa Spot Lokal",
+      buy_price: effectiveIndodaxAsk, // Harga saat kita klik BUY (Ask terendah di orderbook)
+      sell_price: effectiveIndodaxBid, // Harga saat kita klik SELL (Bid tertinggi di orderbook)
+      last_price: effectiveIndodaxLast, // Harga transaksi pasar terakhir
+      spread_idr: effectiveIndodaxAsk - effectiveIndodaxBid,
+      fee_taker_pct: 0.3, // 0.30% instant market order fee
+      fee_maker_pct: 0.1, // 0.10% limit order fee
+      transfer_fee_idr: Math.round(effectiveIndodaxAsk * 1.0), // ~1 USDT on-chain transfer fee
+      notes: `Orderbook Ask (Beli): ${fmtRp2(effectiveIndodaxAsk)} | Bid (Jual): ${fmtRp2(effectiveIndodaxBid)} | Last: ${fmtRp2(effectiveIndodaxLast)}`,
+      status: effectiveIndodaxLast > 0 ? "active" : "delayed",
+    },
+    {
+      id: "bybit",
+      name: "Bybit Global",
+      type: "benchmark",
+      badge: "Global Exchange",
+      buy_price: effectiveBybit,
+      sell_price: effectiveBybit,
+      last_price: effectiveBybit,
+      spread_idr: 0,
+      fee_taker_pct: 0.1,
+      fee_maker_pct: 0.1,
+      transfer_fee_idr: Math.round(effectiveBybit * 1.0),
+      notes: "Benchmark harga USDT/IDR global Bybit.",
+      status: bybitPrice > 0 ? "active" : "delayed",
+    },
+    {
+      id: "okx",
+      name: "OKX Global",
+      type: "benchmark",
+      badge: "Global Exchange",
+      buy_price: effectiveOkx,
+      sell_price: effectiveOkx,
+      last_price: effectiveOkx,
+      spread_idr: 0,
+      fee_taker_pct: 0.1,
+      fee_maker_pct: 0.08,
+      transfer_fee_idr: Math.round(effectiveOkx * 1.0),
+      notes: "Benchmark harga USDT/IDR global OKX.",
+      status: okxPrice > 0 ? "active" : "delayed",
     },
     {
       id: "coingecko",
-      name: "CoinGecko Global",
+      name: "CoinGecko Rate",
       type: "benchmark",
-      badge: "Acuan Global",
-      buy_price: coingeckoPrice > 0 ? coingeckoPrice : 17800,
-      sell_price: coingeckoPrice > 0 ? coingeckoPrice : 17800,
-      fee_pct: 0,
+      badge: "Acuan Agregator",
+      buy_price: effectiveCoingecko,
+      sell_price: effectiveCoingecko,
+      last_price: effectiveCoingecko,
+      spread_idr: 0,
+      fee_taker_pct: 0,
+      fee_maker_pct: 0,
       transfer_fee_idr: 0,
+      notes: "Rata-rata tertimbang harga Tether global dalam Rupiah.",
       status: coingeckoPrice > 0 ? "active" : "delayed",
     },
     {
       id: "forex_bank",
-      name: "Kurs Interbank USD/IDR",
+      name: "Kurs Bank USD/IDR",
       type: "benchmark",
-      badge: "Acuan Valas",
-      buy_price: forexRate > 0 ? forexRate : 17825,
-      sell_price: forexRate > 0 ? forexRate : 17825,
-      fee_pct: 0,
+      badge: "Acuan Pasar Valas",
+      buy_price: effectiveForex,
+      sell_price: effectiveForex,
+      last_price: effectiveForex,
+      spread_idr: 0,
+      fee_taker_pct: 0,
+      fee_maker_pct: 0,
       transfer_fee_idr: 0,
+      notes: "Kurs acuan transaksi pasar uang antar bank.",
       status: forexRate > 0 ? "active" : "delayed",
     },
   ];
 
-  // 2. Kalkulasi Rute Arbitrase
+  // ── 2. Kalkulasi Rute Arbitrase Presisi ────────────────────────────────────
   const opportunities: ArbitrageOpportunity[] = [];
 
-  // RUTE 1: Beli di Spot Indodax ➔ Jual di Binance P2P
-  const indodaxBuy = indodaxSpotPrice > 0 ? indodaxSpotPrice + 1 : 17770;
-  const p2pSell = mySellPrice;
-  const indodaxFee = indodaxBuy * 0.001; // 0.1%
-  const p2pMakerSellFee = p2pSell * 0.0008; // 0.08%
-  const rute1Gross = p2pSell - indodaxBuy;
-  const rute1Fee = indodaxFee + p2pMakerSellFee;
-  const rute1Net = rute1Gross - rute1Fee;
-  const rute1Roi = (rute1Net / indodaxBuy) * 100;
+  // ── RUTE 1: Beli di Spot Indodax (Klik BUY / Ask) ➔ Jual di Binance P2P ────
+  // Saat beli di Indodax, kita membayar harga Ask (effectiveIndodaxAsk) + 0.3% taker fee
+  // Saat jual di Binance P2P, kita pasang iklan di harga mySellPrice - 0.08% maker fee
+  const indodaxBuyCost = effectiveIndodaxAsk * 1.003; // Termasuk fee beli Indodax 0.3%
+  const p2pSellNet = mySellPrice * 0.9992; // Termasuk fee jual Binance P2P 0.08%
+  const rute1Gross = mySellPrice - effectiveIndodaxAsk;
+  const rute1Fee = (effectiveIndodaxAsk * 0.003) + (mySellPrice * 0.0008);
+  const rute1Net = p2pSellNet - indodaxBuyCost;
+  const rute1Roi = indodaxBuyCost > 0 ? (rute1Net / indodaxBuyCost) * 100 : 0;
 
   opportunities.push({
     id: "spot_indodax_to_binance_p2p",
-    title: "Beli Spot Indodax ➔ Jual Iklan Binance P2P",
+    title: "Beli Spot Indodax (Klik BUY / Ask) ➔ Jual Iklan Binance P2P",
     direction: "spot_to_p2p",
-    buy_platform: "Indodax Spot",
-    buy_price: indodaxBuy,
-    sell_platform: "Binance P2P",
-    sell_price: p2pSell,
+    buy_platform: `Indodax Spot (Ask: ${fmtRp2(effectiveIndodaxAsk)})`,
+    buy_price: effectiveIndodaxAsk,
+    sell_platform: `Binance P2P (${fmtRp2(mySellPrice)})`,
+    sell_price: mySellPrice,
     gross_spread_idr: rute1Gross,
     total_fee_per_usdt: rute1Fee,
     net_profit_per_usdt: rute1Net,
@@ -139,33 +221,33 @@ export function computeArbitrageRoutes(params: {
             ? "Spread Tipis (Perhatikan Fee Transfer)"
             : "Tidak Ada Celah Arbitrase",
     execution_steps: [
-      `1. Lakukan deposit Rupiah via BI-Fast/VA ke Indodax.`,
-      `2. Beli USDT instan di pasar Spot Indodax di harga ~${fmtRp2(indodaxBuy)}.`,
-      `3. Tarik/Kirim USDT via jaringan BEP20/TRC20 ke akun Binance Anda.`,
-      `4. Pasang iklan Jual di Binance P2P di harga rekomendasi ${fmtRp2(p2pSell)}.`,
+      `1. Lakukan deposit Rupiah via VA/BI-Fast ke akun Indodax Anda.`,
+      `2. Beli USDT instan di pasar Spot Indodax di harga Ask ~${fmtRp2(effectiveIndodaxAsk)} (bukan harga Last).`,
+      `3. Kirim USDT via jaringan BEP20/TRC20 ke dompet Pendanaan Binance Anda (biaya transfer ~1 USDT).`,
+      `4. Pasang iklan JUAL di Binance P2P di harga rekomendasi ${fmtRp2(mySellPrice)}.`,
     ],
     risk_warning:
-      "Perhatikan biaya transfer on-chain (~1 USDT). Disarankan eksekusi untuk volume modal minimal 500 USDT agar biaya transfer tertutup maksimal.",
+      "Perhatikan bahwa harga beli instan di Indodax adalah harga ASK orderbook (terendah di antrian jual), bukan harga Last. Terdapat biaya penarikan on-chain 1 USDT.",
   });
 
-  // RUTE 2: Beli Iklan Binance P2P ➔ Jual Instan di Spot Indodax
-  const p2pBuy = myBuyPrice;
-  const indodaxSell = indodaxSpotPrice > 0 ? indodaxSpotPrice : 17770;
-  const p2pMakerBuyFee = p2pBuy * 0.0008;
-  const indodaxSellFee = indodaxSell * 0.001;
-  const rute2Gross = indodaxSell - p2pBuy;
-  const rute2Fee = p2pMakerBuyFee + indodaxSellFee;
-  const rute2Net = rute2Gross - rute2Fee;
-  const rute2Roi = (rute2Net / p2pBuy) * 100;
+  // ── RUTE 2: Beli Iklan Binance P2P ➔ Jual Instan di Spot Indodax (Klik SELL / Bid) ──
+  // Saat beli di Binance P2P: harga myBuyPrice + 0.08% maker fee
+  // Saat jual instan di Indodax: kita mendapat harga Bid (effectiveIndodaxBid) - 0.3% taker fee
+  const p2pBuyCost = myBuyPrice * 1.0008;
+  const indodaxSellNet = effectiveIndodaxBid * 0.997;
+  const rute2Gross = effectiveIndodaxBid - myBuyPrice;
+  const rute2Fee = (myBuyPrice * 0.0008) + (effectiveIndodaxBid * 0.003);
+  const rute2Net = indodaxSellNet - p2pBuyCost;
+  const rute2Roi = p2pBuyCost > 0 ? (rute2Net / p2pBuyCost) * 100 : 0;
 
   opportunities.push({
     id: "binance_p2p_to_spot_indodax",
-    title: "Beli Iklan Binance P2P ➔ Jual Spot Indodax",
+    title: "Beli Iklan Binance P2P ➔ Jual Spot Indodax (Klik SELL / Bid)",
     direction: "p2p_to_spot",
-    buy_platform: "Binance P2P",
-    buy_price: p2pBuy,
-    sell_platform: "Indodax Spot",
-    sell_price: indodaxSell,
+    buy_platform: `Binance P2P (${fmtRp2(myBuyPrice)})`,
+    buy_price: myBuyPrice,
+    sell_platform: `Indodax Spot (Bid: ${fmtRp2(effectiveIndodaxBid)})`,
+    sell_price: effectiveIndodaxBid,
     gross_spread_idr: rute2Gross,
     total_fee_per_usdt: rute2Fee,
     net_profit_per_usdt: rute2Net,
@@ -178,26 +260,26 @@ export function computeArbitrageRoutes(params: {
           ? "Celah Sedang"
           : rute2Net > 0
             ? "Spread Tipis"
-            : "Harga Spot Lebih Rendah dari P2P",
+            : "Harga Bid Indodax Lebih Rendah dari P2P",
     execution_steps: [
-      `1. Pasang iklan BELI di Binance P2P di harga rekomendasi ${fmtRp2(p2pBuy)}.`,
-      `2. Setelah USDT masuk ke dompet Pendanaan Binance, transfer on-chain ke Indodax.`,
-      `3. Jual langsung di Spot Indodax di harga ~${fmtRp2(indodaxSell)}.`,
+      `1. Pasang iklan BELI di Binance P2P di harga rekomendasi ${fmtRp2(myBuyPrice)}.`,
+      `2. Setelah USDT masuk ke dompet Pendanaan Binance, transfer on-chain ke akun Indodax.`,
+      `3. Jual instan di Spot Indodax di harga Bid ~${fmtRp2(effectiveIndodaxBid)} (bukan harga Last).`,
       `4. Tarik saldo Rupiah kembali ke rekening bank via BI-Fast.`,
     ],
     risk_warning:
-      "Rute ini biasanya terbuka saat terjadi lonjakan harga sesaat (pump) di pasar spot lokal Indonesia.",
+      "Harga jual instan di Indodax adalah harga BID orderbook (tertinggi di antrian beli). Rute ini menguntungkan saat terjadi lonjakan harga sesaat di bursa lokal.",
   });
 
-  // RUTE 3: Siklus Murni Merchant P2P (Beli P2P ➔ Jual P2P)
+  // ── RUTE 3: Siklus Murni Merchant P2P (Beli P2P ➔ Jual P2P) ───────────────
   const rute3Gross = mySellPrice - myBuyPrice;
   const rute3Fee = (myBuyPrice + mySellPrice) * 0.0008;
-  const rute3Net = rute3Gross - rute3Fee;
-  const rute3Roi = (rute3Net / myBuyPrice) * 100;
+  const rute3Net = (mySellPrice * 0.9992) - (myBuyPrice * 1.0008);
+  const rute3Roi = p2pBuyCost > 0 ? (rute3Net / p2pBuyCost) * 100 : 0;
 
   opportunities.push({
     id: "p2p_cycle_merchant",
-    title: "Siklus Murni Merchant Binance P2P (Beli ➔ Jual)",
+    title: "Siklus Murni Merchant Binance P2P (Beli P2P ➔ Jual P2P)",
     direction: "p2p_cycle",
     buy_platform: "Binance P2P (Iklan Beli)",
     buy_price: myBuyPrice,
@@ -210,12 +292,12 @@ export function computeArbitrageRoutes(params: {
     status: rute3Net >= 30 ? "lucrative" : rute3Net >= 10 ? "moderate" : "thin",
     status_label: "Siklus Utama Merchant (Tanpa Biaya Blockchain)",
     execution_steps: [
-      `1. Pasang iklan BELI di ${fmtRp2(myBuyPrice)}.`,
+      `1. Pasang iklan BELI di ${fmtRp2(myBuyPrice)} (+1 Rupiah di atas kompetitor teratas).`,
       `2. Pembeli transfer Rupiah ke rekening bank Anda, Anda rilis USDT.`,
-      `3. Pasang iklan JUAL di ${fmtRp2(mySellPrice)}.`,
+      `3. Pasang iklan JUAL di ${fmtRp2(mySellPrice)} (-1 Rupiah di bawah kompetitor terendah).`,
       `4. Pembeli transfer Rupiah masuk kembali ke rekening bank Anda dengan laba bersih.`,
     ],
-    risk_warning: "Nol biaya transfer on-chain antar bursa. Aman dan perputaran langsung di dalam perbankan lokal.",
+    risk_warning: "Nol biaya transfer on-chain antar bursa. Perputaran modal langsung di dalam perbankan lokal.",
   });
 
   // Urutkan peluang dari net profit tertinggi
@@ -224,7 +306,7 @@ export function computeArbitrageRoutes(params: {
 
   // Premium P2P vs Kurs Acuan Bank
   const p2pMid = (myBuyPrice + mySellPrice) / 2;
-  const refRate = forexRate > 0 ? forexRate : 17825;
+  const refRate = effectiveForex;
   const premiumIdr = p2pMid - refRate;
   const premiumPct = (premiumIdr / refRate) * 100;
   const p2pStatus: "premium" | "discount" | "par" =

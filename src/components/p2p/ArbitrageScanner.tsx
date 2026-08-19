@@ -30,17 +30,27 @@ import { fmtPct, fmtRp, fmtRp2 } from "@/lib/p2p-engine";
 export function ArbitrageScanner({
   myBuyPrice,
   mySellPrice,
+  indodaxAsk = 0,
+  indodaxBid = 0,
+  indodaxLast = 0,
   indodaxSpotPrice = 0,
   coingeckoPrice = 0,
   forexRate = 0,
+  bybitPrice = 0,
+  okxPrice = 0,
   onRefresh,
   isRefreshing = false,
 }: {
   myBuyPrice: number;
   mySellPrice: number;
+  indodaxAsk?: number;
+  indodaxBid?: number;
+  indodaxLast?: number;
   indodaxSpotPrice?: number;
   coingeckoPrice?: number;
   forexRate?: number;
+  bybitPrice?: number;
+  okxPrice?: number;
   onRefresh?: () => void;
   isRefreshing?: boolean;
 }) {
@@ -50,17 +60,35 @@ export function ArbitrageScanner({
 
   const scanResult: ArbitrageScanResult = useMemo(() => {
     return computeArbitrageRoutes({
-      myBuyPrice: myBuyPrice || 17780,
-      mySellPrice: mySellPrice || 17830,
+      myBuyPrice: myBuyPrice || 17650,
+      mySellPrice: mySellPrice || 17700,
+      indodaxAsk,
+      indodaxBid,
+      indodaxLast: indodaxLast || indodaxSpotPrice,
       indodaxSpotPrice,
       coingeckoPrice,
       forexRate,
+      bybitPrice,
+      okxPrice,
     });
-  }, [myBuyPrice, mySellPrice, indodaxSpotPrice, coingeckoPrice, forexRate]);
+  }, [
+    myBuyPrice,
+    mySellPrice,
+    indodaxAsk,
+    indodaxBid,
+    indodaxLast,
+    indodaxSpotPrice,
+    coingeckoPrice,
+    forexRate,
+    bybitPrice,
+    okxPrice,
+  ]);
 
   // Kalkulasi Simulasi Modal
   const capitalNum = parseFloat(calcCapitalIdr) || 0;
-  const activeRoute = scanResult.opportunities.find((o) => o.id === selectedRouteId) || scanResult.opportunities[0];
+  const activeRoute =
+    scanResult.opportunities.find((o) => o.id === selectedRouteId) ||
+    scanResult.opportunities[0];
 
   const simResult = useMemo(() => {
     if (!activeRoute || capitalNum <= 0) return null;
@@ -68,37 +96,43 @@ export function ArbitrageScanner({
     const buyPrice = activeRoute.buy_price;
     const sellPrice = activeRoute.sell_price;
 
-    // Jumlah USDT yang didapat dari modal
-    const usdtAcquired = capitalNum / buyPrice;
-
-    // Fee Beli
-    const buyFeeRate = activeRoute.direction === "spot_to_p2p" ? 0.001 : 0.0008;
+    // Fee Beli: 0.3% di Spot Indodax (Taker Ask), 0.08% di Binance P2P
+    const isIndodaxBuy = activeRoute.direction === "spot_to_p2p";
+    const buyFeeRate = isIndodaxBuy ? 0.003 : 0.0008;
     const buyFeeIdr = capitalNum * buyFeeRate;
 
-    // Fee Transfer Blockchain (~1 USDT jika antar bursa onchain)
-    const transferFeeIdr = activeRoute.direction === "p2p_cycle" ? 0 : 17800;
+    // Modal bersih untuk beli USDT
+    const netCapitalToBuy = capitalNum - buyFeeIdr;
+    const usdtAcquired = netCapitalToBuy / buyPrice;
 
-    // USDT Bersih setelah fee transfer
-    const netUsdtToSell = Math.max(0, usdtAcquired - (transferFeeIdr > 0 ? transferFeeIdr / buyPrice : 0));
+    // Biaya Transfer Blockchain on-chain (~1 USDT jika transfer antar bursa, 0 jika P2P murni)
+    const isCrossChain = activeRoute.direction !== "p2p_cycle";
+    const transferFeeUsdt = isCrossChain ? 1.0 : 0;
+    const transferFeeIdr = isCrossChain ? Math.round(transferFeeUsdt * buyPrice) : 0;
+
+    // USDT Bersih yang tiba di bursa tujuan
+    const netUsdtToSell = Math.max(0, usdtAcquired - transferFeeUsdt);
 
     // Hasil Penjualan Bruto di platform tujuan
     const grossSaleIdr = netUsdtToSell * sellPrice;
 
-    // Fee Jual
-    const sellFeeRate = activeRoute.direction === "p2p_to_spot" ? 0.001 : 0.0008;
+    // Fee Jual: 0.3% di Spot Indodax (Taker Bid), 0.08% di Binance P2P
+    const isIndodaxSell = activeRoute.direction === "p2p_to_spot";
+    const sellFeeRate = isIndodaxSell ? 0.003 : 0.0008;
     const sellFeeIdr = grossSaleIdr * sellFeeRate;
 
-    // Modal Kas Akhir
+    // Modal Kas Akhir yang diterima
     const finalCapitalIdr = grossSaleIdr - sellFeeIdr;
 
-    // Net Realized Profit
-    const netProfitIdr = finalCapitalIdr - capitalNum - (activeRoute.direction !== "p2p_cycle" ? 0 : 0);
+    // Net Realized Profit (Rp dan ROI %)
+    const netProfitIdr = finalCapitalIdr - capitalNum;
     const netRoi = (netProfitIdr / capitalNum) * 100;
 
     return {
       usdtAcquired,
       buyFeeIdr,
       transferFeeIdr,
+      transferFeeUsdt,
       netUsdtToSell,
       grossSaleIdr,
       sellFeeIdr,
@@ -120,7 +154,7 @@ export function ArbitrageScanner({
                 Radar Arbitrase Lintas Bursa USDT/IDR
               </h3>
               <p className="text-xs text-muted-foreground">
-                Pindai selisih harga instan antara Binance P2P, Indodax Spot, dan acuan pasar.
+                Pindai selisih harga instan antara Binance P2P, Indodax Spot (Ask vs Bid), dan acuan global.
               </p>
             </div>
           </div>
@@ -166,7 +200,7 @@ export function ArbitrageScanner({
                 </span>
               </div>
               <p className="text-xs text-muted-foreground">
-                Beli di <strong>{scanResult.best_opportunity.buy_platform} ({fmtRp2(scanResult.best_opportunity.buy_price)})</strong> ➔ Jual di <strong>{scanResult.best_opportunity.sell_platform} ({fmtRp2(scanResult.best_opportunity.sell_price)})</strong>
+                Beli di <strong>{scanResult.best_opportunity.buy_platform}</strong> ➔ Jual di <strong>{scanResult.best_opportunity.sell_platform}</strong>
               </p>
             </div>
 
@@ -188,20 +222,25 @@ export function ArbitrageScanner({
           </div>
         ) : (
           <div className="rounded-lg border border-border bg-surface-2 p-3 text-xs text-muted-foreground text-center">
-            Pasar saat ini seimbang, belum terdeteksi celah arbitrase signifikan antar bursa.
+            Pasar saat ini seimbang, belum terdeteksi celah arbitrase signifikan antar bursa setelah memperhitungkan fee orderbook & transfer.
           </div>
         )}
       </div>
 
-      {/* ── Tabel Perbandingan Harga Lintas Platform ──────────────────────── */}
+      {/* ── Tabel Perbandingan Harga Lintas Platform (Ask vs Bid) ─────────── */}
       <div className="panel p-4 space-y-3">
-        <div className="border-b border-border pb-2">
-          <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
-            Tabel Harga Pasar Multi-Bursa Real-Time
-          </h3>
-          <p className="text-xs text-muted-foreground">
-            Perbandingan harga beli & jual langsung pada setiap platform trading terverifikasi.
-          </p>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
+          <div>
+            <h3 className="text-xs font-bold text-foreground uppercase tracking-wider">
+              Tabel Harga Pasar Multi-Bursa Real-Time (Ask vs Bid)
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Membedakan harga eksekusi nyata saat klik <strong>BUY (Ask Orderbook)</strong> vs saat klik <strong>SELL (Bid Orderbook)</strong>.
+            </p>
+          </div>
+          <span className="rounded bg-surface-2 px-2 py-0.5 text-[0.65rem] text-muted-foreground font-mono">
+            {scanResult.exchanges.length} Bursa Terpantau
+          </span>
         </div>
 
         <div className="overflow-x-auto">
@@ -210,8 +249,10 @@ export function ArbitrageScanner({
               <tr className="border-b border-border text-[0.65rem] tracking-wider text-muted-foreground uppercase">
                 <th className="py-2.5 pr-4 text-left font-semibold">Platform Bursa</th>
                 <th className="py-2.5 pr-4 text-left font-semibold">Tipe Pasar</th>
-                <th className="py-2.5 pr-4 text-right font-semibold">Harga Beli Kita</th>
-                <th className="py-2.5 pr-4 text-right font-semibold">Harga Jual Kita</th>
+                <th className="py-2.5 pr-4 text-right font-semibold">Harga Beli Kita (Ask)</th>
+                <th className="py-2.5 pr-4 text-right font-semibold">Harga Jual Kita (Bid)</th>
+                <th className="py-2.5 pr-4 text-right font-semibold">Spread Bursa</th>
+                <th className="py-2.5 pr-4 text-right font-semibold">Harga Terakhir</th>
                 <th className="py-2.5 pr-4 text-right font-semibold">Biaya Fee</th>
                 <th className="py-2.5 text-center font-semibold">Status Feed</th>
               </tr>
@@ -227,10 +268,28 @@ export function ArbitrageScanner({
                     </span>
                   </td>
                   <td className="py-2.5 pr-4 text-muted-foreground capitalize">{ex.type}</td>
-                  <td className="py-2.5 pr-4 text-right num font-bold text-bid">{fmtRp2(ex.buy_price)}</td>
-                  <td className="py-2.5 pr-4 text-right num font-bold text-ask">{fmtRp2(ex.sell_price)}</td>
+                  <td className="py-2.5 pr-4 text-right num font-bold text-bid">
+                    {fmtRp2(ex.buy_price)}
+                    {ex.id === "indodax_spot" && (
+                      <span className="block text-[0.6rem] font-normal text-muted-foreground">Ask (Klik BUY)</span>
+                    )}
+                  </td>
+                  <td className="py-2.5 pr-4 text-right num font-bold text-ask">
+                    {fmtRp2(ex.sell_price)}
+                    {ex.id === "indodax_spot" && (
+                      <span className="block text-[0.6rem] font-normal text-muted-foreground">Bid (Klik SELL)</span>
+                    )}
+                  </td>
+                  <td className="py-2.5 pr-4 text-right num text-muted-foreground">
+                    {ex.spread_idr ? `Rp ${ex.spread_idr.toLocaleString("id-ID")}` : "—"}
+                  </td>
+                  <td className="py-2.5 pr-4 text-right num text-foreground/80 font-medium">
+                    {ex.last_price ? fmtRp2(ex.last_price) : "—"}
+                  </td>
                   <td className="py-2.5 pr-4 text-right text-muted-foreground">
-                    {ex.fee_pct > 0 ? `${ex.fee_pct}%` : "0% (Acuan)"}
+                    {ex.fee_maker_pct > 0 || ex.fee_taker_pct > 0
+                      ? `${ex.fee_maker_pct}% / ${ex.fee_taker_pct}%`
+                      : "0% (Acuan)"}
                   </td>
                   <td className="py-2.5 text-center">
                     <span
