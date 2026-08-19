@@ -7,15 +7,20 @@ import {
   ArrowUpRight,
   Calculator,
   Check,
+  Coins,
   Copy,
+  Edit3,
   ExternalLink,
   FileSpreadsheet,
   Globe,
   History,
+  Landmark,
   Layers,
   Lock,
   LogOut,
   Newspaper,
+  Percent,
+  PiggyBank,
   Plus,
   RefreshCw,
   ShieldCheck,
@@ -61,10 +66,12 @@ import {
 import { getMarketSnapshot } from "@/lib/p2p.functions";
 import {
   deleteTrade,
+  getInitialCapital,
   getPnlSummary,
   logTrade,
   normalizeTradePrice,
   parseFlexibleNumber,
+  setInitialCapital,
   updateTrade,
   type TradeSide,
 } from "@/lib/pnl";
@@ -204,8 +211,13 @@ function Dashboard() {
   const syncFn = useServerFn(syncBinanceTrades);
   const syncStatusFn = useServerFn(getBinanceSyncStatus);
   const fundingBalanceFn = useServerFn(getBinanceFundingBalance);
+  const setCapitalFn = useServerFn(setInitialCapital);
   const importCsvFn = useServerFn(importBinanceCsvTrades);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // State Modal Awal (Capital Management)
+  const [isEditingCapital, setIsEditingCapital] = useState(false);
+  const [capitalInputStr, setCapitalInputStr] = useState("");
 
   useEffect(() => {
     try {
@@ -439,6 +451,38 @@ function Dashboard() {
     onSettled: () => setDeletingTradeId(null),
   });
 
+  // Mutasi Update Modal Awal
+  const setCapitalMutation = useMutation({
+    mutationFn: (cap: number) =>
+      setCapitalFn({ data: { initialCapitalIdr: cap, sessionToken: sessionToken ?? undefined } }),
+    onSuccess: (res) => {
+      if (res.ok) {
+        toast.success(`Modal awal Rp ${Math.round(res.initial_capital_idr).toLocaleString("id-ID")} berhasil disimpan.`);
+        setIsEditingCapital(false);
+        pnlQuery.refetch();
+      } else {
+        toast.error("Gagal menyimpan modal awal.");
+      }
+    },
+    onError: handleAuthError,
+  });
+
+  const handleStartEditCapital = () => {
+    const current = pnl?.initial_capital_idr ?? 0;
+    setCapitalInputStr(current > 0 ? String(current) : "");
+    setIsEditingCapital(true);
+  };
+
+  const handleSaveCapital = (e: React.FormEvent) => {
+    e.preventDefault();
+    const val = parseFlexibleNumber(capitalInputStr);
+    if (!Number.isFinite(val) || val < 0) {
+      toast.error("Masukkan angka modal awal yang valid (≥ 0).");
+      return;
+    }
+    setCapitalMutation.mutate(val);
+  };
+
   const resetTradeForm = () => {
     setTradePrice("");
     setTradeAmount("");
@@ -655,109 +699,180 @@ function Dashboard() {
       <main className="mx-auto max-w-7xl px-4 pt-5 sm:px-6 space-y-5">
 
         {/* ── Dual Trading Recommendations ─────────────────────────────────── */}
-        {s ? (
-          <div className="grid grid-cols-1 gap-3.5 md:grid-cols-12">
-            {/* Rekomendasi BELI */}
-            <div className="panel p-4.5 md:col-span-6 border-bid/25">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <span className="size-2 rounded-full bg-bid" />
-                  <span className="text-xs font-bold text-bid uppercase tracking-wider">
-                    Rekomendasi Pasang Beli
+        {s ? (() => {
+          const buyAd = s.my_buy_price || 16200;
+          const buyFee = buyAd * 0.0008;
+          const buyHpp = buyAd * 1.0008;
+
+          const sellAd = s.my_sell_price || 16250;
+          const sellFee = sellAd * 0.0008;
+          const sellNet = sellAd * 0.9992;
+
+          const netSpreadAbs = sellNet - buyHpp;
+          const netSpreadPct = buyHpp > 0 ? (netSpreadAbs / buyHpp) * 100 : 0;
+          const totalFeePerUsdt = buyFee + sellFee;
+
+          return (
+            <div className="space-y-2.5">
+              <div className="grid grid-cols-1 gap-3.5 md:grid-cols-12">
+                {/* Rekomendasi BELI */}
+                <div className="panel p-4.5 md:col-span-6 border-bid/30 bg-gradient-to-br from-surface to-bid/5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className="size-2 rounded-full bg-bid animate-pulse" />
+                      <span className="text-xs font-bold text-bid uppercase tracking-wider">
+                        Rekomendasi Pasang Beli
+                      </span>
+                    </div>
+
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleCopyPrice(buyAd, "buy")}
+                      className="h-6.5 gap-1 border-bid/30 bg-bid/10 text-bid hover:bg-bid/20 text-xs font-semibold px-2"
+                    >
+                      {copiedPrice === "buy" ? (
+                        <>
+                          <Check className="size-3" /> Disalin
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="size-3" /> Salin Harga
+                        </>
+                      )}
+                    </Button>
+                  </div>
+
+                  <div className="mt-2 flex items-baseline justify-between gap-2">
+                    <div>
+                      <div className="text-[0.68rem] font-medium text-muted-foreground uppercase tracking-wider">
+                        Harga Iklan (Sebelum Fee)
+                      </div>
+                      <div className="num text-2xl sm:text-3xl font-bold text-foreground">
+                        {fmtRp2(buyAd)}
+                      </div>
+                    </div>
+                    <div className="num text-xs font-medium text-bid text-right">
+                      {s.my_buy_price && s.fair_price ? fmtRp(s.my_buy_price - s.fair_price) : "—"} vs Fair
+                    </div>
+                  </div>
+
+                  {/* Rincian Fee Beli & HPP Riil */}
+                  <div className="mt-3 rounded-md border border-bid/20 bg-surface-2/70 p-2.5 space-y-1.5 text-xs">
+                    <div className="flex items-center justify-between text-muted-foreground">
+                      <span>Fee Maker Beli (0.08%):</span>
+                      <span className="num font-semibold text-foreground/85">+{fmtRp2(buyFee)}/USDT</span>
+                    </div>
+                    <div className="flex items-center justify-between border-t border-border/50 pt-1.5 font-bold">
+                      <span className="text-foreground">HPP Modal Riil (Sesudah Fee):</span>
+                      <span className="num text-bid text-sm">{fmtRp2(buyHpp)}/USDT</span>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2.5 text-xs text-muted-foreground">
+                    <span>Kedalaman: <strong>{s.buy_depth?.ads_used ?? 0} iklan</strong> ({fmtRp(s.buy_depth?.depth_reached_idr ?? 0)})</span>
+                    <a
+                      href="https://p2p.binance.com/en/trade/buy/USDT?fiat=IDR"
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="inline-flex items-center gap-1 text-bid hover:underline"
+                    >
+                      Binance P2P <ExternalLink className="size-3" />
+                    </a>
+                  </div>
+                </div>
+
+                {/* Rekomendasi JUAL */}
+                <div className="panel p-4.5 md:col-span-6 border-ask/30 bg-gradient-to-br from-surface to-ask/5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className="size-2 rounded-full bg-ask animate-pulse" />
+                      <span className="text-xs font-bold text-ask uppercase tracking-wider">
+                        Rekomendasi Pasang Jual
+                      </span>
+                    </div>
+
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleCopyPrice(sellAd, "sell")}
+                      className="h-6.5 gap-1 border-ask/30 bg-ask/10 text-ask hover:bg-ask/20 text-xs font-semibold px-2"
+                    >
+                      {copiedPrice === "sell" ? (
+                        <>
+                          <Check className="size-3" /> Disalin
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="size-3" /> Salin Harga
+                        </>
+                      )}
+                    </Button>
+                  </div>
+
+                  <div className="mt-2 flex items-baseline justify-between gap-2">
+                    <div>
+                      <div className="text-[0.68rem] font-medium text-muted-foreground uppercase tracking-wider">
+                        Harga Iklan (Sebelum Fee)
+                      </div>
+                      <div className="num text-2xl sm:text-3xl font-bold text-foreground">
+                        {fmtRp2(sellAd)}
+                      </div>
+                    </div>
+                    <div className="num text-xs font-medium text-ask text-right">
+                      +{s.my_sell_price && s.fair_price ? fmtRp(s.my_sell_price - s.fair_price) : "—"} vs Fair
+                    </div>
+                  </div>
+
+                  {/* Rincian Fee Jual & Net Bersih */}
+                  <div className="mt-3 rounded-md border border-ask/20 bg-surface-2/70 p-2.5 space-y-1.5 text-xs">
+                    <div className="flex items-center justify-between text-muted-foreground">
+                      <span>Fee Maker Jual (0.08%):</span>
+                      <span className="num font-semibold text-foreground/85">-{fmtRp2(sellFee)}/USDT</span>
+                    </div>
+                    <div className="flex items-center justify-between border-t border-border/50 pt-1.5 font-bold">
+                      <span className="text-foreground">Net Diterima (Sesudah Fee):</span>
+                      <span className="num text-ask text-sm">{fmtRp2(sellNet)}/USDT</span>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2.5 text-xs text-muted-foreground">
+                    <span>Kedalaman: <strong>{s.sell_depth?.ads_used ?? 0} iklan</strong> ({fmtRp(s.sell_depth?.depth_reached_idr ?? 0)})</span>
+                    <a
+                      href="https://p2p.binance.com/en/trade/sell/USDT?fiat=IDR"
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="inline-flex items-center gap-1 text-ask hover:underline"
+                    >
+                      Binance P2P <ExternalLink className="size-3" />
+                    </a>
+                  </div>
+                </div>
+              </div>
+
+              {/* Baris Ringkasan Margin 1 Putaran Beli-Jual */}
+              <div className="panel px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 border-primary/20 bg-surface-2/40 text-xs">
+                <div className="flex items-center gap-2">
+                  <Coins className="size-4 text-primary" />
+                  <span className="text-muted-foreground">Simulasi 1 Putaran:</span>
+                  <span className="font-semibold text-foreground">
+                    Spread Iklan: +{fmtRp(sellAd - buyAd)} ({fmtPct(s.spread_pct)})
                   </span>
                 </div>
-
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => handleCopyPrice(s?.my_buy_price || 17780, "buy")}
-                  className="h-6.5 gap-1 border-bid/25 bg-bid/10 text-bid hover:bg-bid/20 text-xs font-semibold px-2"
-                >
-                  {copiedPrice === "buy" ? (
-                    <>
-                      <Check className="size-3" /> Disalin
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="size-3" /> Salin
-                    </>
-                  )}
-                </Button>
-              </div>
-
-              <div className="mt-2.5 flex items-baseline justify-between gap-2">
-                <div className="num text-2xl sm:text-3xl font-bold text-foreground">
-                  {fmtRp2(s?.my_buy_price || 17780)}
-                </div>
-                <div className="num text-xs font-medium text-bid">
-                  {s?.my_buy_price && s?.fair_price ? fmtRp(s.my_buy_price - s.fair_price) : "—"} vs Nilai Wajar
-                </div>
-              </div>
-
-              <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2.5 text-xs text-muted-foreground">
-                <span>Kedalaman: <strong>{s?.buy_depth?.ads_used ?? 0} iklan</strong> ({fmtRp(s?.buy_depth?.depth_reached_idr ?? 0)})</span>
-                <a
-                  href="https://p2p.binance.com/en/trade/buy/USDT?fiat=IDR"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className="inline-flex items-center gap-1 text-bid hover:underline"
-                >
-                  Binance P2P <ExternalLink className="size-3" />
-                </a>
-              </div>
-            </div>
-
-            {/* Rekomendasi JUAL */}
-            <div className="panel p-4.5 md:col-span-6 border-ask/25">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <span className="size-2 rounded-full bg-ask" />
-                  <span className="text-xs font-bold text-ask uppercase tracking-wider">
-                    Rekomendasi Pasang Jual
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="text-muted-foreground">
+                    Total Fee (0.16%): <strong className="text-foreground">{fmtRp2(totalFeePerUsdt)}/USDT</strong>
+                  </span>
+                  <span className="inline-flex items-center gap-1 rounded bg-bid/15 px-2 py-0.5 font-bold text-bid">
+                    <TrendingUp className="size-3" />
+                    Margin Bersih Riil: +{fmtRp2(netSpreadAbs)}/USDT ({fmtPct(netSpreadPct)})
                   </span>
                 </div>
-
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => handleCopyPrice(s?.my_sell_price || 17830, "sell")}
-                  className="h-6.5 gap-1 border-ask/25 bg-ask/10 text-ask hover:bg-ask/20 text-xs font-semibold px-2"
-                >
-                  {copiedPrice === "sell" ? (
-                    <>
-                      <Check className="size-3" /> Disalin
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="size-3" /> Salin
-                    </>
-                  )}
-                </Button>
-              </div>
-
-              <div className="mt-2.5 flex items-baseline justify-between gap-2">
-                <div className="num text-2xl sm:text-3xl font-bold text-foreground">
-                  {fmtRp2(s?.my_sell_price || 17830)}
-                </div>
-                <div className="num text-xs font-medium text-ask">
-                  +{s?.my_sell_price && s?.fair_price ? fmtRp(s.my_sell_price - s.fair_price) : "—"} vs Nilai Wajar
-                </div>
-              </div>
-
-              <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2.5 text-xs text-muted-foreground">
-                <span>Kedalaman: <strong>{s?.sell_depth?.ads_used ?? 0} iklan</strong> ({fmtRp(s?.sell_depth?.depth_reached_idr ?? 0)})</span>
-                <a
-                  href="https://p2p.binance.com/en/trade/sell/USDT?fiat=IDR"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className="inline-flex items-center gap-1 text-ask hover:underline"
-                >
-                  Binance P2P <ExternalLink className="size-3" />
-                </a>
               </div>
             </div>
-          </div>
-        ) : null}
+          );
+        })() : null}
+
 
 
         {/* ── Navigation Tabs ──────────────────────────────────────────────── */}
@@ -837,6 +952,183 @@ function Dashboard() {
           {/* ── TAB 1: LAPORAN & TRANSAKSI ──────────────────────────────────── */}
           {activeTab === "pnl" && (
             <div className="space-y-5">
+              {/* ── Panel Manajemen Modal Awal & Posisi Ekuitas ─────────────── */}
+              {(() => {
+                const initialCapital = pnl?.initial_capital_idr ?? 0;
+                const fb = fundingBalanceQuery.data;
+                const useFunding = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
+                const stockUsdt = useFunding ? fb!.usdt! : (pnl?.open_position_usdt ?? 0);
+                const avgCost = pnl && pnl.open_position_avg_cost_idr > 0 ? pnl.open_position_avg_cost_idr : 0;
+
+                // Modal terikat di stok = stok USDT * HPP modal rata-rata
+                const stockCapitalIdr = stockUsdt > 0 && avgCost > 0 ? stockUsdt * avgCost : (pnl?.open_position_total_cost_idr ?? 0);
+                const allTimeProfit = pnl?.all_time_profit_idr ?? 0;
+
+                // Sisa Kas Bebas = Modal Awal - Modal di Stok + Keuntungan Realisasi
+                const freeCashIdr = initialCapital > 0
+                  ? Math.max(0, initialCapital - stockCapitalIdr + allTimeProfit)
+                  : 0;
+
+                // Total Ekuitas = Modal Awal + Total Profit
+                const totalEquityIdr = initialCapital > 0
+                  ? initialCapital + allTimeProfit
+                  : (stockCapitalIdr + allTimeProfit);
+
+                const roiPct = initialCapital > 0 ? (allTimeProfit / initialCapital) * 100 : 0;
+                const utilPct = initialCapital > 0 ? Math.min(100, Math.max(0, (stockCapitalIdr / initialCapital) * 100)) : 0;
+                const cashPct = Math.max(0, 100 - utilPct);
+
+                return (
+                  <div className="panel p-4.5 border-primary/25 bg-gradient-to-br from-surface to-primary/5 space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 pb-3">
+                      <div className="flex items-center gap-2.5">
+                        <div className="rounded-lg bg-primary/15 p-2 text-primary border border-primary/30">
+                          <Landmark className="size-5" />
+                        </div>
+                        <div>
+                          <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
+                            Manajemen Modal Awal & Posisi Ekuitas
+                            {initialCapital > 0 && (
+                              <span className="rounded bg-primary/20 text-primary px-1.5 py-0.5 text-[0.65rem] font-semibold">
+                                Aktif
+                              </span>
+                            )}
+                          </h2>
+                          <p className="text-xs text-muted-foreground">
+                            Modal awal otomatis berkurang saat beli stok USDT, kas bertambah saat jual, dan profit otomatis diakumulasikan.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {isEditingCapital ? (
+                          <form onSubmit={handleSaveCapital} className="flex items-center gap-2">
+                            <Input
+                              type="text"
+                              placeholder="contoh: 180000000 atau 180.000.000"
+                              value={capitalInputStr}
+                              onChange={(e) => setCapitalInputStr(e.target.value)}
+                              className="h-8 w-48 sm:w-60 bg-surface-2 text-xs"
+                              autoFocus
+                            />
+                            <Button
+                              type="submit"
+                              size="sm"
+                              disabled={setCapitalMutation.isPending}
+                              className="h-8 text-xs font-semibold px-3"
+                            >
+                              {setCapitalMutation.isPending ? "Menyimpan…" : "Simpan"}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setIsEditingCapital(false)}
+                              className="h-8 text-xs text-muted-foreground"
+                            >
+                              Batal
+                            </Button>
+                          </form>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleStartEditCapital}
+                            className="h-8 gap-1.5 text-xs font-semibold bg-surface-2 hover:bg-surface-3 border-primary/30 text-primary"
+                          >
+                            <Edit3 className="size-3.5" />
+                            {initialCapital > 0 ? "Ubah Modal Awal" : "Input Modal Awal"}
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* 4 Kartu Metrik Modal Utama */}
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      {/* Kartu 1: Modal Awal */}
+                      <div className="rounded-lg border border-border/70 bg-surface-2/60 p-3.5 space-y-1">
+                        <div className="flex items-center justify-between text-muted-foreground text-xs">
+                          <span>Modal Awal (Bankroll)</span>
+                          <PiggyBank className="size-3.5 text-primary" />
+                        </div>
+                        <div className="num text-xl sm:text-2xl font-bold text-foreground">
+                          {initialCapital > 0 ? fmtRp(initialCapital) : "Belum diinput"}
+                        </div>
+                        <div className="text-[0.68rem] text-muted-foreground">
+                          {initialCapital > 0 ? "Modal dasar yang diinvestasikan" : "Klik tombol 'Input Modal Awal'"}
+                        </div>
+                      </div>
+
+                      {/* Kartu 2: Sisa Kas Bebas (IDR) */}
+                      <div className="rounded-lg border border-border/70 bg-surface-2/60 p-3.5 space-y-1">
+                        <div className="flex items-center justify-between text-muted-foreground text-xs">
+                          <span>Sisa Kas Bebas (IDR)</span>
+                          <Coins className="size-3.5 text-sky-400" />
+                        </div>
+                        <div className="num text-xl sm:text-2xl font-bold text-sky-400">
+                          {initialCapital > 0 ? fmtRp(freeCashIdr) : "—"}
+                        </div>
+                        <div className="text-[0.68rem] text-muted-foreground">
+                          {initialCapital > 0 ? `Siap diputar (${cashPct.toFixed(1)}% dari modal)` : "Perlu input modal awal"}
+                        </div>
+                      </div>
+
+                      {/* Kartu 3: Modal di Stok USDT */}
+                      <div className="rounded-lg border border-border/70 bg-surface-2/60 p-3.5 space-y-1">
+                        <div className="flex items-center justify-between text-muted-foreground text-xs">
+                          <span>Modal di Stok USDT</span>
+                          <Wallet className="size-3.5 text-amber-400" />
+                        </div>
+                        <div className="num text-xl sm:text-2xl font-bold text-amber-400">
+                          {fmtRp(stockCapitalIdr)}
+                        </div>
+                        <div className="text-[0.68rem] text-muted-foreground">
+                          {stockUsdt > 0 ? `${stockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT @ ${fmtRp2(avgCost)}` : "Stok kosong"}
+                        </div>
+                      </div>
+
+                      {/* Kartu 4: Total Ekuitas & ROI */}
+                      <div className="rounded-lg border border-bid/30 bg-bid/5 p-3.5 space-y-1">
+                        <div className="flex items-center justify-between text-bid text-xs font-semibold">
+                          <span>Total Ekuitas Portofolio</span>
+                          <TrendingUp className="size-3.5 text-bid" />
+                        </div>
+                        <div className="num text-xl sm:text-2xl font-bold text-bid">
+                          {fmtRp(totalEquityIdr)}
+                        </div>
+                        <div className="text-[0.68rem] text-bid/90 font-medium">
+                          {initialCapital > 0
+                            ? `+${fmtRp(allTimeProfit)} akumulasi laba (${roiPct >= 0 ? "+" : ""}${roiPct.toFixed(2)}% ROI)`
+                            : `+${fmtRp(allTimeProfit)} akumulasi laba`}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Progress Bar Utilitas Modal */}
+                    {initialCapital > 0 && (
+                      <div className="space-y-1.5 pt-1">
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <span>Alokasi Modal: <strong>Kas Bebas ({cashPct.toFixed(1)}%)</strong> vs <strong>Stok USDT ({utilPct.toFixed(1)}%)</strong></span>
+                          <span>Total: <strong>{fmtRp(totalEquityIdr)}</strong></span>
+                        </div>
+                        <div className="h-2 w-full overflow-hidden rounded-full bg-surface-3 flex">
+                          <div
+                            style={{ width: `${cashPct}%` }}
+                            className="h-full bg-sky-500/80 transition-all"
+                            title={`Kas Bebas: ${fmtRp(freeCashIdr)} (${cashPct.toFixed(1)}%)`}
+                          />
+                          <div
+                            style={{ width: `${utilPct}%` }}
+                            className="h-full bg-amber-500/80 transition-all"
+                            title={`Stok USDT: ${fmtRp(stockCapitalIdr)} (${utilPct.toFixed(1)}%)`}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* Financial Metric Cards */}
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
                 <StatCard

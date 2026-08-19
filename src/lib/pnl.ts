@@ -130,6 +130,16 @@ export type PnlSummary = {
   open_position_avg_cost_idr: number;
   /** Nilai IDR total stok yang belum terjual, dihitung dari HPP (termasuk fee beli). */
   open_position_total_cost_idr: number;
+  /** Modal awal yang diinput pengguna (IDR) */
+  initial_capital_idr: number;
+  /** Sisa kas/fiat IDR yang belum terpakai untuk beli stok */
+  free_cash_idr: number;
+  /** Total ekuitas portofolio saat ini (Kas Bebas + Nilai Stok USDT + Profit) */
+  total_equity_idr: number;
+  /** Persentase modal awal yang sedang berputar di stok USDT */
+  capital_utilization_pct: number;
+  /** Return on Capital / ROI terhadap modal awal (%) */
+  roi_pct: number;
   /** Rata-rata harga beli historis mentah (sebelum fee) */
   avg_buy_price_idr: number;
   /** Rata-rata harga jual historis mentah (sebelum fee) */
@@ -159,6 +169,11 @@ const EMPTY_SUMMARY: PnlSummary = {
   open_position_usdt: 0,
   open_position_avg_cost_idr: 0,
   open_position_total_cost_idr: 0,
+  initial_capital_idr: 0,
+  free_cash_idr: 0,
+  total_equity_idr: 0,
+  capital_utilization_pct: 0,
+  roi_pct: 0,
   avg_buy_price_idr: 0,
   avg_sell_price_idr: 0,
   total_buy_usdt: 0,
@@ -170,6 +185,45 @@ const EMPTY_SUMMARY: PnlSummary = {
   total_trades_count: 0,
   recent_trades: [],
 };
+
+const INITIAL_CAPITAL_KEY = "initial_capital_idr";
+
+const getCapitalInputSchema = z.object({ sessionToken: z.string().optional() });
+
+export const getInitialCapital = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => getCapitalInputSchema.parse(data))
+  .handler(async ({ data }): Promise<{ initial_capital_idr: number }> => {
+    await requireSession(data.sessionToken);
+    const db = getSupabase();
+    if (!db) return { initial_capital_idr: 0 };
+    const { data: row } = await db
+      .from("user_settings")
+      .select("value")
+      .eq("key", INITIAL_CAPITAL_KEY)
+      .maybeSingle();
+    const val = parseFlexibleNumber((row as any)?.value);
+    return { initial_capital_idr: val > 0 ? val : 0 };
+  });
+
+const setCapitalInputSchema = z.object({
+  sessionToken: z.string().optional(),
+  initialCapitalIdr: z.number().nonnegative(),
+});
+
+export const setInitialCapital = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => setCapitalInputSchema.parse(data))
+  .handler(async ({ data }): Promise<{ ok: boolean; initial_capital_idr: number }> => {
+    await requireSession(data.sessionToken);
+    const db = getSupabase();
+    if (!db) return { ok: false, initial_capital_idr: data.initialCapitalIdr };
+    const { error } = await db
+      .from("user_settings")
+      .upsert(
+        { key: INITIAL_CAPITAL_KEY, value: String(data.initialCapitalIdr) } as any,
+        { onConflict: "key" },
+      );
+    return { ok: !error, initial_capital_idr: data.initialCapitalIdr };
+  });
 
 const logTradeSchema = z.object({
   sessionToken: z.string().optional(),
@@ -451,6 +505,32 @@ export const getPnlSummary = createServerFn({ method: "POST" })
     const avgSellPrice = totalSell > 0 ? totalSellIdr / totalSell : 0;
     const avgProfitPerUsdt = totalMatchedSellUsdt > 0 ? allTimeProfit / totalMatchedSellUsdt : 0;
 
+    // ── Ambil Modal Awal Pengguna dari user_settings ──────────────────────────
+    let initialCapitalIdr = 0;
+    const { data: capRow } = await db
+      .from("user_settings")
+      .select("value")
+      .eq("key", INITIAL_CAPITAL_KEY)
+      .maybeSingle();
+    const parsedCap = parseFlexibleNumber((capRow as any)?.value);
+    if (parsedCap > 0) initialCapitalIdr = parsedCap;
+
+    // ── Kalkulasi Ekuitas Modal, Sisa Kas Bebas, & Pertumbuhan ────────────────
+    // Sisa Kas Bebas = Modal Awal - Modal Terikat di Stok + Total Keuntungan
+    // Total Ekuitas = Modal Awal + Total Keuntungan
+    const freeCashIdr = initialCapitalIdr > 0
+      ? Math.max(0, initialCapitalIdr - openTotalCostIdr + allTimeProfit)
+      : 0;
+    const totalEquityIdr = initialCapitalIdr > 0
+      ? initialCapitalIdr + allTimeProfit
+      : (openTotalCostIdr + allTimeProfit);
+    const capitalUtilizationPct = initialCapitalIdr > 0
+      ? Math.min(100, Math.round((openTotalCostIdr / initialCapitalIdr) * 10000) / 100)
+      : 0;
+    const roiPct = initialCapitalIdr > 0
+      ? Math.round((allTimeProfit / initialCapitalIdr) * 10000) / 100
+      : 0;
+
     return {
       configured: true,
       today_profit_idr: todayProfit,
@@ -466,6 +546,11 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       open_position_usdt: openAmount,
       open_position_avg_cost_idr: openAvgHpp,        // HPP per USDT (termasuk fee beli)
       open_position_total_cost_idr: openTotalCostIdr, // Nilai IDR total stok
+      initial_capital_idr: initialCapitalIdr,
+      free_cash_idr: freeCashIdr,
+      total_equity_idr: totalEquityIdr,
+      capital_utilization_pct: capitalUtilizationPct,
+      roi_pct: roiPct,
       avg_buy_price_idr: avgBuyPrice,
       avg_sell_price_idr: avgSellPrice,
       total_buy_usdt: totalBuy,
