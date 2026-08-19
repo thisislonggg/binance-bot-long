@@ -75,7 +75,9 @@ import {
   logTrade,
   normalizeTradePrice,
   parseFlexibleNumber,
+  resetCustomStockAmount,
   resetCustomStockCost,
+  setCustomStockAmount,
   setCustomStockCost,
   setInitialCapital,
   updateTrade,
@@ -219,6 +221,8 @@ function Dashboard() {
   const setCapitalFn = useServerFn(setInitialCapital);
   const setCustomCostFn = useServerFn(setCustomStockCost);
   const resetCustomCostFn = useServerFn(resetCustomStockCost);
+  const setCustomAmountFn = useServerFn(setCustomStockAmount);
+  const resetCustomAmountFn = useServerFn(resetCustomStockAmount);
   const importCsvFn = useServerFn(importBinanceCsvTrades);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -226,9 +230,10 @@ function Dashboard() {
   const [isEditingCapital, setIsEditingCapital] = useState(false);
   const [capitalInputStr, setCapitalInputStr] = useState("");
 
-  // State Atur & Reset Harga Modal Stok (HPP)
+  // State Atur & Reset Saldo & Harga Modal Stok (Funding & HPP)
   const [isEditingStockCost, setIsEditingStockCost] = useState(false);
   const [stockCostInputStr, setStockCostInputStr] = useState("");
+  const [stockAmountInputStr, setStockAmountInputStr] = useState("");
 
   useEffect(() => {
     try {
@@ -355,12 +360,11 @@ function Dashboard() {
       }),
     onSuccess: (res) => {
       pnlQuery.refetch();
-      setIsEditingStockCost(false);
       if (res.ok) {
         if (res.costIdr > 0) {
-          toast.success(`Harga modal stok berhasil diatur ke ${fmtRp2(res.costIdr)}/USDT.`);
+          toast.success(`Harga modal stok diatur: ${fmtRp2(res.costIdr)}/USDT.`);
         } else {
-          toast.success("Harga modal stok berhasil di-reset ke kalkulasi otomatis (AVCO).");
+          toast.success("Harga modal stok di-reset ke kalkulasi otomatis (AVCO).");
         }
       } else {
         toast.error("Gagal menyimpan harga modal stok.");
@@ -378,9 +382,8 @@ function Dashboard() {
       }),
     onSuccess: (res) => {
       pnlQuery.refetch();
-      setIsEditingStockCost(false);
       if (res.ok) {
-        toast.success("Harga modal stok berhasil di-reset ke kalkulasi otomatis (AVCO riil).");
+        toast.success("Harga modal stok di-reset ke kalkulasi otomatis (AVCO riil).");
       } else {
         toast.error("Gagal me-reset harga modal stok.");
       }
@@ -388,24 +391,82 @@ function Dashboard() {
     onError: handleAuthError,
   });
 
-  const handleStartEditStockCost = () => {
-    const current = pnl?.open_position_avg_cost_idr ?? 0;
-    setStockCostInputStr(current > 0 ? String(Math.round(current)) : "");
+  // Mutasi Atur & Reset Saldo Stok USDT (Funding Wallet Override)
+  const setStockAmountMutation = useMutation({
+    mutationFn: (amountUsdt: number) =>
+      setCustomAmountFn({
+        data: {
+          sessionToken: sessionToken ?? undefined,
+          amountUsdt,
+        },
+      }),
+    onSuccess: (res) => {
+      pnlQuery.refetch();
+      if (res.ok) {
+        if (res.amountUsdt > 0) {
+          toast.success(`Saldo stok diatur: ${res.amountUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT.`);
+        } else {
+          toast.success("Saldo stok di-reset ke kalkulasi transaksi otomatis.");
+        }
+      } else {
+        toast.error("Gagal menyimpan saldo stok.");
+      }
+    },
+    onError: handleAuthError,
+  });
+
+  const resetStockAmountMutation = useMutation({
+    mutationFn: () =>
+      resetCustomAmountFn({
+        data: {
+          sessionToken: sessionToken ?? undefined,
+        },
+      }),
+    onSuccess: (res) => {
+      pnlQuery.refetch();
+      if (res.ok) {
+        toast.success("Saldo stok di-reset ke kalkulasi transaksi otomatis.");
+      } else {
+        toast.error("Gagal me-reset saldo stok.");
+      }
+    },
+    onError: handleAuthError,
+  });
+
+  const handleStartEditStock = () => {
+    const currentCost = pnl?.open_position_avg_cost_idr ?? 0;
+    const currentAmount = pnl?.open_position_usdt ?? 0;
+    setStockCostInputStr(currentCost > 0 ? String(Math.round(currentCost)) : "");
+    setStockAmountInputStr(currentAmount > 0 ? String(currentAmount) : "");
     setIsEditingStockCost(true);
   };
 
-  const handleSaveStockCost = (e: React.FormEvent) => {
+  const handleSaveAllStock = (e: React.FormEvent) => {
     e.preventDefault();
-    const val = parseFlexibleNumber(stockCostInputStr);
-    if (val <= 0) {
+    const costVal = parseFlexibleNumber(stockCostInputStr);
+    const amountVal = parseFlexibleNumber(stockAmountInputStr);
+
+    if (costVal > 0) {
+      setStockCostMutation.mutate(costVal);
+    } else if (stockCostInputStr.trim() === "0") {
       resetStockCostMutation.mutate();
-    } else {
-      setStockCostMutation.mutate(val);
     }
+
+    if (amountVal > 0) {
+      setStockAmountMutation.mutate(amountVal);
+    } else if (stockAmountInputStr.trim() === "0") {
+      resetStockAmountMutation.mutate();
+    }
+
+    setIsEditingStockCost(false);
   };
 
   const handleResetToAutoCost = () => {
     resetStockCostMutation.mutate();
+  };
+
+  const handleResetToAutoAmount = () => {
+    resetStockAmountMutation.mutate();
   };
 
   const handleSetToFairPriceCost = () => {
@@ -416,6 +477,7 @@ function Dashboard() {
       toast.error("Nilai wajar pasar belum tersedia.");
     }
   };
+
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1407,17 +1469,18 @@ function Dashboard() {
                       }
                       action={
                         <div className="flex items-center gap-1">
-                          {pnl?.is_custom_stock_cost && (
+                          {(pnl?.is_custom_stock_cost || pnl?.is_custom_stock_amount) && (
                             <Button
                               size="sm"
                               variant="ghost"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                handleResetToAutoCost();
+                                if (pnl?.is_custom_stock_cost) handleResetToAutoCost();
+                                if (pnl?.is_custom_stock_amount) handleResetToAutoAmount();
                               }}
-                              disabled={resetStockCostMutation.isPending}
+                              disabled={resetStockCostMutation.isPending || resetStockAmountMutation.isPending}
                               className="h-6 px-1.5 text-[0.65rem] text-muted-foreground hover:text-foreground gap-1"
-                              title="Reset ke kalkulasi otomatis (AVCO)"
+                              title="Reset ke kalkulasi otomatis transaksi (AVCO)"
                             >
                               <RotateCcw className="size-2.5" />
                               Reset
@@ -1431,13 +1494,13 @@ function Dashboard() {
                               if (isEditingStockCost) {
                                 setIsEditingStockCost(false);
                               } else {
-                                handleStartEditStockCost();
+                                handleStartEditStock();
                               }
                             }}
                             className="h-6 px-2 text-[0.65rem] font-semibold bg-surface-2 hover:bg-surface-3 border-border/80 text-foreground gap-1"
                           >
                             <Sliders className="size-2.5" />
-                            {isEditingStockCost ? "Tutup" : (pnl?.is_custom_stock_cost ? "Atur Modal" : "Atur / Reset")}
+                            {isEditingStockCost ? "Tutup" : (pnl?.is_custom_stock_cost || pnl?.is_custom_stock_amount ? "Atur Stok/Modal" : "Atur / Reset")}
                           </Button>
                         </div>
                       }
@@ -1446,7 +1509,7 @@ function Dashboard() {
                 })()}
               </div>
 
-              {/* ── Panel Pengaturan & Reset Harga Modal Stok (HPP) ─────────── */}
+              {/* ── Panel Pengaturan & Reset Saldo & Harga Modal Stok (Funding & HPP) ── */}
               {isEditingStockCost && (() => {
                 const fb = fundingBalanceQuery.data;
                 const isFundingLive = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
@@ -1463,19 +1526,19 @@ function Dashboard() {
                         </div>
                         <div>
                           <h3 className="text-xs font-bold text-foreground uppercase tracking-wider flex items-center gap-2">
-                            Pengaturan & Reset Harga Modal Stok (HPP)
-                            {pnl?.is_custom_stock_cost ? (
+                            Pengaturan & Reset Saldo & Modal Stok (Funding & HPP)
+                            {(pnl?.is_custom_stock_cost || pnl?.is_custom_stock_amount) ? (
                               <span className="rounded bg-primary/20 text-primary px-1.5 py-0.5 text-[0.6rem] font-semibold">
                                 Mode Manual Aktif
                               </span>
                             ) : (
                               <span className="rounded bg-surface-3 text-muted-foreground px-1.5 py-0.5 text-[0.6rem] font-semibold">
-                                Mode Otomatis (AVCO)
+                                Mode Otomatis
                               </span>
                             )}
                           </h3>
                           <p className="text-xs text-muted-foreground">
-                            Tentukan harga modal per USDT secara manual atau reset kembali ke kalkulasi otomatis transaksi riil.
+                            Input jumlah saldo stok USDT di dompet Anda dan harga modal rata-rata (HPP), atau reset ke kalkulasi otomatis riwayat transaksi.
                           </p>
                         </div>
                       </div>
@@ -1498,7 +1561,9 @@ function Dashboard() {
                           {stockUsdt > 0 ? `${stockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT` : "0 USDT"}
                         </div>
                         <span className="text-[0.65rem] text-muted-foreground">
-                          {isFundingLive ? "Sinkron Live Binance Funding Wallet" : "Estimasi Akumulasi Transaksi"}
+                          {isFundingLive
+                            ? "Sinkron Live Binance Funding Wallet"
+                            : (pnl?.is_custom_stock_amount ? "Input Manual Saldo Dompet" : "Estimasi Akumulasi Transaksi")}
                         </span>
                       </div>
 
@@ -1523,30 +1588,39 @@ function Dashboard() {
                       </div>
                     </div>
 
-
-                    {/* Form & Tombol Aksi Cepat */}
+                    {/* Form Input Saldo & Modal */}
                     <div className="space-y-3 pt-1">
-                      <form onSubmit={handleSaveStockCost} className="flex flex-wrap items-center gap-2.5">
-                        <div className="space-y-1 flex-1 min-w-[240px]">
-                          <Label className="text-xs text-muted-foreground">Input Harga Modal Baru (Rp / USDT):</Label>
+                      <form onSubmit={handleSaveAllStock} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 items-end">
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">Saldo Stok USDT (Funding):</Label>
                           <Input
                             type="text"
-                            placeholder="contoh: 16250 atau 17.650"
-                            value={stockCostInputStr}
-                            onChange={(e) => setStockCostInputStr(e.target.value)}
+                            placeholder="contoh: 5000 atau 1250.50"
+                            value={stockAmountInputStr}
+                            onChange={(e) => setStockAmountInputStr(e.target.value)}
                             className="h-8.5 bg-surface text-xs font-bold num"
-                            autoFocus
                           />
                         </div>
 
-                        <div className="flex items-end gap-2 pt-5">
+                        <div className="space-y-1">
+                          <Label className="text-xs text-muted-foreground">Harga Modal (Rp / USDT):</Label>
+                          <Input
+                            type="text"
+                            placeholder="contoh: 17650 atau 16250"
+                            value={stockCostInputStr}
+                            onChange={(e) => setStockCostInputStr(e.target.value)}
+                            className="h-8.5 bg-surface text-xs font-bold num"
+                          />
+                        </div>
+
+                        <div className="flex items-center gap-2">
                           <Button
                             type="submit"
                             size="sm"
-                            disabled={setStockCostMutation.isPending}
-                            className="h-8.5 text-xs font-semibold px-4"
+                            disabled={setStockCostMutation.isPending || setStockAmountMutation.isPending}
+                            className="h-8.5 flex-1 text-xs font-semibold px-4"
                           >
-                            {setStockCostMutation.isPending ? "Menyimpan…" : "Simpan Harga Modal"}
+                            Simpan Perubahan
                           </Button>
                         </div>
                       </form>
@@ -1555,7 +1629,20 @@ function Dashboard() {
                       <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border/50">
                         <span className="text-xs text-muted-foreground font-medium">Aksi Cepat:</span>
 
-                        {/* Tombol Reset ke Otomatis AVCO */}
+                        {/* Tombol Reset Saldo ke Otomatis */}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={handleResetToAutoAmount}
+                          disabled={resetStockAmountMutation.isPending || !pnl?.is_custom_stock_amount}
+                          className="h-7.5 text-xs gap-1.5 bg-surface hover:bg-surface-3 border-border"
+                        >
+                          <RotateCcw className="size-3 text-primary" />
+                          Reset Saldo Stok ke AVCO ({pnl?.auto_stock_amount_usdt ? `${pnl.auto_stock_amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT` : "0 USDT"})
+                        </Button>
+
+                        {/* Tombol Reset Modal ke Otomatis AVCO */}
                         <Button
                           type="button"
                           variant="outline"
@@ -1565,7 +1652,7 @@ function Dashboard() {
                           className="h-7.5 text-xs gap-1.5 bg-surface hover:bg-surface-3 border-border"
                         >
                           <RotateCcw className="size-3 text-primary" />
-                          Reset ke Otomatis AVCO ({pnl?.auto_stock_avg_cost_idr ? fmtRp2(pnl.auto_stock_avg_cost_idr) : "Rp 0"})
+                          Reset Modal ke AVCO ({pnl?.auto_stock_avg_cost_idr ? fmtRp2(pnl.auto_stock_avg_cost_idr) : "Rp 0"})
                         </Button>
 
                         {/* Tombol Set ke Nilai Wajar Pasar */}
@@ -1579,7 +1666,7 @@ function Dashboard() {
                             className="h-7.5 text-xs gap-1.5 bg-surface hover:bg-surface-3 border-border"
                           >
                             <Zap className="size-3 text-amber-400" />
-                            Set ke Nilai Wajar Pasar ({fmtRp2(snapshotQuery.data.fair_price)})
+                            Set Modal ke Fair Price ({fmtRp2(snapshotQuery.data.fair_price)})
                           </Button>
                         )}
                       </div>
@@ -1587,6 +1674,7 @@ function Dashboard() {
                   </div>
                 );
               })()}
+
 
               {/* Toolbar Aksi */}
               <div className="panel p-3.5 flex flex-wrap items-center justify-between gap-2.5">
