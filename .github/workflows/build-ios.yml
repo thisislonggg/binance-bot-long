@@ -22,14 +22,17 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
+      - name: Build Web App
+        run: npm run build
+
       - name: Sync Capacitor iOS
         run: npx cap sync ios
 
-      - name: Compile Xcode Project
+      - name: Compile Xcode Project (.xcodeproj)
         run: |
           cd ios/App
           xcodebuild clean build \
-            -workspace App.xcworkspace \
+            -project App.xcodeproj \
             -scheme App \
             -configuration Release \
             -destination 'generic/platform=iOS' \
