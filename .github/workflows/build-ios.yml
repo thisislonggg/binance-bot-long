@@ -1,22 +1,22 @@
 name: Build iOS IPA (Cloud Mac)
 
 on:
-  workflow_dispatch: # Memungkinkan build manual dari tab Actions di GitHub
+  workflow_dispatch:
   push:
     branches:
       - main
 
 jobs:
   build-ipa:
-    runs-on: macos-14 # Menggunakan server macOS resmi dari GitHub secara gratis
+    runs-on: macos-14
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: "npm"
 
       - name: Install Dependencies
@@ -25,7 +25,7 @@ jobs:
       - name: Sync Capacitor iOS
         run: npx cap sync ios
 
-      - name: Compile Xcode Project (No Signing)
+      - name: Compile Xcode Project
         run: |
           cd ios/App
           xcodebuild clean build \
@@ -36,12 +36,15 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER=""
 
       - name: Package into .ipa
         run: |
           mkdir -p Payload
-          cp -r ios/App/build/Build/Products/Release-iphoneos/App.app Payload/
+          APP_PATH=$(find ios/App/build -name "*.app" -type d | head -n 1)
+          echo "Found app at: $APP_PATH"
+          cp -r "$APP_PATH" Payload/
           zip -r RadarP2P-Binance.ipa Payload
           mkdir -p output
           mv RadarP2P-Binance.ipa output/
