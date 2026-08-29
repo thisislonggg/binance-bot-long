@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Radar P2P Binance</string>
+    <string name="title_activity_main">Radar P2P Binance</string>
+    <string name="package_name">com.radarp2p.binance</string>
+    <string name="custom_url_scheme">com.radarp2p.binance</string>
+</resources>

@@ -1,0 +1,40 @@
+{
+  "appId": "com.radarp2p.binance",
+  "productName": "Radar P2P Binance",
+  "copyright": "Copyright © 2026 Radar P2P",
+  "directories": {
+    "output": "release"
+  },
+  "files": [
+    "electron/**/*",
+    "app.config.json",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "electron/main.cjs"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      },
+      {
+        "target": "portable",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "electron/icons/icon.png"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "allowElevation": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Radar P2P Binance"
+  },
+  "portable": {
+    "artifactName": "${productName}-Portable-${version}.${ext}"
+  }
+}

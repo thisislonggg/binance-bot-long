@@ -1,0 +1,19 @@
+{
+  "appName": "Radar P2P Binance",
+  "appId": "com.radarp2p.binance",
+  "version": "1.0.0",
+  "author": "Radar P2P Team",
+  "description": "Terminal Merchant Binance USDT/IDR & Arbitrage Scanner",
+  "server": {
+    "productionUrl": "https://binance-bot-long-delta.vercel.app",
+    "localDevUrl": "http://localhost:3000",
+    "useLocalInDev": true
+  },
+  "window": {
+    "width": 1440,
+    "height": 900,
+    "minWidth": 1024,
+    "minHeight": 700,
+    "backgroundColor": "#0b0e14"
+  }
+}

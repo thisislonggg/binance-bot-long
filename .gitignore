@@ -33,3 +33,12 @@ dist-ssr
 .env
 .env.*
 !.env.example
+
+# App Build Outputs
+release/
+dist-electron/
+*.exe
+*.apk
+*.ipa
+android/app/build/
+ios/App/build/

@@ -1,0 +1,17 @@
+{
+  "name": "Radar P2P Binance",
+  "short_name": "Radar P2P",
+  "description": "Terminal Merchant Binance USDT/IDR & Arbitrage Scanner",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b0e14",
+  "theme_color": "#0b0e14",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
