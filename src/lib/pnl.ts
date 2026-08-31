@@ -9,13 +9,16 @@ import { getSupabase } from "./supabase";
  * menggunakan AVCO (Moving Average Cost / Rata-rata Bergerak Tertimbang) agar harga modal
  * selalu mencerminkan nilai wajar stok yang sedang dipegang secara presisi.
  *
- * KONSEP FEE (0.08% per transaksi):
- * - Fee beli 0.08% → MASUK ke HPP (Harga Pokok Pembelian). Modal stok sudah include fee beli.
- *   HPP = harga_beli × (1 + 0.0008)
- * - Fee jual 0.08% → DIKURANGKAN dari hasil jual saat matching.
+ * KONSEP FEE (0.08% per transaksi — hanya berlaku untuk binance_sync):
+ * - Fee beli 0.08% → DIKURANGKAN dari USDT yang diterima (bukan ditambah ke IDR).
+ *   Stok masuk = amount × (1 - 0.0008) → misal beli 10.000 USDT → masuk 9.992 USDT.
+ *   HPP per USDT = harga_beli / (1 - 0.0008) ≈ harga_beli × 1.0008
+ * - Fee jual 0.08% → DIKURANGKAN dari hasil jual saat matching (hanya binance_sync).
  *   Net Jual = harga_jual × (1 - 0.0008)
+ * - Transaksi manual (source = 'manual'): TIDAK dikenakan fee beli/jual apapun.
+ *   Stok masuk = amount penuh, Net Jual = harga_jual mentah.
  * - Profit Bersih = (Net Jual − HPP) × jumlah USDT
- * - Total fee per putaran beli+jual = 0.16%
+ * - Total fee per putaran beli+jual (binance_sync) ≈ 0.16%
  *
  * ZONA WAKTU: Indonesia (WIB UTC+7) untuk batas hari/minggu/bulan.
  */
@@ -474,24 +477,35 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       });
 
       if (rawTrade.side === "buy") {
-        const hpp = calcHpp(price);
+        // Untuk binance_sync: stok yang masuk dikurangi fee 0.08%
+        // (misal beli 10.000 USDT → 10.000 × 0.9992 = 9.992 USDT masuk ke stok)
+        // Untuk manual: jumlah penuh dipakai (user sudah input jumlah aktual)
+        const isBinanceSync = rawTrade.source === "binance_sync";
+        const actualAmount = isBinanceSync
+          ? amount * (1 - BINANCE_FEE_RATE)  // USDT yang benar-benar diterima
+          : amount;
+        // HPP = total IDR dibayar / USDT diterima = price / (1 - fee) ≈ price × 1.0008
+        const hpp = isBinanceSync
+          ? price / (1 - BINANCE_FEE_RATE)   // biaya per USDT yang diterima
+          : calcHpp(price);                   // manual tetap pakai calcHpp
         lastBuyHpp = hpp;
 
         if (inventory <= 1e-8) {
           // Stok sebelumnya kosong atau habis -> set modal baru
-          inventory = amount;
+          inventory = actualAmount;
           avgHpp = hpp;
         } else {
           // Ada sisa stok lama -> perbarui rata-rata tertimbang
-          const newInventory = inventory + amount;
-          avgHpp = (inventory * avgHpp + amount * hpp) / newInventory;
+          const newInventory = inventory + actualAmount;
+          avgHpp = (inventory * avgHpp + actualAmount * hpp) / newInventory;
           inventory = newInventory;
         }
 
-        totalBuy += amount;
-        totalBuyIdr += amount * price; // harga beli mentah (sebelum fee) untuk statistik
+        totalBuy += actualAmount;              // USDT yang benar-benar masuk ke stok
+        totalBuyIdr += amount * price;         // IDR yang dibayarkan (nominal penuh)
         continue;
       }
+
 
       // ── Sisi JUAL ──────────────────────────────────────────────────────────
       const tradeSellIdr = amount * price;
@@ -500,7 +514,9 @@ export const getPnlSummary = createServerFn({ method: "POST" })
 
       let tradeProfit = 0;
       let tradeFeeIdr = 0;
-      const netSellPerUsdt = calcNetSell(price);
+      // Transaksi manual tidak dikenakan fee jual (fee jual hanya untuk binance_sync)
+      const isManual = rawTrade.source === "manual";
+      const netSellPerUsdt = isManual ? price : calcNetSell(price);
 
       // Porsi yang bisa di-match dengan inventaris yang ada
       const matched = Math.min(amount, Math.max(0, inventory));
@@ -511,7 +527,8 @@ export const getPnlSummary = createServerFn({ method: "POST" })
         // Cost basis = avgHpp saat ini (AVCO: rata-rata tertimbang semua stok)
         const rawBuyForMatched = avgHpp / (1 + BINANCE_FEE_RATE); // balik ke harga beli mentah
         const buyFeeMatched = matched * rawBuyForMatched * BINANCE_FEE_RATE;
-        const sellFeeMatched = matched * price * BINANCE_FEE_RATE;
+        // Fee jual hanya dihitung untuk transaksi Binance Sync
+        const sellFeeMatched = isManual ? 0 : matched * price * BINANCE_FEE_RATE;
         tradeFeeIdr += buyFeeMatched + sellFeeMatched;
         tradeProfit += (netSellPerUsdt - avgHpp) * matched;
         inventory -= matched;
@@ -525,7 +542,8 @@ export const getPnlSummary = createServerFn({ method: "POST" })
         if (effectiveHpp > 0) {
           const rawBuyFallback = effectiveHpp / (1 + BINANCE_FEE_RATE);
           const buyFeeUnmatched = unmatched * rawBuyFallback * BINANCE_FEE_RATE;
-          const sellFeeUnmatched = unmatched * price * BINANCE_FEE_RATE;
+          // Fee jual hanya dihitung untuk transaksi Binance Sync
+          const sellFeeUnmatched = isManual ? 0 : unmatched * price * BINANCE_FEE_RATE;
           tradeFeeIdr += buyFeeUnmatched + sellFeeUnmatched;
           tradeProfit += (netSellPerUsdt - effectiveHpp) * unmatched;
         }
