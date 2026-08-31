@@ -177,6 +177,7 @@ export function TradesTable({
               <th className="py-2 pr-3 text-left font-medium">Sisi</th>
               <th className="py-2 pr-3 text-right font-medium">Harga</th>
               <th className="py-2 pr-3 text-right font-medium">Jumlah (USDT)</th>
+              <th className="py-2 pr-3 text-right font-medium">Profit / Detail</th>
               <th className="py-2 pr-3 text-left font-medium">Catatan</th>
               {(onEdit || onDelete) && <th className="py-2 text-right font-medium">Aksi</th>}
             </tr>
@@ -184,7 +185,7 @@ export function TradesTable({
           <tbody className="divide-y divide-border">
             {paginatedTrades.length === 0 ? (
               <tr>
-                <td colSpan={6} className="py-6 text-center text-xs text-muted-foreground">
+                <td colSpan={7} className="py-6 text-center text-xs text-muted-foreground">
                   Tidak ada transaksi yang cocok dengan filter.
                 </td>
               </tr>
@@ -219,6 +220,33 @@ export function TradesTable({
                   </td>
                   <td className="num py-2.5 pr-3 text-right text-foreground/85">
                     {t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                  </td>
+                  {/* Kolom Profit / Detail */}
+                  <td className="num py-2.5 pr-3 text-right">
+                    {t.side === "sell" && t.profit_idr !== undefined ? (
+                      <div>
+                        <div
+                          className={cn(
+                            "font-semibold tabular-nums",
+                            t.profit_idr >= 0 ? "text-emerald-400" : "text-rose-400",
+                          )}
+                        >
+                          {t.profit_idr >= 0 ? "+" : ""}
+                          {fmtRp(t.profit_idr)}
+                        </div>
+                        {t.avg_cost_at_sell !== undefined && t.avg_cost_at_sell > 0 && (
+                          <div className="text-[0.67rem] text-muted-foreground">
+                            Modal: {fmtRp2(t.avg_cost_at_sell)}/USDT
+                          </div>
+                        )}
+                      </div>
+                    ) : t.side === "buy" ? (
+                      <div className="text-[0.68rem] text-muted-foreground">
+                        {fmtRp(normalizeTradePrice(t.price) * t.amount_usdt)}
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
                   </td>
                   <td className="py-2.5 pr-3 text-muted-foreground">
                     <span className="flex flex-wrap items-center gap-1.5">

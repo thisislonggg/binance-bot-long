@@ -114,6 +114,10 @@ export type Trade = {
   /** 'manual' = dicatat sendiri | 'binance_sync' = dari Binance C2C API */
   source: "manual" | "binance_sync";
   binance_order_no: string | null;
+  /** Profit bersih per transaksi jual (IDR). Undefined untuk transaksi beli. */
+  profit_idr?: number;
+  /** HPP rata-rata saat transaksi jual terjadi (IDR/USDT). Undefined untuk transaksi beli. */
+  avg_cost_at_sell?: number;
 };
 
 export type PnlSummary = {
@@ -461,7 +465,9 @@ export const getPnlSummary = createServerFn({ method: "POST" })
     let unmatchedSell = 0;
     let totalMatchedSellUsdt = 0;
 
+
     const normalizedTrades: Trade[] = [];
+
 
     for (const rawTrade of rawTrades) {
       const rawPrice = Number(rawTrade.price);
@@ -471,10 +477,6 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       if (!Number.isFinite(rawPrice) || rawPrice <= 0 || !Number.isFinite(amount) || amount <= 0) continue;
 
       const price = normalizeTradePrice(rawPrice);
-      normalizedTrades.push({
-        ...rawTrade,
-        price,
-      });
 
       if (rawTrade.side === "buy") {
         // Untuk binance_sync: stok yang masuk dikurangi fee 0.08%
@@ -503,6 +505,8 @@ export const getPnlSummary = createServerFn({ method: "POST" })
 
         totalBuy += actualAmount;              // USDT yang benar-benar masuk ke stok
         totalBuyIdr += amount * price;         // IDR yang dibayarkan (nominal penuh)
+        // Beli: push tanpa profit_idr
+        normalizedTrades.push({ ...rawTrade, price });
         continue;
       }
 
@@ -556,6 +560,13 @@ export const getPnlSummary = createServerFn({ method: "POST" })
         fee_idr: tradeFeeIdr,
         matched_usdt: amount,
         sell_idr: tradeSellIdr,
+      });
+      // Jual: push dengan profit_idr & avg_cost_at_sell ter-inject
+      normalizedTrades.push({
+        ...rawTrade,
+        price,
+        profit_idr: tradeProfit,
+        avg_cost_at_sell: effectiveHpp,
       });
     }
 
