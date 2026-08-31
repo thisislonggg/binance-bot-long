@@ -536,7 +536,11 @@ export const getPnlSummary = createServerFn({ method: "POST" })
         tradeFeeIdr += buyFeeMatched + sellFeeMatched;
         tradeProfit += (netSellPerUsdt - avgHpp) * matched;
         inventory -= matched;
-        if (inventory < 1e-8) inventory = 0;
+        if (inventory < 1e-8) {
+          // Stok habis → reset modal ke 0 agar tampilan bersih
+          inventory = 0;
+          avgHpp = 0;
+        }
       }
 
       if (unmatched > 1e-8) {
