@@ -39,6 +39,7 @@ import { toast } from "sonner";
 import { AdsTable } from "@/components/p2p/AdsTable";
 import { ArbitrageScanner } from "@/components/p2p/ArbitrageScanner";
 import { MarginCalculator } from "@/components/p2p/MarginCalculator";
+import { PaymentVerifierPanel } from "@/components/p2p/PaymentVerifierPanel";
 
 import { StatCard } from "@/components/p2p/StatCard";
 import { TradesTable } from "@/components/p2p/TradesTable";
@@ -191,7 +192,7 @@ function Dashboard() {
   // Polling pasar & history chart
   const [history, setHistory] = useState<HistoryPoint[]>(loadHistory);
   const [copiedPrice, setCopiedPrice] = useState<"buy" | "sell" | null>(null);
-  const [activeTab, setActiveTab] = useState<"pnl" | "market" | "calculator" | "arbitrage" | "news">("pnl");
+  const [activeTab, setActiveTab] = useState<"pnl" | "market" | "calculator" | "arbitrage" | "news" | "verifier">("pnl");
 
   const [newsCategoryFilter, setNewsCategoryFilter] = useState<"all" | "kurs_rupiah" | "kebijakan_fed_bi" | "pasar_kripto">("all");
 
@@ -1193,6 +1194,19 @@ function Dashboard() {
                   Berita & Dampak Pasar ({s?.analyzed_news?.length || s?.news_items?.length || 0})
                 </button>
               ) : null}
+
+              <button
+                type="button"
+                onClick={() => setActiveTab("verifier")}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  activeTab === "verifier"
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <ShieldCheck className="size-3.5 text-emerald-400" />
+                Pantau Pembayaran (WA)
+              </button>
 
             </div>
           </div>
@@ -2208,6 +2222,11 @@ function Dashboard() {
                 </div>
               </div>
             </div>
+          )}
+
+          {/* ── TAB 6: PANTAU PEMBAYARAN BANK & NOTIFIKASI WHATSAPP ──────────── */}
+          {activeTab === "verifier" && (
+            <PaymentVerifierPanel sessionToken={sessionToken} />
           )}
 
         </div>
