@@ -9,18 +9,19 @@ import { getSupabase } from "./supabase";
  * menggunakan AVCO (Moving Average Cost / Rata-rata Bergerak Tertimbang) agar harga modal
  * selalu mencerminkan nilai wajar stok yang sedang dipegang secara presisi.
  *
- * KONSEP FEE (berbasis timestamp transaksi — hanya berlaku untuk binance_sync):
+ * KONSEP FEE & PERUBAHAN SALDO STOK (hanya berlaku untuk binance_sync):
  * - Sebelum cut-off permintaan perubahan (4 Sep 2026 10:00:00 WIB / 2026-09-04T03:00:00Z): fee historis 0.08%.
  * - Mulai cut-off dan seterusnya: fee baru 0.07%.
- * - Fee beli → DIKURANGKAN dari USDT yang diterima.
- *   Stok masuk = amount × (1 - fee_rate)
- *   HPP per USDT = harga_beli / (1 - fee_rate)
- * - Fee jual → DITAMBAHKAN ke USDT yang keluar dari stok (memakan stok ekstra).
- *   Stok keluar = amount × (1 + fee_rate)
- *   Net Jual per USDT = harga_jual × (1 - fee_rate) untuk kalkulasi profit.
- * - Transaksi manual (source = 'manual'): TIDAK dikenakan fee beli/jual apapun.
- *   Stok masuk = amount penuh, stok keluar = amount penuh, Net Jual = harga_jual mentah.
- * - Profit Bersih = (Net Jual − HPP) × jumlah nominal USDT
+ * - TRANSAKSI BELI:
+ *   Stok bertambah = amount × (1 - fee_rate) → misal beli 10.000 USDT (fee 0.07%) → saldo bertambah +9.993 USDT.
+ *   HPP modal per USDT = harga_beli / (1 - fee_rate)
+ * - TRANSAKSI JUAL:
+ *   Stok berkurang = amount (nominal penuh USDT yang keluar dari wallet ke pembeli).
+ *   Fee jual mengurangi hasil penjualan Rupiah (Net Jual = harga_jual × (1 - fee_rate)),
+ *   TIDAK memotong saldo koin USDT ekstra dari wallet.
+ * - TRANSAKSI MANUAL (source = 'manual'):
+ *   Bebas fee maker. Beli bertambah penuh amount, jual berkurang penuh amount, Net Jual = harga_jual mentah.
+ * - Profit Bersih = (Net Jual − HPP) × jumlah nominal USDT matched
  *
  * ZONA WAKTU: Indonesia (WIB UTC+7) untuk batas hari/minggu/bulan.
  */
@@ -559,30 +560,24 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       // Transaksi manual tidak dikenakan fee jual (fee jual hanya untuk binance_sync)
       const netSellPerUsdt = isManual ? price : calcNetSell(price, feeRate);
 
-      // Untuk binance_sync: USDT yang benar-benar keluar dari wallet = amount × (1 + fee)
-      // Contoh: jual 10.000 USDT → fee = feeRate × 10.000
-      // Untuk manual: jumlah penuh tanpa modifikasi fee
-      const isBinanceSyncSell = rawTrade.source === "binance_sync";
-      const actualSellAmount = isBinanceSyncSell
-        ? amount * (1 + feeRate)  // USDT yang benar-benar keluar dari wallet
-        : amount;
+      // Saldo USDT yang keluar dari wallet saat jual adalah nominal order (amount).
+      // Fee jual diperhitungkan pada nilai hasil penjualan Rupiah (netSellPerUsdt),
+      // bukan memotong koin USDT ekstra dari saldo dompet.
+      const actualSellAmount = amount;
 
-      // Porsi yang bisa di-match dengan inventaris yang ada (berdasar USDT aktual keluar)
+      // Porsi yang bisa di-match dengan inventaris yang ada
       const matched = Math.min(actualSellAmount, Math.max(0, inventory));
       const unmatched = actualSellAmount - matched;
       const effectiveHpp = avgHpp > 0 ? avgHpp : (lastBuyHpp > 0 ? lastBuyHpp : 0);
 
       if (matched > 1e-8 && avgHpp > 0) {
         // Cost basis = avgHpp saat ini (AVCO: rata-rata tertimbang semua stok)
-        // Profit dihitung berdasarkan amount nominal (bukan actualSellAmount)
-        // karena fee sudah tercermin di netSellPerUsdt dan fee hanya "memakan" stok ekstra
-        const profitableAmount = Math.min(amount, matched);
         const rawBuyForMatched = avgHpp / (1 + feeRate); // balik ke harga beli mentah
-        const buyFeeMatched = profitableAmount * rawBuyForMatched * feeRate;
+        const buyFeeMatched = matched * rawBuyForMatched * feeRate;
         // Fee jual hanya dihitung untuk transaksi Binance Sync
-        const sellFeeMatched = isManual ? 0 : profitableAmount * price * feeRate;
+        const sellFeeMatched = isManual ? 0 : matched * price * feeRate;
         tradeFeeIdr += buyFeeMatched + sellFeeMatched;
-        tradeProfit += (netSellPerUsdt - avgHpp) * profitableAmount;
+        tradeProfit += (netSellPerUsdt - avgHpp) * matched;
         inventory -= matched;
         if (inventory < 1e-8) {
           // Stok habis → reset modal ke 0 agar tampilan bersih
@@ -591,21 +586,17 @@ export const getPnlSummary = createServerFn({ method: "POST" })
         }
       }
 
-      // Sisa USDT nominal yang belum ter-match untuk profit
-      const nominalMatched = Math.min(amount, matched);
-      const nominalUnmatched = amount - nominalMatched;
-
       if (unmatched > 1e-8) {
         // Jual melebihi stok tercatat: gunakan HPP terakhir yang diketahui
         unmatchedSell += unmatched;
 
-        if (effectiveHpp > 0 && nominalUnmatched > 1e-8) {
+        if (effectiveHpp > 0) {
           const rawBuyFallback = effectiveHpp / (1 + feeRate);
-          const buyFeeUnmatched = nominalUnmatched * rawBuyFallback * feeRate;
+          const buyFeeUnmatched = unmatched * rawBuyFallback * feeRate;
           // Fee jual hanya dihitung untuk transaksi Binance Sync
-          const sellFeeUnmatched = isManual ? 0 : nominalUnmatched * price * feeRate;
+          const sellFeeUnmatched = isManual ? 0 : unmatched * price * feeRate;
           tradeFeeIdr += buyFeeUnmatched + sellFeeUnmatched;
-          tradeProfit += (netSellPerUsdt - effectiveHpp) * nominalUnmatched;
+          tradeProfit += (netSellPerUsdt - effectiveHpp) * unmatched;
         }
       }
 

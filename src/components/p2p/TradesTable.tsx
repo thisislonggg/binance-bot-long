@@ -219,7 +219,21 @@ export function TradesTable({
                     </div>
                   </td>
                   <td className="num py-2.5 pr-3 text-right text-foreground/85">
-                    {t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                    <div className="font-semibold text-foreground/90">
+                      {t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                    </div>
+                    {t.side === "buy" ? (
+                      <div className="text-[0.67rem] font-medium text-emerald-400" title="Penambahan saldo stok masuk">
+                        +{t.source === "binance_sync" && t.fee_rate
+                          ? (t.amount_usdt * (1 - t.fee_rate)).toLocaleString("id-ID", { maximumFractionDigits: 2 })
+                          : t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}{" "}
+                        stok
+                      </div>
+                    ) : (
+                      <div className="text-[0.67rem] font-medium text-rose-400" title="Pengurangan saldo stok keluar">
+                        -{t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} stok
+                      </div>
+                    )}
                   </td>
                   {/* Kolom Profit / Detail */}
                   <td className="num py-2.5 pr-3 text-right">

@@ -1446,8 +1446,10 @@ function Dashboard() {
                     ? parts.join(" · ")
                     : (stockUsdt === 0 ? "Stok kosong" : (isFundingLive ? "Live Funding" : "Stok tercatat"));
 
-                  // Hint: info fee & margin
-                  const hintFee = `Fee beli 0.07% + jual 0.07% = 0.14% / putaran`;
+                  // Hint: info mutasi saldo & margin
+                  const hintFee = isFundingLive
+                    ? "Live saldo Funding Binance"
+                    : "Beli: +(nominal - fee) · Jual: -nominal";
                   const hintProfit = pnl && pnl.avg_profit_per_usdt_idr !== 0
                     ? `Margin avg: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT`
                     : "";
