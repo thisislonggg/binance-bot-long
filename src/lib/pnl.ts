@@ -9,17 +9,17 @@ import { getSupabase } from "./supabase";
  * menggunakan AVCO (Moving Average Cost / Rata-rata Bergerak Tertimbang) agar harga modal
  * selalu mencerminkan nilai wajar stok yang sedang dipegang secara presisi.
  *
- * KONSEP FEE (0.08% per transaksi — hanya berlaku untuk binance_sync):
- * - Fee beli 0.08% → DIKURANGKAN dari USDT yang diterima.
- *   Stok masuk = amount × (1 - 0.0008) → misal beli 10.000 USDT → masuk 9.992 USDT.
- *   HPP per USDT = harga_beli / (1 - 0.0008) ≈ harga_beli × 1.0008
- * - Fee jual 0.08% → DITAMBAHKAN ke USDT yang keluar dari stok (memakan stok ekstra).
- *   Stok keluar = amount × (1 + 0.0008) → misal jual 10.000 USDT → keluar 10.008 USDT dari stok.
- *   Net Jual per USDT = harga_jual × (1 - 0.0008) untuk kalkulasi profit.
+ * KONSEP FEE (0.07% per transaksi — hanya berlaku untuk binance_sync):
+ * - Fee beli 0.07% → DIKURANGKAN dari USDT yang diterima.
+ *   Stok masuk = amount × (1 - 0.0007) → misal beli 10.000 USDT → masuk 9.993 USDT.
+ *   HPP per USDT = harga_beli / (1 - 0.0007) ≈ harga_beli × 1.0007
+ * - Fee jual 0.07% → DITAMBAHKAN ke USDT yang keluar dari stok (memakan stok ekstra).
+ *   Stok keluar = amount × (1 + 0.0007) → misal jual 10.000 USDT → keluar 10.007 USDT dari stok.
+ *   Net Jual per USDT = harga_jual × (1 - 0.0007) untuk kalkulasi profit.
  * - Transaksi manual (source = 'manual'): TIDAK dikenakan fee beli/jual apapun.
  *   Stok masuk = amount penuh, stok keluar = amount penuh, Net Jual = harga_jual mentah.
  * - Profit Bersih = (Net Jual − HPP) × jumlah nominal USDT
- * - Total fee per putaran beli+jual (binance_sync) ≈ 0.16%
+ * - Total fee per putaran beli+jual (binance_sync) ≈ 0.14%
  *
  * ZONA WAKTU: Indonesia (WIB UTC+7) untuk batas hari/minggu/bulan.
  */
@@ -399,16 +399,16 @@ export const deleteTrade = createServerFn({ method: "POST" })
 const TRADES_LOOKBACK_LIMIT = 5000;
 
 /**
- * Fee Binance P2P: 0.08% untuk Maker (biasanya merchant).
+ * Fee Binance P2P: 0.07% untuk Maker (biasanya merchant).
  * Fee beli DIMASUKKAN ke HPP (harga pokok pembelian).
  * Fee jual DIKURANGKAN dari hasil penjualan saat menghitung profit.
  */
-const BINANCE_FEE_RATE = 0.0008; // 0.08%
+const BINANCE_FEE_RATE = 0.0007; // 0.07%
 
 /**
  * Harga Pokok Pembelian (HPP) per USDT.
  * HPP = harga beli × (1 + fee_rate)
- * Contoh: beli Rp 16.200, HPP = 16.200 × 1.0008 = Rp 16.212,96
+ * Contoh: beli Rp 16.200, HPP = 16.200 × 1.0007 = Rp 16.211,34
  */
 function calcHpp(buyPrice: number): number {
   return buyPrice * (1 + BINANCE_FEE_RATE);
@@ -417,7 +417,7 @@ function calcHpp(buyPrice: number): number {
 /**
  * Hasil bersih per USDT setelah fee jual.
  * Net Sell = harga jual × (1 - fee_rate)
- * Contoh: jual Rp 16.250, net = 16.250 × 0.9992 = Rp 16.237,00
+ * Contoh: jual Rp 16.250, net = 16.250 × 0.9993 = Rp 16.238,625
  */
 function calcNetSell(sellPrice: number): number {
   return sellPrice * (1 - BINANCE_FEE_RATE);
@@ -480,14 +480,14 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       const price = normalizeTradePrice(rawPrice);
 
       if (rawTrade.side === "buy") {
-        // Untuk binance_sync: stok yang masuk dikurangi fee 0.08%
-        // (misal beli 10.000 USDT → 10.000 × 0.9992 = 9.992 USDT masuk ke stok)
+        // Untuk binance_sync: stok yang masuk dikurangi fee 0.07%
+        // (misal beli 10.000 USDT → 10.000 × 0.9993 = 9.993 USDT masuk ke stok)
         // Untuk manual: jumlah penuh dipakai (user sudah input jumlah aktual)
         const isBinanceSync = rawTrade.source === "binance_sync";
         const actualAmount = isBinanceSync
           ? amount * (1 - BINANCE_FEE_RATE)  // USDT yang benar-benar diterima
           : amount;
-        // HPP = total IDR dibayar / USDT diterima = price / (1 - fee) ≈ price × 1.0008
+        // HPP = total IDR dibayar / USDT diterima = price / (1 - fee) ≈ price × 1.0007
         const hpp = isBinanceSync
           ? price / (1 - BINANCE_FEE_RATE)   // biaya per USDT yang diterima
           : calcHpp(price);                   // manual tetap pakai calcHpp
@@ -524,7 +524,7 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       const netSellPerUsdt = isManual ? price : calcNetSell(price);
 
       // Untuk binance_sync: USDT yang benar-benar keluar dari wallet = amount × (1 + fee)
-      // Contoh: jual 10.000 USDT → fee 0.08% = 8 USDT → total keluar 10.008 USDT dari stok
+      // Contoh: jual 10.000 USDT → fee 0.07% = 7 USDT → total keluar 10.007 USDT dari stok
       // Untuk manual: jumlah penuh tanpa modifikasi fee
       const isBinanceSyncSell = rawTrade.source === "binance_sync";
       const actualSellAmount = isBinanceSyncSell

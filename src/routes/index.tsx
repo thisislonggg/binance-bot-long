@@ -847,12 +847,12 @@ function Dashboard() {
         {/* ── Dual Trading Recommendations ─────────────────────────────────── */}
         {s ? (() => {
           const buyAd = s.my_buy_price || 16200;
-          const buyFee = buyAd * 0.0008;
-          const buyHpp = buyAd * 1.0008;
+          const buyFee = buyAd * 0.0007;
+          const buyHpp = buyAd * 1.0007;
 
           const sellAd = s.my_sell_price || 16250;
-          const sellFee = sellAd * 0.0008;
-          const sellNet = sellAd * 0.9992;
+          const sellFee = sellAd * 0.0007;
+          const sellNet = sellAd * 0.9993;
 
           const netSpreadAbs = sellNet - buyHpp;
           const netSpreadPct = buyHpp > 0 ? (netSpreadAbs / buyHpp) * 100 : 0;
@@ -906,7 +906,7 @@ function Dashboard() {
                   {/* Rincian Fee Beli & HPP Riil */}
                   <div className="mt-3 rounded-md border border-bid/20 bg-surface-2/70 p-2.5 space-y-1.5 text-xs">
                     <div className="flex items-center justify-between text-muted-foreground">
-                      <span>Fee Maker Beli (0.08%):</span>
+                      <span>Fee Maker Beli (0.07%):</span>
                       <span className="num font-semibold text-foreground/85">+{fmtRp2(buyFee)}/USDT</span>
                     </div>
                     <div className="flex items-center justify-between border-t border-border/50 pt-1.5 font-bold">
@@ -973,7 +973,7 @@ function Dashboard() {
                   {/* Rincian Fee Jual & Net Bersih */}
                   <div className="mt-3 rounded-md border border-ask/20 bg-surface-2/70 p-2.5 space-y-1.5 text-xs">
                     <div className="flex items-center justify-between text-muted-foreground">
-                      <span>Fee Maker Jual (0.08%):</span>
+                      <span>Fee Maker Jual (0.07%):</span>
                       <span className="num font-semibold text-foreground/85">-{fmtRp2(sellFee)}/USDT</span>
                     </div>
                     <div className="flex items-center justify-between border-t border-border/50 pt-1.5 font-bold">
@@ -1007,7 +1007,7 @@ function Dashboard() {
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <span className="text-muted-foreground">
-                    Total Fee (0.16%): <strong className="text-foreground">{fmtRp2(totalFeePerUsdt)}/USDT</strong>
+                    Total Fee (0.14%): <strong className="text-foreground">{fmtRp2(totalFeePerUsdt)}/USDT</strong>
                   </span>
                   <span className="inline-flex items-center gap-1 rounded bg-bid/15 px-2 py-0.5 font-bold text-bid">
                     <TrendingUp className="size-3" />
@@ -1447,7 +1447,7 @@ function Dashboard() {
                     : (stockUsdt === 0 ? "Stok kosong" : (isFundingLive ? "Live Funding" : "Stok tercatat"));
 
                   // Hint: info fee & margin
-                  const hintFee = `Fee beli 0.08% + jual 0.08% = 0.16% / putaran`;
+                  const hintFee = `Fee beli 0.07% + jual 0.07% = 0.14% / putaran`;
                   const hintProfit = pnl && pnl.avg_profit_per_usdt_idr !== 0
                     ? `Margin avg: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT`
                     : "";

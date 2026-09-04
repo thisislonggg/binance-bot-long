@@ -21,7 +21,7 @@ export function MarginCalculator({
     if (defaultSellPrice > 0) setSellPrice(defaultSellPrice);
   }, [defaultBuyPrice, defaultSellPrice]);
 
-  const BINANCE_FEE_RATE = 0.0008; // 0.08% Maker Fee Beli & Jual
+  const BINANCE_FEE_RATE = 0.0007; // 0.07% Maker Fee Beli & Jual
 
   const capitalIdr = usdtAmount * buyPrice;
   const revenueIdr = usdtAmount * sellPrice;
@@ -49,7 +49,7 @@ export function MarginCalculator({
           <div>
             <h3 className="text-base font-bold text-foreground">Kalkulator Simulasi Margin & Perputaran Modal</h3>
             <p className="text-xs text-muted-foreground">
-              Hitung estimasi potensi profit bersih setelah dipotong Maker Fee Binance 0.08% (Beli + Jual).
+              Hitung estimasi potensi profit bersih setelah dipotong Maker Fee Binance 0.07% (Beli + Jual).
             </p>
           </div>
         </div>
@@ -158,7 +158,7 @@ export function MarginCalculator({
               <span className="num font-bold text-foreground text-sm">{fmtRp(revenueIdr)}</span>
             </div>
             <div className="flex items-center justify-between text-xs text-muted-foreground border-b border-border/40 pb-2">
-              <span>Fee Binance (0.08% Beli + 0.08% Jual)</span>
+              <span>Fee Binance (0.07% Beli + 0.07% Jual)</span>
               <span className="num font-semibold text-ask text-xs">-{fmtRp(totalFeePerCycle)}</span>
             </div>
             <div className="flex items-center justify-between text-xs text-muted-foreground border-b border-border/40 pb-2">

@@ -96,9 +96,9 @@ export function ArbitrageScanner({
     const buyPrice = activeRoute.buy_price;
     const sellPrice = activeRoute.sell_price;
 
-    // Fee Beli: 0.3% di Spot Indodax (Taker Ask), 0.08% di Binance P2P
+    // Fee Beli: 0.3% di Spot Indodax (Taker Ask), 0.07% di Binance P2P
     const isIndodaxBuy = activeRoute.direction === "spot_to_p2p";
-    const buyFeeRate = isIndodaxBuy ? 0.003 : 0.0008;
+    const buyFeeRate = isIndodaxBuy ? 0.003 : 0.0007;
     const buyFeeIdr = capitalNum * buyFeeRate;
 
     // Modal bersih untuk beli USDT
@@ -116,9 +116,9 @@ export function ArbitrageScanner({
     // Hasil Penjualan Bruto di platform tujuan
     const grossSaleIdr = netUsdtToSell * sellPrice;
 
-    // Fee Jual: 0.3% di Spot Indodax (Taker Bid), 0.08% di Binance P2P
+    // Fee Jual: 0.3% di Spot Indodax (Taker Bid), 0.07% di Binance P2P
     const isIndodaxSell = activeRoute.direction === "p2p_to_spot";
-    const sellFeeRate = isIndodaxSell ? 0.003 : 0.0008;
+    const sellFeeRate = isIndodaxSell ? 0.003 : 0.0007;
     const sellFeeIdr = grossSaleIdr * sellFeeRate;
 
     // Modal Kas Akhir yang diterima

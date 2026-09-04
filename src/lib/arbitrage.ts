@@ -104,9 +104,9 @@ export function computeArbitrageRoutes(params: ArbitrageInputParams): ArbitrageS
       last_price: (myBuyPrice + mySellPrice) / 2,
       spread_idr: mySellPrice - myBuyPrice,
       fee_taker_pct: 0,
-      fee_maker_pct: 0.08, // 0.08% Maker Fee
+      fee_maker_pct: 0.07, // 0.07% Maker Fee
       transfer_fee_idr: 0,
-      notes: "Fee 0.08% per transaksi. Tanpa biaya transfer on-chain jika diputar di dalam Binance.",
+      notes: "Fee 0.07% per transaksi. Tanpa biaya transfer on-chain jika diputar di dalam Binance.",
       status: "active",
     },
     {
@@ -191,11 +191,11 @@ export function computeArbitrageRoutes(params: ArbitrageInputParams): ArbitrageS
 
   // ── RUTE 1: Beli di Spot Indodax (Klik BUY / Ask) ➔ Jual di Binance P2P ────
   // Saat beli di Indodax, kita membayar harga Ask (effectiveIndodaxAsk) + 0.3% taker fee
-  // Saat jual di Binance P2P, kita pasang iklan di harga mySellPrice - 0.08% maker fee
+  // Saat jual di Binance P2P, kita pasang iklan di harga mySellPrice - 0.07% maker fee
   const indodaxBuyCost = effectiveIndodaxAsk * 1.003; // Termasuk fee beli Indodax 0.3%
-  const p2pSellNet = mySellPrice * 0.9992; // Termasuk fee jual Binance P2P 0.08%
+  const p2pSellNet = mySellPrice * 0.9993; // Termasuk fee jual Binance P2P 0.07%
   const rute1Gross = mySellPrice - effectiveIndodaxAsk;
-  const rute1Fee = (effectiveIndodaxAsk * 0.003) + (mySellPrice * 0.0008);
+  const rute1Fee = (effectiveIndodaxAsk * 0.003) + (mySellPrice * 0.0007);
   const rute1Net = p2pSellNet - indodaxBuyCost;
   const rute1Roi = indodaxBuyCost > 0 ? (rute1Net / indodaxBuyCost) * 100 : 0;
 
@@ -231,12 +231,12 @@ export function computeArbitrageRoutes(params: ArbitrageInputParams): ArbitrageS
   });
 
   // ── RUTE 2: Beli Iklan Binance P2P ➔ Jual Instan di Spot Indodax (Klik SELL / Bid) ──
-  // Saat beli di Binance P2P: harga myBuyPrice + 0.08% maker fee
+  // Saat beli di Binance P2P: harga myBuyPrice + 0.07% maker fee
   // Saat jual instan di Indodax: kita mendapat harga Bid (effectiveIndodaxBid) - 0.3% taker fee
-  const p2pBuyCost = myBuyPrice * 1.0008;
+  const p2pBuyCost = myBuyPrice * 1.0007;
   const indodaxSellNet = effectiveIndodaxBid * 0.997;
   const rute2Gross = effectiveIndodaxBid - myBuyPrice;
-  const rute2Fee = (myBuyPrice * 0.0008) + (effectiveIndodaxBid * 0.003);
+  const rute2Fee = (myBuyPrice * 0.0007) + (effectiveIndodaxBid * 0.003);
   const rute2Net = indodaxSellNet - p2pBuyCost;
   const rute2Roi = p2pBuyCost > 0 ? (rute2Net / p2pBuyCost) * 100 : 0;
 
@@ -273,8 +273,8 @@ export function computeArbitrageRoutes(params: ArbitrageInputParams): ArbitrageS
 
   // ── RUTE 3: Siklus Murni Merchant P2P (Beli P2P ➔ Jual P2P) ───────────────
   const rute3Gross = mySellPrice - myBuyPrice;
-  const rute3Fee = (myBuyPrice + mySellPrice) * 0.0008;
-  const rute3Net = (mySellPrice * 0.9992) - (myBuyPrice * 1.0008);
+  const rute3Fee = (myBuyPrice + mySellPrice) * 0.0007;
+  const rute3Net = (mySellPrice * 0.9993) - (myBuyPrice * 1.0007);
   const rute3Roi = p2pBuyCost > 0 ? (rute3Net / p2pBuyCost) * 100 : 0;
 
   opportunities.push({
