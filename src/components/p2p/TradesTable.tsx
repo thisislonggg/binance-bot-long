@@ -239,10 +239,24 @@ export function TradesTable({
                             Modal: {fmtRp2(t.avg_cost_at_sell)}/USDT
                           </div>
                         )}
+                        {t.fee_rate !== undefined && t.fee_rate > 0 && (
+                          <div className="text-[0.65rem] text-muted-foreground/80">
+                            Fee {(t.fee_rate * 100).toFixed(2)}%
+                            {t.fee_idr ? ` (${fmtRp(t.fee_idr)})` : ""}
+                          </div>
+                        )}
                       </div>
                     ) : t.side === "buy" ? (
-                      <div className="text-[0.68rem] text-muted-foreground">
-                        {fmtRp(normalizeTradePrice(t.price) * t.amount_usdt)}
+                      <div>
+                        <div className="text-[0.68rem] text-muted-foreground">
+                          {fmtRp(normalizeTradePrice(t.price) * t.amount_usdt)}
+                        </div>
+                        {t.fee_rate !== undefined && t.fee_rate > 0 && (
+                          <div className="text-[0.65rem] text-muted-foreground/80">
+                            Fee {(t.fee_rate * 100).toFixed(2)}%
+                            {t.fee_idr ? ` (${fmtRp(t.fee_idr)})` : ""}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <span className="text-muted-foreground">—</span>
