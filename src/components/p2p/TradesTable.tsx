@@ -223,15 +223,32 @@ export function TradesTable({
                       {t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
                     </div>
                     {t.side === "buy" ? (
-                      <div className="text-[0.67rem] font-medium text-emerald-400" title="Penambahan saldo stok masuk">
+                      <div
+                        className="text-[0.67rem] font-medium text-emerald-400"
+                        title={
+                          t.source === "binance_sync" && t.fee_rate
+                            ? `Penambahan saldo stok: nominal ${t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} - fee Maker ${(t.amount_usdt * t.fee_rate).toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT (${(t.fee_rate * 100).toFixed(2)}%)`
+                            : "Penambahan saldo stok masuk"
+                        }
+                      >
                         +{t.source === "binance_sync" && t.fee_rate
                           ? (t.amount_usdt * (1 - t.fee_rate)).toLocaleString("id-ID", { maximumFractionDigits: 2 })
                           : t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}{" "}
                         stok
                       </div>
                     ) : (
-                      <div className="text-[0.67rem] font-medium text-rose-400" title="Pengurangan saldo stok keluar">
-                        -{t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} stok
+                      <div
+                        className="text-[0.67rem] font-medium text-rose-400"
+                        title={
+                          t.source === "binance_sync" && t.fee_rate
+                            ? `Pengurangan saldo stok: nominal ${t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} + fee Maker ${(t.amount_usdt * t.fee_rate).toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT (${(t.fee_rate * 100).toFixed(2)}%)`
+                            : "Pengurangan saldo stok keluar"
+                        }
+                      >
+                        -{t.source === "binance_sync" && t.fee_rate
+                          ? (t.amount_usdt * (1 + t.fee_rate)).toLocaleString("id-ID", { maximumFractionDigits: 2 })
+                          : t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}{" "}
+                        stok
                       </div>
                     )}
                   </td>

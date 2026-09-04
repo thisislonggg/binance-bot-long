@@ -1449,7 +1449,7 @@ function Dashboard() {
                   // Hint: info mutasi saldo & margin
                   const hintFee = isFundingLive
                     ? "Live saldo Funding Binance"
-                    : "Beli: +(nominal - fee) · Jual: -nominal";
+                    : "Beli: +(nominal - fee) · Jual: -(nominal + fee)";
                   const hintProfit = pnl && pnl.avg_profit_per_usdt_idr !== 0
                     ? `Margin avg: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT`
                     : "";

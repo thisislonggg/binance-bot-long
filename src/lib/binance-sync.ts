@@ -647,7 +647,15 @@ export const getBinanceFundingBalance = createServerFn({ method: "POST" })
       const timestamp = Date.now();
       const params = `asset=USDT&timestamp=${timestamp}&recvWindow=60000`;
       const signature = createHmac("sha256", apiSecret).update(params).digest("hex");
-      const url = `${BINANCE_FUNDING_URL}?${params}&signature=${signature}`;
+      const fundingBaseUrl =
+        process.env["BINANCE_FUNDING_PROXY_URL"] ||
+        (process.env["BINANCE_PROXY_URL"]
+          ? process.env["BINANCE_PROXY_URL"].replace(/\/sapi\/v1\/c2c\/orderMatch\/listUserOrderHistory.*$/, "/sapi/v1/asset/get-funding-asset")
+          : null) ||
+        (process.env["BINANCE_API_BASE_URL"]
+          ? `${process.env["BINANCE_API_BASE_URL"].replace(/\/sapi\/v1\/c2c.*$/, "")}/sapi/v1/asset/get-funding-asset`
+          : BINANCE_FUNDING_URL);
+      const url = `${fundingBaseUrl}?${params}&signature=${signature}`;
 
       const resp = await fetch(url, {
         method: "POST",
