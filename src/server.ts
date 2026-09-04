@@ -44,9 +44,36 @@ function isH3SwallowedErrorBody(body: string): boolean {
   }
 }
 
+import { handleIncomingBankNotificationWebhook } from "./lib/payment-verifier";
+
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      const url = new URL(request.url);
+
+      // Webhook Penerima Notifikasi Bank (MacroDroid / Android Push Notif Forwarder)
+      if (url.pathname === "/api/webhook/bank-notification") {
+        if (request.method === "POST") {
+          const body = await request.json().catch(() => ({}));
+          const result = await handleIncomingBankNotificationWebhook(body);
+          return new Response(JSON.stringify(result), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (request.method === "GET") {
+          const text = url.searchParams.get("text") || "";
+          const title = url.searchParams.get("title") || "";
+          const amount = url.searchParams.get("amount") || undefined;
+          const sender = url.searchParams.get("sender") || undefined;
+          const result = await handleIncomingBankNotificationWebhook({ text, title, amount, sender });
+          return new Response(JSON.stringify(result), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+      }
+
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);

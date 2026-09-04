@@ -750,3 +750,212 @@ function findSubsetSum(orders: ActiveP2pOrder[], target: number, tolerance = 100
 
   return [];
 }
+
+/**
+ * Parsing teks notifikasi push Android (BRImo / BCA / Mandiri / SMS)
+ * Contoh: "Transfer masuk sebesar Rp 1.500.000 dari EKO PRASETYO"
+ */
+export function parseBankNotificationText(rawText: string): { amount: number; sender: string | null } {
+  if (!rawText) return { amount: 0, sender: null };
+  const clean = rawText.replace(/[\r\n]+/g, " ");
+
+  // 1. Ekstrak nominal uang
+  let amount = 0;
+  const rpRegex = /(?:Rp\.?\s?|sebesar\s+Rp\.?\s?|masuk\s+Rp\.?\s?|^|\s)([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?|[0-9]{4,})/i;
+  const match = clean.match(rpRegex);
+  if (match && match[1]) {
+    const rawDigits = match[1].replace(/\./g, "").replace(/,/g, ".");
+    amount = parseFloat(rawDigits) || 0;
+  }
+
+  // 2. Ekstrak nama pengirim jika tertera
+  let sender: string | null = null;
+  const senderRegex = /(?:dari|from)\s*:?\s*([A-Za-z\s.,'-]+?)(?:\s+(?:ke|pada|via|rek|melalui|\.|\/|\d)|$)/i;
+  const senderMatch = clean.match(senderRegex);
+  if (senderMatch && senderMatch[1]) {
+    const rawName = senderMatch[1].trim();
+    if (rawName.length >= 2 && rawName.length <= 50) {
+      sender = rawName;
+    }
+  }
+
+  return { amount, sender };
+}
+
+/**
+ * Handler Webhook untuk menerima notifikasi dari aplikasi Android (MacroDroid / Notification Forwarder)
+ */
+export async function handleIncomingBankNotificationWebhook(input: {
+  text?: string;
+  title?: string;
+  sender?: string;
+  amount?: number | string;
+}) {
+  const rawText = (input.text || input.title || "").trim();
+  const parsed = parseBankNotificationText(rawText);
+
+  const amount = typeof input.amount === "number" && input.amount > 0
+    ? input.amount
+    : (typeof input.amount === "string" ? parseFloat(input.amount.replace(/[^0-9.]/g, "")) : 0) || parsed.amount;
+
+  const senderName = input.sender?.trim() || parsed.sender;
+
+  if (amount <= 0) {
+    return {
+      ok: false,
+      error: "Tidak dapat mengekstrak nominal rupiah dari teks notifikasi",
+      rawText,
+    };
+  }
+
+  const db = getSupabase();
+
+  // 1. Ambil Pengaturan Verifier
+  let settings = DEFAULT_VERIFIER_SETTINGS;
+  const { data: setRow } = await db
+    .from("user_settings")
+    .select("value")
+    .eq("key", VERIFIER_SETTINGS_KEY)
+    .maybeSingle();
+
+  if (setRow?.value) {
+    try {
+      settings = { ...DEFAULT_VERIFIER_SETTINGS, ...JSON.parse(setRow.value) };
+    } catch {
+      // Abaikan
+    }
+  }
+
+  // 2. Ambil Order Aktif Binance P2P
+  const activeOrders = await fetchActiveP2pSellOrdersInternal();
+
+  // 3. Cocokkan dengan Order Aktif
+  const singleMatches = activeOrders.filter(
+    (o) => Math.abs(o.totalPriceIdr - amount) <= 100,
+  );
+
+  let alertType: AlertLog["type"] = "info";
+  let matchedOrders: ActiveP2pOrder[] = [];
+  let messageBody = "";
+  let waNotificationText = "";
+
+  if (singleMatches.length === 1) {
+    const ord = singleMatches[0]!;
+    alertType = "single_match";
+    matchedOrders = [ord];
+    messageBody = `✅ DANA MASUK OTOMATIS: Notifikasi bank ${fmtIdr(amount)}${senderName ? ` dari ${senderName}` : ""} cocok persis dengan Order #${ord.orderNumber.slice(-6)} (@${ord.counterPartNickName}).`;
+
+    waNotificationText = [
+      "✅ *DANA MASUK TERVERIFIKASI (NOTIFIKASI BANK)*",
+      "━━━━━━━━━━━━━━━━━━",
+      `💰 *Nominal:* ${fmtIdr(amount)}`,
+      senderName ? `👤 *Pengirim:* ${senderName}` : "",
+      `👤 *Pembeli Binance:* @${ord.counterPartNickName}`,
+      `📦 *Jumlah:* ${ord.amountUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT`,
+      `🆔 *Order:* #${ord.orderNumber}`,
+      `⏱️ *Waktu:* ${new Date().toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta" })} WIB`,
+      "━━━━━━━━━━━━━━━━━━",
+      "💡 *Dana sudah masuk ke rekening. Silakan release kripto di Binance!*",
+    ].filter(Boolean).join("\n");
+  } else if (singleMatches.length > 1) {
+    alertType = "identical_alert";
+    matchedOrders = singleMatches;
+    messageBody = `⚠️ ORDER KEMBAR: Notifikasi bank ${fmtIdr(amount)}${senderName ? ` dari ${senderName}` : ""} cocok dengan ${singleMatches.length} order kembar.`;
+
+    waNotificationText = [
+      "⚠️ *PERINGATAN ORDER KEMBAR (NOTIFIKASI BANK)*",
+      "━━━━━━━━━━━━━━━━━━",
+      `💰 *Dana Masuk:* ${fmtIdr(amount)}`,
+      senderName ? `👤 *Pengirim Tertera:* ${senderName}` : "",
+      `⚠️ Terdeteksi *${singleMatches.length} order aktif* dengan nominal yang sama:`,
+      ...singleMatches.map((o) => `• Order #${o.orderNumber} - @${o.counterPartNickName} (${fmtIdr(o.totalPriceIdr)})`),
+      "━━━━━━━━━━━━━━━━━━",
+      "🚨 *PENTING:* Hanya 1 dana yang baru masuk. Silakan cek sekilas mutasi rekening agar tidak salah rilis!",
+    ].filter(Boolean).join("\n");
+  } else {
+    const combined = findSubsetSum(activeOrders, amount);
+    if (combined.length > 0) {
+      alertType = "simultaneous_match";
+      matchedOrders = combined;
+      messageBody = `✅ DANA MASUK SERENTAK: Notifikasi ${fmtIdr(amount)} mencakup ${combined.length} order sekaligus (${combined.map((o) => `@${o.counterPartNickName}`).join(" + ")}).`;
+
+      waNotificationText = [
+        "✅ *DANA MASUK SERENTAK (NOTIFIKASI BANK)*",
+        "━━━━━━━━━━━━━━━━━━",
+        `💰 *Total Nominal:* ${fmtIdr(amount)}`,
+        `📦 *Mencakup ${combined.length} Order:*`,
+        ...combined.map((o) => `• #${o.orderNumber.slice(-6)}: ${fmtIdr(o.totalPriceIdr)} (@${o.counterPartNickName})`),
+        "━━━━━━━━━━━━━━━━━━",
+        "🎉 *Semua order di atas dananya sudah masuk ke rekening!*",
+      ].join("\n");
+    } else {
+      alertType = "info";
+      messageBody = `ℹ️ DANA MASUK TIDAK TERDAFTAR: Notifikasi bank ${fmtIdr(amount)}${senderName ? ` dari ${senderName}` : ""} tidak cocok dengan order P2P aktif saat ini.`;
+    }
+  }
+
+  // 4. Kirim Notifikasi WhatsApp jika ada nomor terdaftar
+  let waSent = false;
+  let waError: string | undefined;
+
+  if (waNotificationText && settings.wa_phone?.trim()) {
+    const waRes = await sendWhatsAppMessage(settings, waNotificationText);
+    waSent = waRes.ok;
+    waError = waRes.error;
+
+    if (settings.telegram_enabled) {
+      await sendTelegramMessage(settings, waNotificationText);
+    }
+  }
+
+  // 5. Catat Log ke Supabase
+  let existingLogs: AlertLog[] = [];
+  const { data: logsRow } = await db
+    .from("user_settings")
+    .select("value")
+    .eq("key", VERIFIER_LOGS_KEY)
+    .maybeSingle();
+
+  if (logsRow?.value) {
+    try {
+      existingLogs = JSON.parse(logsRow.value);
+    } catch {
+      // Abaikan
+    }
+  }
+
+  const newLog: AlertLog = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: new Date().toISOString(),
+    type: alertType,
+    deltaIdr: amount,
+    matchedOrders: matchedOrders.map((o) => ({
+      orderNumber: o.orderNumber,
+      amountUsdt: o.amountUsdt,
+      totalPriceIdr: o.totalPriceIdr,
+      counterPartNickName: o.counterPartNickName,
+    })),
+    message: messageBody,
+    waSent,
+    waError,
+  };
+
+  const updatedLogs = [newLog, ...existingLogs].slice(0, 50);
+  await db.from("user_settings").upsert(
+    { key: VERIFIER_LOGS_KEY, value: JSON.stringify(updatedLogs) } as any,
+    { onConflict: "key" },
+  );
+
+  return {
+    ok: true,
+    amount,
+    senderName,
+    matched: alertType !== "info",
+    alertType,
+    message: messageBody,
+    matchedOrders,
+    waSent,
+    waError,
+  };
+}
+
