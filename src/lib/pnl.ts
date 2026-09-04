@@ -401,7 +401,7 @@ export const deleteTrade = createServerFn({ method: "POST" })
     return { ok: !error, id: data.id };
   });
 
-const TRADES_LOOKBACK_LIMIT = 5000;
+const TRADES_LOOKBACK_LIMIT = 20000;
 
 /**
  * Fee Binance P2P untuk Maker (biasanya merchant):
@@ -461,14 +461,34 @@ export const getPnlSummary = createServerFn({ method: "POST" })
     const db = getSupabase();
     if (!db) return EMPTY_SUMMARY;
 
-    const { data: tradesData, error } = await db
-      .from("trades")
-      .select("id, ts, side, price, amount_usdt, note, source, binance_order_no")
-      .order("ts", { ascending: true })
-      .limit(TRADES_LOOKBACK_LIMIT);
-    if (error || !tradesData) return EMPTY_SUMMARY;
+    // PostgREST/Supabase membatasi query default maks 1000 baris per request.
+    // Lakukan paginasi berurutan dengan range() agar semua riwayat transaksi terambil lengkap
+    // dan transaksi terbaru (di atas row 1000) tidak terpotong.
+    const PAGE_SIZE = 1000;
+    const rawTrades: Trade[] = [];
+    let page = 0;
 
-    const rawTrades = tradesData as Trade[];
+    while (rawTrades.length < TRADES_LOOKBACK_LIMIT) {
+      const from = page * PAGE_SIZE;
+      const to = from + PAGE_SIZE - 1;
+      const { data: chunk, error: chunkError } = await db
+        .from("trades")
+        .select("id, ts, side, price, amount_usdt, note, source, binance_order_no")
+        .order("ts", { ascending: true })
+        .range(from, to);
+
+      if (chunkError) {
+        console.error("Gagal mengambil data trades:", chunkError);
+        break;
+      }
+      if (!chunk || chunk.length === 0) break;
+
+      rawTrades.push(...(chunk as Trade[]));
+      if (chunk.length < PAGE_SIZE) break;
+      page++;
+    }
+
+    if (rawTrades.length === 0) return EMPTY_SUMMARY;
 
     // ── Algoritma AVCO (Weighted Moving Average Cost) ─────────────────────────
     // Setiap transaksi BELI memperbarui rata-rata tertimbang modal (HPP).
