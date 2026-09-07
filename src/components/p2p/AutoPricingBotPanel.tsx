@@ -628,21 +628,43 @@ export function AutoPricingBotPanel({
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <Label className="text-xs font-semibold text-foreground">
-                      Min Limit Order (IDR)
+                      Batas Min Transaksi
                     </Label>
-                    <span className="num text-xs font-bold text-primary">{fmtRp(config.minOrderLimitIdr)}</span>
+                    <span className="num text-xs font-bold text-primary">
+                      {config.minOrderLimitIdr === 0 ? "Bebas (Nonaktif)" : fmtRp(config.minOrderLimitIdr)}
+                    </span>
                   </div>
                   <Input
                     type="number"
                     min={0}
-                    step={250000}
+                    step={1000000}
                     value={config.minOrderLimitIdr}
                     onChange={(e) => updateConfig({ minOrderLimitIdr: Math.max(0, Number(e.target.value)) })}
                     className="h-8 text-xs bg-surface-2 font-semibold"
-                    placeholder="Contoh: 1000000"
+                    placeholder="0 = Bebas / Nonaktif"
                   />
+                  <div className="flex items-center gap-1 pt-1">
+                    {[
+                      { label: "Bebas (0)", val: 0 },
+                      { label: "10 Jt", val: 10_000_000 },
+                      { label: "20 Jt", val: 20_000_000 },
+                    ].map((item) => (
+                      <button
+                        key={item.val}
+                        type="button"
+                        onClick={() => updateConfig({ minOrderLimitIdr: item.val })}
+                        className={`rounded px-1.5 py-0.5 text-[0.62rem] font-medium transition-colors ${
+                          config.minOrderLimitIdr === item.val
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-surface-2 text-muted-foreground hover:bg-surface-3"
+                        }`}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
                   <p className="text-[0.65rem] text-muted-foreground">
-                    Abaikan merchant yang batas minimumnya di atas nominal ini.
+                    Set 0 agar bot tetap mengikuti merchant berapapun batas minimalnya (misal 20 Juta).
                   </p>
                 </div>
 

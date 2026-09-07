@@ -35,7 +35,7 @@ export type CompetitorFilterConfig = {
 export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   enabled: true,
   minUsdtAmount: 500,
-  minOrderLimitIdr: 500_000,
+  minOrderLimitIdr: 0, // 0 = Bebas / Nonaktif (tidak mengeliminasi merchant dengan min order besar seperti 20jt)
   verifiedOnly: true,
   minCompletionRate: 95,
   minMonthOrders: 50,
@@ -137,11 +137,11 @@ export function evaluateCompetitorAds(
       });
     }
 
-    // 2. Filter Batas Pesanan Minimal IDR
+    // 2. Filter Batas Pesanan Minimal IDR (diabaikan jika 0 / nonaktif)
     if (config.minOrderLimitIdr > 0 && ad.min_limit_idr > config.minOrderLimitIdr) {
       reasons.push({
         code: "MIN_LIMIT_TOO_HIGH",
-        message: `Min transaksi Rp ${ad.min_limit_idr.toLocaleString("id-ID")} > Rp ${config.minOrderLimitIdr.toLocaleString("id-ID")}`,
+        message: `Min transaksi merchant Rp ${ad.min_limit_idr.toLocaleString("id-ID")} melebihi batas filter Anda (Rp ${config.minOrderLimitIdr.toLocaleString("id-ID")})`,
       });
     }
 
@@ -356,7 +356,13 @@ export function loadBotConfig(): CompetitorFilterConfig {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_BOT_CONFIG;
     const parsed = JSON.parse(raw);
-    return { ...DEFAULT_BOT_CONFIG, ...parsed };
+    const merged = { ...DEFAULT_BOT_CONFIG, ...parsed };
+    // Jika masih tersimpan nilai lama default 500.000 yang memblokir merchant 20jt, migrasi ke 0
+    if (merged.minOrderLimitIdr === 500_000) {
+      merged.minOrderLimitIdr = 0;
+      saveBotConfig(merged);
+    }
+    return merged;
   } catch {
     return DEFAULT_BOT_CONFIG;
   }
