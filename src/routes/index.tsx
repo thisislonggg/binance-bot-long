@@ -38,6 +38,7 @@ import { toast } from "sonner";
 
 import { AdsTable } from "@/components/p2p/AdsTable";
 import { ArbitrageScanner } from "@/components/p2p/ArbitrageScanner";
+import { AutoPricingBotPanel } from "@/components/p2p/AutoPricingBotPanel";
 import { MarginCalculator } from "@/components/p2p/MarginCalculator";
 import { PaymentVerifierPanel } from "@/components/p2p/PaymentVerifierPanel";
 
@@ -219,6 +220,7 @@ function Dashboard() {
   const deleteTradeFn = useServerFn(deleteTrade);
   const syncFn = useServerFn(syncBinanceTrades);
   const syncStatusFn = useServerFn(getBinanceSyncStatus);
+  const fundingBalanceFn = useServerFn(getBinanceFundingBalance);
   const setCapitalFn = useServerFn(setInitialCapital);
   const setCustomCostFn = useServerFn(setCustomStockCost);
   const resetCustomCostFn = useServerFn(resetCustomStockCost);
@@ -844,6 +846,21 @@ function Dashboard() {
 
       {/* ── Main Body ───────────────────────────────────────────────────────── */}
       <main className="mx-auto max-w-7xl px-4 pt-5 sm:px-6 space-y-5">
+
+        {/* ── Auto-Pricing Bot (Filtered Merchant Tracker & Boundaries) ─────── */}
+        {s && (
+          <AutoPricingBotPanel
+            sellRefAds={s.top_sell_ref_ads ?? []}
+            buyRefAds={s.top_buy_ref_ads ?? []}
+            fairPrice={s.fair_price || 16220}
+            stockHpp={pnlQuery.data?.open_position_avg_cost_idr || 0}
+            onRefresh={() => snapshotQuery.refetch()}
+            isRefreshing={snapshotQuery.isFetching}
+            onApplyPrice={({ buyPrice, sellPrice }) => {
+              setTradePrice(String(tradeSide === "buy" ? Math.round(buyPrice) : Math.round(sellPrice)));
+            }}
+          />
+        )}
 
         {/* ── Dual Trading Recommendations ─────────────────────────────────── */}
         {s ? (() => {

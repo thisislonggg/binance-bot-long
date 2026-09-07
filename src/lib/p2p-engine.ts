@@ -38,6 +38,7 @@ export type Ad = {
   min_limit_idr: number;
   max_limit_idr: number;
   available_idr: number;
+  available_usdt: number;
   pay_methods: string[];
   merchant_name: string;
   user_type: string;
@@ -144,6 +145,7 @@ export function parseAds(rawAds: any[]): Ad[] {
       min_limit_idr: Number.isFinite(minLimit) ? minLimit : 0,
       max_limit_idr: Number.isFinite(maxLimit) ? maxLimit : 0,
       available_idr: Math.round(availableIdr * 100) / 100,
+      available_usdt: Math.round(surplus * 100) / 100,
       pay_methods: (adv.tradeMethods ?? []).map(
         (m: any) => m?.tradeMethodName ?? m?.identifier ?? "?",
       ),

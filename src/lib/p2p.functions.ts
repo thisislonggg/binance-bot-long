@@ -79,6 +79,7 @@ function generateFallbackAds(tradeType: "BUY" | "SELL", basePrice: number = 1765
       min_limit_idr: minLimit,
       max_limit_idr: maxLimit,
       available_idr: available,
+      available_usdt: Math.round(5000 + (idx * 1750)),
       pay_methods: m.banks,
       merchant_name: m.name,
       user_type: m.verified ? "merchant" : "user",
