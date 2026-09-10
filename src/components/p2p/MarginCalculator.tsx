@@ -14,6 +14,7 @@ export function MarginCalculator({
   const [buyPrice, setBuyPrice] = useState<number>(defaultBuyPrice || 16200);
   const [sellPrice, setSellPrice] = useState<number>(defaultSellPrice || 16350);
   const [dailyTurnover, setDailyTurnover] = useState<number>(2); // 2x putaran per hari
+  const [buyMethod, setBuyMethod] = useState<"maker" | "taker">("taker");
 
   // Update jika default harga berubah
   useMemo(() => {
@@ -21,11 +22,12 @@ export function MarginCalculator({
     if (defaultSellPrice > 0) setSellPrice(defaultSellPrice);
   }, [defaultBuyPrice, defaultSellPrice]);
 
-  const BINANCE_FEE_RATE = 0.0007; // 0.07% Maker Fee Beli & Jual
+  const BINANCE_FEE_RATE = 0.0007; // 0.07% Maker Fee
 
   const capitalIdr = usdtAmount * buyPrice;
   const revenueIdr = usdtAmount * sellPrice;
-  const buyFeeIdr = capitalIdr * BINANCE_FEE_RATE;
+  // Jika Beli Langsung dari merchant lain (Taker), fee beli = 0 (Bebas Fee Beli)!
+  const buyFeeIdr = buyMethod === "taker" ? 0 : capitalIdr * BINANCE_FEE_RATE;
   const sellFeeIdr = revenueIdr * BINANCE_FEE_RATE;
   const totalFeePerCycle = buyFeeIdr + sellFeeIdr;
 
@@ -49,7 +51,9 @@ export function MarginCalculator({
           <div>
             <h3 className="text-base font-bold text-foreground">Kalkulator Simulasi Margin & Perputaran Modal</h3>
             <p className="text-xs text-muted-foreground">
-              Hitung estimasi potensi profit bersih setelah dipotong Maker Fee Binance 0.07% (Beli + Jual).
+              {buyMethod === "taker"
+                ? "Simulasi Beli Langsung (Taker 0% Fee Beli): Fee hanya terhitung saat menjual (0.07%)."
+                : "Simulasi Iklan Sendiri (Maker): Fee 0.07% Beli + 0.07% Jual."}
             </p>
           </div>
         </div>
@@ -57,6 +61,35 @@ export function MarginCalculator({
         <div className="flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
           <Sparkles className="size-3.5" />
           <span>Net Spread: +{fmtRp(netMarginPerUsdt)} / USDT ({netMarginPct.toFixed(2)}%)</span>
+        </div>
+      </div>
+
+      {/* Toggle Metode Beli */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/20 bg-surface-2/60 p-2.5 text-xs">
+        <span className="font-semibold text-foreground">Metode Beli USDT:</span>
+        <div className="inline-flex rounded-md bg-surface p-0.5 border border-border">
+          <button
+            type="button"
+            onClick={() => setBuyMethod("taker")}
+            className={`rounded px-3 py-1 text-xs font-semibold transition-colors ${
+              buyMethod === "taker"
+                ? "bg-cyan-500/20 text-cyan-400 shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Beli Langsung Merchant Lain (Taker · Bebas Fee Beli)
+          </button>
+          <button
+            type="button"
+            onClick={() => setBuyMethod("maker")}
+            className={`rounded px-3 py-1 text-xs font-semibold transition-colors ${
+              buyMethod === "maker"
+                ? "bg-primary/20 text-primary shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Iklan Sendiri (Maker · Fee 0.07%)
+          </button>
         </div>
       </div>
 
@@ -158,7 +191,7 @@ export function MarginCalculator({
               <span className="num font-bold text-foreground text-sm">{fmtRp(revenueIdr)}</span>
             </div>
             <div className="flex items-center justify-between text-xs text-muted-foreground border-b border-border/40 pb-2">
-              <span>Fee Binance (0.07% Beli + 0.07% Jual)</span>
+              <span>{buyMethod === "taker" ? "Fee Binance (0% Beli + 0.07% Jual Saja)" : "Fee Binance (0.07% Beli + 0.07% Jual)"}</span>
               <span className="num font-semibold text-ask text-xs">-{fmtRp(totalFeePerCycle)}</span>
             </div>
             <div className="flex items-center justify-between text-xs text-muted-foreground border-b border-border/40 pb-2">

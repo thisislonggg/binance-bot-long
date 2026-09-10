@@ -1,8 +1,8 @@
-import { ChevronLeft, ChevronRight, Pencil, RefreshCw, Search, Trash2 } from "lucide-react";
+import { ArrowLeftRight, ChevronLeft, ChevronRight, Pencil, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { fmtRp, fmtRp2 } from "@/lib/p2p-engine";
-import { normalizeTradePrice, type Trade } from "@/lib/pnl";
+import { isTakerTrade, normalizeTradePrice, type Trade } from "@/lib/pnl";
 import { cn } from "@/lib/utils";
 
 export function TradesTable({
@@ -10,18 +10,23 @@ export function TradesTable({
   emptyLabel = "Belum ada transaksi tercatat.",
   onEdit,
   onDelete,
+  onToggleRole,
   editingId,
   deletingId,
+  togglingRoleId,
 }: {
   trades: Trade[];
   emptyLabel?: string;
   onEdit?: (trade: Trade) => void;
   onDelete?: (trade: Trade) => void;
+  onToggleRole?: (trade: Trade) => void;
   editingId?: number | null;
   deletingId?: number | null;
+  togglingRoleId?: number | null;
 }) {
   const [sourceFilter, setSourceFilter] = useState<"all" | "binance_sync" | "manual">("all");
   const [sideFilter, setSideFilter] = useState<"all" | "buy" | "sell">("all");
+  const [roleFilter, setRoleFilter] = useState<"all" | "taker" | "maker">("all");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -30,6 +35,9 @@ export function TradesTable({
     return trades.filter((t) => {
       if (sourceFilter !== "all" && t.source !== sourceFilter) return false;
       if (sideFilter !== "all" && t.side !== sideFilter) return false;
+      const isTaker = isTakerTrade(t);
+      if (roleFilter === "taker" && !isTaker) return false;
+      if (roleFilter === "maker" && isTaker) return false;
       if (search.trim()) {
         const q = search.toLowerCase();
         const noteMatch = t.note?.toLowerCase().includes(q);
@@ -40,7 +48,7 @@ export function TradesTable({
       }
       return true;
     });
-  }, [trades, sourceFilter, sideFilter, search]);
+  }, [trades, sourceFilter, sideFilter, roleFilter, search]);
 
   const totalPages = Math.max(1, Math.ceil(filteredTrades.length / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -134,6 +142,37 @@ export function TradesTable({
           >
             Jual
           </button>
+
+          <span className="mx-1 text-border">|</span>
+
+          <button
+            type="button"
+            onClick={() => {
+              setRoleFilter(roleFilter === "taker" ? "all" : "taker");
+              setPage(1);
+            }}
+            className={cn(
+              "rounded-md px-2 py-1 text-[0.7rem] font-semibold transition-colors",
+              roleFilter === "taker" ? "bg-cyan-500/20 text-cyan-400" : "text-muted-foreground hover:text-foreground",
+            )}
+            title="Saring transaksi Beli Langsung dari merchant lain (Taker)"
+          >
+            Beli Langsung ({trades.filter((t) => isTakerTrade(t)).length})
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setRoleFilter(roleFilter === "maker" ? "all" : "maker");
+              setPage(1);
+            }}
+            className={cn(
+              "rounded-md px-2 py-1 text-[0.7rem] font-semibold transition-colors",
+              roleFilter === "maker" ? "bg-primary/20 text-primary" : "text-muted-foreground hover:text-foreground",
+            )}
+            title="Saring transaksi Iklan Sendiri (Maker)"
+          >
+            Iklan Sendiri ({trades.filter((t) => !isTakerTrade(t)).length})
+          </button>
         </div>
 
         <div className="flex items-center gap-2">
@@ -179,7 +218,7 @@ export function TradesTable({
               <th className="py-2 pr-3 text-right font-medium">Jumlah (USDT)</th>
               <th className="py-2 pr-3 text-right font-medium">Profit / Detail</th>
               <th className="py-2 pr-3 text-left font-medium">Catatan</th>
-              {(onEdit || onDelete) && <th className="py-2 text-right font-medium">Aksi</th>}
+              {(onEdit || onDelete || onToggleRole) && <th className="py-2 text-right font-medium">Aksi</th>}
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
@@ -190,157 +229,213 @@ export function TradesTable({
                 </td>
               </tr>
             ) : (
-              paginatedTrades.map((t) => (
-                <tr key={t.id} className={cn("align-top", editingId === t.id && "bg-primary/5")}>
-                  <td className="num py-2.5 pr-3 text-muted-foreground">
-                    {new Date(t.ts).toLocaleString("id-ID", {
-                      day: "2-digit",
-                      month: "short",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </td>
-                  <td className="py-2.5 pr-3">
-                    <span
-                      className={cn(
-                        "rounded-sm px-1.5 py-0.5 text-[0.65rem] font-semibold tracking-wider uppercase",
-                        t.side === "buy" ? "bg-bid/15 text-bid" : "bg-ask/15 text-ask",
-                      )}
-                    >
-                      {t.side === "buy" ? "Beli" : "Jual"}
-                    </span>
-                  </td>
-                  <td className="num py-2.5 pr-3 text-right">
-                    <div className="font-semibold text-foreground/90">
-                      {fmtRp2(normalizeTradePrice(t.price))}
-                    </div>
-                    <div className="text-[0.68rem] text-muted-foreground">
-                      {fmtRp(normalizeTradePrice(t.price) * t.amount_usdt)}
-                    </div>
-                  </td>
-                  <td className="num py-2.5 pr-3 text-right text-foreground/85">
-                    <div className="font-semibold text-foreground/90">
-                      {t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
-                    </div>
-                    {t.side === "buy" ? (
-                      <div
-                        className="text-[0.67rem] font-medium text-emerald-400"
-                        title={
-                          t.source === "binance_sync" && t.fee_rate
-                            ? `Penambahan saldo stok: nominal ${t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} - fee Maker ${(t.amount_usdt * t.fee_rate).toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT (${(t.fee_rate * 100).toFixed(2)}%)`
-                            : "Penambahan saldo stok masuk"
-                        }
-                      >
-                        +{t.source === "binance_sync" && t.fee_rate
-                          ? (t.amount_usdt * (1 - t.fee_rate)).toLocaleString("id-ID", { maximumFractionDigits: 2 })
-                          : t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}{" "}
-                        stok
-                      </div>
-                    ) : (
-                      <div
-                        className="text-[0.67rem] font-medium text-rose-400"
-                        title={
-                          t.source === "binance_sync" && t.fee_rate
-                            ? `Pengurangan saldo stok: nominal ${t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} + fee Maker ${(t.amount_usdt * t.fee_rate).toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT (${(t.fee_rate * 100).toFixed(2)}%)`
-                            : "Pengurangan saldo stok keluar"
-                        }
-                      >
-                        -{t.source === "binance_sync" && t.fee_rate
-                          ? (t.amount_usdt * (1 + t.fee_rate)).toLocaleString("id-ID", { maximumFractionDigits: 2 })
-                          : t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}{" "}
-                        stok
-                      </div>
-                    )}
-                  </td>
-                  {/* Kolom Profit / Detail */}
-                  <td className="num py-2.5 pr-3 text-right">
-                    {t.side === "sell" && t.profit_idr !== undefined ? (
-                      <div>
-                        <div
+              paginatedTrades.map((t) => {
+                const isTaker = isTakerTrade(t);
+                return (
+                  <tr key={t.id} className={cn("align-top", editingId === t.id && "bg-primary/5")}>
+                    <td className="num py-2.5 pr-3 text-muted-foreground">
+                      {new Date(t.ts).toLocaleString("id-ID", {
+                        day: "2-digit",
+                        month: "short",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </td>
+                    <td className="py-2.5 pr-3">
+                      <div className="flex flex-col items-start gap-1">
+                        <span
                           className={cn(
-                            "font-semibold tabular-nums",
-                            t.profit_idr >= 0 ? "text-emerald-400" : "text-rose-400",
+                            "rounded-sm px-1.5 py-0.5 text-[0.65rem] font-semibold tracking-wider uppercase",
+                            t.side === "buy" ? "bg-bid/15 text-bid" : "bg-ask/15 text-ask",
                           )}
                         >
-                          {t.profit_idr >= 0 ? "+" : ""}
-                          {fmtRp(t.profit_idr)}
-                        </div>
-                        {t.avg_cost_at_sell !== undefined && t.avg_cost_at_sell > 0 && (
-                          <div className="text-[0.67rem] text-muted-foreground">
-                            Modal: {fmtRp2(t.avg_cost_at_sell)}/USDT
-                          </div>
-                        )}
-                        {t.fee_rate !== undefined && t.fee_rate > 0 && (
-                          <div className="text-[0.65rem] text-muted-foreground/80">
-                            Fee {(t.fee_rate * 100).toFixed(2)}%
-                            {t.fee_idr ? ` (${fmtRp(t.fee_idr)})` : ""}
-                          </div>
-                        )}
-                      </div>
-                    ) : t.side === "buy" ? (
-                      <div>
-                        <div className="text-[0.68rem] text-muted-foreground">
-                          {fmtRp(normalizeTradePrice(t.price) * t.amount_usdt)}
-                        </div>
-                        {t.fee_rate !== undefined && t.fee_rate > 0 && (
-                          <div className="text-[0.65rem] text-muted-foreground/80">
-                            Fee {(t.fee_rate * 100).toFixed(2)}%
-                            {t.fee_idr ? ` (${fmtRp(t.fee_idr)})` : ""}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </td>
-                  <td className="py-2.5 pr-3 text-muted-foreground">
-                    <span className="flex flex-wrap items-center gap-1.5">
-                      {t.source === "binance_sync" && (
-                        <span
-                          title={`Order Binance #${t.binance_order_no ?? ""}`}
-                          className="inline-flex items-center gap-0.5 rounded-sm bg-yellow-500/15 px-1 py-0.5 text-[0.6rem] font-semibold tracking-wider text-yellow-400 uppercase"
-                        >
-                          <RefreshCw className="size-2.5" />
-                          Binance
+                          {t.side === "buy" ? "Beli" : "Jual"}
                         </span>
-                      )}
-                      <span>{t.note || (t.source === "binance_sync" ? "" : "—")}</span>
-                    </span>
-                  </td>
-                  {(onEdit || onDelete) && (
-                    <td className="py-2.5 text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        {onEdit ? (
-                          <button
-                            type="button"
-                            onClick={() => onEdit(t)}
-                            disabled={t.source === "binance_sync"}
-                            title={
-                              t.source === "binance_sync"
-                                ? "Transaksi dari Binance tidak bisa diedit manual"
-                                : "Edit transaksi"
-                            }
-                            className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
+                        {isTaker ? (
+                          <span
+                            className="rounded px-1.5 py-0.5 text-[0.6rem] font-semibold bg-cyan-500/15 text-cyan-400 border border-cyan-500/20"
+                            title="Beli Langsung dari Merchant Lain (Taker): Bebas fee beli (0%), stok masuk penuh 100%, HPP mentah tanpa mark-up fee. Fee baru terhitung ketika menjual."
                           >
-                            <Pencil className="size-3.5" />
-                          </button>
-                        ) : null}
-                        {onDelete ? (
-                          <button
-                            type="button"
-                            onClick={() => onDelete(t)}
-                            disabled={deletingId === t.id}
-                            title="Hapus transaksi"
-                            className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive-foreground disabled:opacity-50"
+                            Beli Langsung
+                          </span>
+                        ) : (
+                          <span
+                            className="rounded px-1.5 py-0.5 text-[0.6rem] font-medium bg-surface-2 text-muted-foreground"
+                            title="Melalui Iklan Sendiri (Maker): Dikenakan fee Maker Binance (0.07%)."
                           >
-                            <Trash2 className="size-3.5" />
-                          </button>
-                        ) : null}
+                            Iklan Sendiri
+                          </span>
+                        )}
                       </div>
                     </td>
-                  )}
-                </tr>
-              ))
+                    <td className="num py-2.5 pr-3 text-right">
+                      <div className="font-semibold text-foreground/90">
+                        {fmtRp2(normalizeTradePrice(t.price))}
+                      </div>
+                      <div className="text-[0.68rem] text-muted-foreground">
+                        {fmtRp(normalizeTradePrice(t.price) * t.amount_usdt)}
+                      </div>
+                    </td>
+                    <td className="num py-2.5 pr-3 text-right text-foreground/85">
+                      <div className="font-semibold text-foreground/90">
+                        {t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}
+                      </div>
+                      {t.side === "buy" ? (
+                        isTaker ? (
+                          <div
+                            className="text-[0.67rem] font-semibold text-cyan-400"
+                            title="Beli Langsung dari Merchant Lain: Bebas fee maker beli (0%), saldo stok USDT bertambah penuh 100% tanpa potongan 0.07%."
+                          >
+                            +{t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} stok (utuh)
+                          </div>
+                        ) : (
+                          <div
+                            className="text-[0.67rem] font-medium text-emerald-400"
+                            title={
+                              t.source === "binance_sync" && t.fee_rate
+                                ? `Penambahan saldo stok: nominal ${t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} - fee Maker ${(t.amount_usdt * t.fee_rate).toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT (${(t.fee_rate * 100).toFixed(2)}%)`
+                                : "Penambahan saldo stok masuk"
+                            }
+                          >
+                            +{t.source === "binance_sync" && t.fee_rate
+                              ? (t.amount_usdt * (1 - t.fee_rate)).toLocaleString("id-ID", { maximumFractionDigits: 2 })
+                              : t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}{" "}
+                            stok
+                          </div>
+                        )
+                      ) : (
+                        <div
+                          className="text-[0.67rem] font-medium text-rose-400"
+                          title={
+                            t.source === "binance_sync" && t.fee_rate
+                              ? `Pengurangan saldo stok: nominal ${t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} + fee Maker ${(t.amount_usdt * t.fee_rate).toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT (${(t.fee_rate * 100).toFixed(2)}%)`
+                              : "Pengurangan saldo stok keluar"
+                          }
+                        >
+                          -{t.source === "binance_sync" && t.fee_rate
+                            ? (t.amount_usdt * (1 + t.fee_rate)).toLocaleString("id-ID", { maximumFractionDigits: 2 })
+                            : t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })}{" "}
+                          stok
+                        </div>
+                      )}
+                    </td>
+                    {/* Kolom Profit / Detail */}
+                    <td className="num py-2.5 pr-3 text-right">
+                      {t.side === "sell" && t.profit_idr !== undefined ? (
+                        <div>
+                          <div
+                            className={cn(
+                              "font-semibold tabular-nums",
+                              t.profit_idr >= 0 ? "text-emerald-400" : "text-rose-400",
+                            )}
+                          >
+                            {t.profit_idr >= 0 ? "+" : ""}
+                            {fmtRp(t.profit_idr)}
+                          </div>
+                          {t.avg_cost_at_sell !== undefined && t.avg_cost_at_sell > 0 && (
+                            <div className="text-[0.67rem] text-muted-foreground">
+                              Modal: {fmtRp2(t.avg_cost_at_sell)}/USDT
+                            </div>
+                          )}
+                          {t.fee_rate !== undefined && t.fee_rate > 0 && (
+                            <div className="text-[0.65rem] text-muted-foreground/80">
+                              Fee {(t.fee_rate * 100).toFixed(2)}%
+                              {t.fee_idr ? ` (${fmtRp(t.fee_idr)})` : ""}
+                            </div>
+                          )}
+                        </div>
+                      ) : t.side === "buy" ? (
+                        <div>
+                          <div className="text-[0.68rem] text-muted-foreground">
+                            {fmtRp(normalizeTradePrice(t.price) * t.amount_usdt)}
+                          </div>
+                          {isTaker ? (
+                            <div
+                              className="text-[0.65rem] font-semibold text-cyan-400"
+                              title="Bebas fee maker beli (0%). Fee hanya terhitung saat Anda menjual."
+                            >
+                              Fee: Rp 0 (Bebas Fee)
+                            </div>
+                          ) : t.fee_rate !== undefined && t.fee_rate > 0 ? (
+                            <div className="text-[0.65rem] text-muted-foreground/80">
+                              Fee {(t.fee_rate * 100).toFixed(2)}%
+                              {t.fee_idr ? ` (${fmtRp(t.fee_idr)})` : ""}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 pr-3 text-muted-foreground">
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        {t.source === "binance_sync" && (
+                          <span
+                            title={`Order Binance #${t.binance_order_no ?? ""}`}
+                            className="inline-flex items-center gap-0.5 rounded-sm bg-yellow-500/15 px-1 py-0.5 text-[0.6rem] font-semibold tracking-wider text-yellow-400 uppercase"
+                          >
+                            <RefreshCw className="size-2.5" />
+                            Binance
+                          </span>
+                        )}
+                        <span>{t.note || (t.source === "binance_sync" ? "" : "—")}</span>
+                      </span>
+                    </td>
+                    {(onEdit || onDelete || onToggleRole) && (
+                      <td className="py-2.5 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          {onToggleRole ? (
+                            <button
+                              type="button"
+                              onClick={() => onToggleRole(t)}
+                              disabled={togglingRoleId === t.id}
+                              title={
+                                isTaker
+                                  ? "Klik untuk ubah ke: Iklan Sendiri (Maker - Fee 0.07%)"
+                                  : "Klik untuk ubah ke: Beli Langsung dari Merchant Lain (Taker - Bebas Fee Beli)"
+                              }
+                              className={cn(
+                                "rounded-md p-1.5 transition-colors",
+                                isTaker
+                                  ? "text-cyan-400 hover:bg-cyan-500/15"
+                                  : "text-muted-foreground hover:bg-surface-2 hover:text-foreground",
+                              )}
+                            >
+                              <ArrowLeftRight className="size-3.5" />
+                            </button>
+                          ) : null}
+                          {onEdit ? (
+                            <button
+                              type="button"
+                              onClick={() => onEdit(t)}
+                              disabled={t.source === "binance_sync"}
+                              title={
+                                t.source === "binance_sync"
+                                  ? "Transaksi dari Binance tidak bisa diedit angka/harganya (gunakan tombol panah di sebelah kiri untuk ubah peran Beli Langsung/Iklan Sendiri)"
+                                  : "Edit transaksi"
+                              }
+                              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
+                            >
+                              <Pencil className="size-3.5" />
+                            </button>
+                          ) : null}
+                          {onDelete ? (
+                            <button
+                              type="button"
+                              onClick={() => onDelete(t)}
+                              disabled={deletingId === t.id}
+                              title="Hapus transaksi"
+                              className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive-foreground disabled:opacity-50"
+                            >
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>

@@ -38,7 +38,6 @@ import { toast } from "sonner";
 
 import { AdsTable } from "@/components/p2p/AdsTable";
 import { ArbitrageScanner } from "@/components/p2p/ArbitrageScanner";
-import { AutoPricingBotPanel } from "@/components/p2p/AutoPricingBotPanel";
 import { MarginCalculator } from "@/components/p2p/MarginCalculator";
 import { PaymentVerifierPanel } from "@/components/p2p/PaymentVerifierPanel";
 
@@ -60,6 +59,7 @@ import {
   liquidityLabel,
   type HistoryPoint,
 } from "@/lib/p2p-engine";
+import { cn } from "@/lib/utils";
 import { login } from "@/lib/auth";
 import {
   getBinanceFundingBalance,
@@ -74,6 +74,7 @@ import {
   deleteTrade,
   getInitialCapital,
   getPnlSummary,
+  isTakerTrade,
   logTrade,
   normalizeTradePrice,
   parseFlexibleNumber,
@@ -82,7 +83,10 @@ import {
   setCustomStockAmount,
   setCustomStockCost,
   setInitialCapital,
+  setTradeRole,
   updateTrade,
+  type Trade,
+  type TradeRole,
   type TradeSide,
 } from "@/lib/pnl";
 
@@ -201,11 +205,16 @@ function Dashboard() {
   // State Form Transaksi Manual
   const [showManualForm, setShowManualForm] = useState(false);
   const [tradeSide, setTradeSide] = useState<TradeSide>("buy");
+  const [tradeRole, setTradeRoleState] = useState<TradeRole>("taker");
   const [tradePrice, setTradePrice] = useState("");
   const [tradeAmount, setTradeAmount] = useState("");
   const [tradeNote, setTradeNote] = useState("");
   const [editingTradeId, setEditingTradeId] = useState<number | null>(null);
   const [deletingTradeId, setDeletingTradeId] = useState<number | null>(null);
+  const [togglingRoleId, setTogglingRoleId] = useState<number | null>(null);
+
+  // State Simulasi Metode Ambil Stok pada Rekomendasi
+  const [simBuyMethod, setSimBuyMethod] = useState<"maker" | "taker">("taker");
 
   // State Auto-sync Binance
   const [autoSyncBinance, setAutoSyncBinance] = useState(true);
@@ -217,6 +226,7 @@ function Dashboard() {
   const pnlFn = useServerFn(getPnlSummary);
   const logTradeFn = useServerFn(logTrade);
   const updateTradeFn = useServerFn(updateTrade);
+  const setTradeRoleFn = useServerFn(setTradeRole);
   const deleteTradeFn = useServerFn(deleteTrade);
   const syncFn = useServerFn(syncBinanceTrades);
   const syncStatusFn = useServerFn(getBinanceSyncStatus);
@@ -555,8 +565,17 @@ function Dashboard() {
 
   // Mutasi Transaksi Manual (Tambah / Edit / Hapus)
   const logMutation = useMutation({
-    mutationFn: (data: { side: TradeSide; price: number; amountUsdt: number; note?: string }) =>
-      logTradeFn({ data: { ...data, sessionToken: sessionToken ?? undefined } }),
+    mutationFn: (data: { side: TradeSide; role?: TradeRole; price: number; amountUsdt: number; note?: string }) => {
+      const payload: { side: TradeSide; price: number; amountUsdt: number; role?: TradeRole; note?: string; sessionToken?: string } = {
+        side: data.side,
+        price: data.price,
+        amountUsdt: data.amountUsdt,
+      };
+      if (data.role) payload.role = data.role;
+      if (data.note) payload.note = data.note;
+      if (sessionToken) payload.sessionToken = sessionToken;
+      return logTradeFn({ data: payload });
+    },
     onSuccess: (res) => {
       if (res.ok) {
         toast.success("Transaksi tersimpan.");
@@ -570,8 +589,18 @@ function Dashboard() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: (data: { id: number; side: TradeSide; price: number; amountUsdt: number; note?: string }) =>
-      updateTradeFn({ data: { ...data, sessionToken: sessionToken ?? undefined } }),
+    mutationFn: (data: { id: number; side: TradeSide; role?: TradeRole; price: number; amountUsdt: number; note?: string }) => {
+      const payload: { id: number; side: TradeSide; price: number; amountUsdt: number; role?: TradeRole; note?: string; sessionToken?: string } = {
+        id: data.id,
+        side: data.side,
+        price: data.price,
+        amountUsdt: data.amountUsdt,
+      };
+      if (data.role) payload.role = data.role;
+      if (data.note) payload.note = data.note;
+      if (sessionToken) payload.sessionToken = sessionToken;
+      return updateTradeFn({ data: payload });
+    },
     onSuccess: (res) => {
       if (res.ok) {
         toast.success("Perubahan transaksi tersimpan.");
@@ -582,6 +611,25 @@ function Dashboard() {
       }
     },
     onError: handleAuthError,
+  });
+
+  const toggleRoleMutation = useMutation({
+    mutationFn: (trade: Trade) => {
+      const isCurrentlyTaker = isTakerTrade(trade);
+      const newRole: TradeRole = isCurrentlyTaker ? "maker" : "taker";
+      return setTradeRoleFn({ data: { id: trade.id, role: newRole, sessionToken: sessionToken ?? undefined } });
+    },
+    onMutate: (trade) => setTogglingRoleId(trade.id),
+    onSuccess: (res) => {
+      if (res.ok) {
+        toast.success("Peran transaksi berhasil diperbarui.");
+        pnlQuery.refetch();
+      } else {
+        toast.error("Gagal memperbarui peran transaksi.");
+      }
+    },
+    onError: handleAuthError,
+    onSettled: () => setTogglingRoleId(null),
   });
 
   const deleteMutation = useMutation({
@@ -636,13 +684,15 @@ function Dashboard() {
     setTradePrice("");
     setTradeAmount("");
     setTradeNote("");
+    setTradeRoleState(tradeSide === "buy" ? "taker" : "maker");
     setEditingTradeId(null);
     setShowManualForm(false);
   };
 
-  const handleStartEditTrade = (t: { id: number; side: TradeSide; price: number; amount_usdt: number; note: string | null }) => {
+  const handleStartEditTrade = (t: Trade) => {
     setEditingTradeId(t.id);
     setTradeSide(t.side);
+    setTradeRoleState(isTakerTrade(t) ? "taker" : "maker");
     setTradePrice(String(t.price));
     setTradeAmount(String(t.amount_usdt));
     setTradeNote(t.note ?? "");
@@ -663,20 +713,23 @@ function Dashboard() {
       return;
     }
 
+    const trimmedNote = tradeNote.trim();
     if (editingTradeId !== null) {
       updateMutation.mutate({
         id: editingTradeId,
         side: tradeSide,
+        role: tradeRole,
         price: p,
         amountUsdt: a,
-        note: tradeNote.trim() || undefined,
+        ...(trimmedNote ? { note: trimmedNote } : {}),
       });
     } else {
       logMutation.mutate({
         side: tradeSide,
+        role: tradeRole,
         price: p,
         amountUsdt: a,
-        note: tradeNote.trim() || undefined,
+        ...(trimmedNote ? { note: trimmedNote } : {}),
       });
     }
   };
@@ -847,26 +900,13 @@ function Dashboard() {
       {/* ── Main Body ───────────────────────────────────────────────────────── */}
       <main className="mx-auto max-w-7xl px-4 pt-5 sm:px-6 space-y-5">
 
-        {/* ── Auto-Pricing Bot (Filtered Merchant Tracker & Boundaries) ─────── */}
-        {s && (
-          <AutoPricingBotPanel
-            sellRefAds={s.top_sell_ref_ads ?? []}
-            buyRefAds={s.top_buy_ref_ads ?? []}
-            fairPrice={s.fair_price || 16220}
-            stockHpp={pnlQuery.data?.open_position_avg_cost_idr || 0}
-            onRefresh={() => snapshotQuery.refetch()}
-            isRefreshing={snapshotQuery.isFetching}
-            onApplyPrice={({ buyPrice, sellPrice }) => {
-              setTradePrice(String(tradeSide === "buy" ? Math.round(buyPrice) : Math.round(sellPrice)));
-            }}
-          />
-        )}
-
         {/* ── Dual Trading Recommendations ─────────────────────────────────── */}
         {s ? (() => {
           const buyAd = s.my_buy_price || 16200;
-          const buyFee = buyAd * 0.0007;
-          const buyHpp = buyAd * 1.0007;
+          const isTakerSim = simBuyMethod === "taker";
+          // Jika Beli Langsung dari merchant lain (Taker): Bebas fee beli (fee = 0), fee hanya terhitung ketika menjual!
+          const buyFee = isTakerSim ? 0 : buyAd * 0.0007;
+          const buyHpp = isTakerSim ? buyAd : buyAd * 1.0007;
 
           const sellAd = s.my_sell_price || 16250;
           const sellFee = sellAd * 0.0007;
@@ -878,6 +918,40 @@ function Dashboard() {
 
           return (
             <div className="space-y-2.5">
+              {/* Selector Metode Simulasi Ambil Stok */}
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/25 bg-surface-2/60 px-3.5 py-2 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-foreground">Metode Ambil Stok:</span>
+                  <div className="inline-flex rounded-md bg-surface p-0.5 border border-border">
+                    <button
+                      type="button"
+                      onClick={() => setSimBuyMethod("taker")}
+                      className={cn(
+                        "rounded px-2.5 py-1 text-[0.7rem] font-semibold transition-colors",
+                        isTakerSim ? "bg-cyan-500/20 text-cyan-400 shadow-sm" : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      Beli Langsung Merchant Lain (Taker · Bebas Fee Beli)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSimBuyMethod("maker")}
+                      className={cn(
+                        "rounded px-2.5 py-1 text-[0.7rem] font-semibold transition-colors",
+                        !isTakerSim ? "bg-primary/20 text-primary shadow-sm" : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      Iklan Sendiri (Maker · Fee 0.07%)
+                    </button>
+                  </div>
+                </div>
+                <span className="text-[0.68rem] text-muted-foreground">
+                  {isTakerSim
+                    ? "✨ Fee beli Rp 0 (0%), fee dipotong hanya saat menjual (0.07%)."
+                    : "Fee Maker Beli 0.07% + Maker Jual 0.07% = 0.14%."}
+                </span>
+              </div>
+
               <div className="grid grid-cols-1 gap-3.5 md:grid-cols-12">
                 {/* Rekomendasi BELI */}
                 <div className="panel p-4.5 md:col-span-6 border-bid/30 bg-gradient-to-br from-surface to-bid/5">
@@ -885,7 +959,7 @@ function Dashboard() {
                     <div className="flex items-center gap-1.5">
                       <span className="size-2 rounded-full bg-bid animate-pulse" />
                       <span className="text-xs font-bold text-bid uppercase tracking-wider">
-                        Rekomendasi Pasang Beli
+                        {isTakerSim ? "Rekomendasi Beli Langsung (Taker)" : "Rekomendasi Pasang Iklan Beli"}
                       </span>
                     </div>
 
@@ -910,7 +984,7 @@ function Dashboard() {
                   <div className="mt-2 flex items-baseline justify-between gap-2">
                     <div>
                       <div className="text-[0.68rem] font-medium text-muted-foreground uppercase tracking-wider">
-                        Harga Iklan (Sebelum Fee)
+                        {isTakerSim ? "Harga Ambil (Bebas Fee)" : "Harga Iklan (Sebelum Fee)"}
                       </div>
                       <div className="num text-2xl sm:text-3xl font-bold text-foreground">
                         {fmtRp2(buyAd)}
@@ -924,11 +998,13 @@ function Dashboard() {
                   {/* Rincian Fee Beli & HPP Riil */}
                   <div className="mt-3 rounded-md border border-bid/20 bg-surface-2/70 p-2.5 space-y-1.5 text-xs">
                     <div className="flex items-center justify-between text-muted-foreground">
-                      <span>Fee Maker Beli (0.07%):</span>
-                      <span className="num font-semibold text-foreground/85">+{fmtRp2(buyFee)}/USDT</span>
+                      <span>{isTakerSim ? "Fee Beli Langsung (Taker):" : "Fee Maker Beli (0.07%):"}</span>
+                      <span className={cn("num font-semibold", isTakerSim ? "text-cyan-400" : "text-foreground/85")}>
+                        {isTakerSim ? "Rp 0 (Bebas Fee)" : `+${fmtRp2(buyFee)}/USDT`}
+                      </span>
                     </div>
                     <div className="flex items-center justify-between border-t border-border/50 pt-1.5 font-bold">
-                      <span className="text-foreground">HPP Modal Riil (Sesudah Fee):</span>
+                      <span className="text-foreground">HPP Modal Riil {isTakerSim ? "(Tanpa Mark-up):" : "(Sesudah Fee):"}</span>
                       <span className="num text-bid text-sm">{fmtRp2(buyHpp)}/USDT</span>
                     </div>
                   </div>
@@ -1025,7 +1101,8 @@ function Dashboard() {
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <span className="text-muted-foreground">
-                    Total Fee (0.14%): <strong className="text-foreground">{fmtRp2(totalFeePerUsdt)}/USDT</strong>
+                    Total Fee ({isTakerSim ? "0.07% Saat Jual Saja" : "0.14% Beli + Jual"}):{" "}
+                    <strong className="text-foreground">{fmtRp2(totalFeePerUsdt)}/USDT</strong>
                   </span>
                   <span className="inline-flex items-center gap-1 rounded bg-bid/15 px-2 py-0.5 font-bold text-bid">
                     <TrendingUp className="size-3" />
@@ -1800,16 +1877,45 @@ function Dashboard() {
                     </button>
                   </div>
 
-                  <form onSubmit={handleTradeSubmit} className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-5">
+                  <form onSubmit={handleTradeSubmit} className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-6">
                     <div>
                       <Label className="text-[0.7rem] text-muted-foreground">Sisi</Label>
-                      <Select value={tradeSide} onValueChange={(v) => setTradeSide(v as TradeSide)}>
+                      <Select
+                        value={tradeSide}
+                        onValueChange={(v) => {
+                          const s = v as TradeSide;
+                          setTradeSide(s);
+                          setTradeRoleState(s === "buy" ? "taker" : "maker");
+                        }}
+                      >
                         <SelectTrigger className="mt-1 bg-surface-2 text-xs h-8">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="buy">Beli (Masuk Stok)</SelectItem>
                           <SelectItem value="sell">Jual (Keluar Stok)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div>
+                      <Label className="text-[0.7rem] text-muted-foreground">Metode Eksekusi</Label>
+                      <Select value={tradeRole} onValueChange={(v) => setTradeRoleState(v as TradeRole)}>
+                        <SelectTrigger className="mt-1 bg-surface-2 text-xs h-8">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {tradeSide === "buy" ? (
+                            <>
+                              <SelectItem value="taker">Beli Langsung (Taker · Bebas Fee)</SelectItem>
+                              <SelectItem value="maker">Iklan Sendiri (Maker · Fee 0.07%)</SelectItem>
+                            </>
+                          ) : (
+                            <>
+                              <SelectItem value="maker">Iklan Sendiri (Maker · Fee 0.07%)</SelectItem>
+                              <SelectItem value="taker">Jual Langsung (Taker · Bebas Fee)</SelectItem>
+                            </>
+                          )}
                         </SelectContent>
                       </Select>
                     </div>
@@ -1876,8 +1982,10 @@ function Dashboard() {
                   trades={pnl?.recent_trades ?? []}
                   onEdit={handleStartEditTrade}
                   onDelete={(t) => deleteMutation.mutate(t.id)}
+                  onToggleRole={(t) => toggleRoleMutation.mutate(t)}
                   editingId={editingTradeId}
                   deletingId={deletingTradeId}
+                  togglingRoleId={togglingRoleId}
                 />
               </div>
             </div>

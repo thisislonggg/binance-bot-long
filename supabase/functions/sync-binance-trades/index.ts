@@ -28,6 +28,9 @@ type BinanceC2cOrder = {
   createTime: number;
   counterPartNickName: string;
   payMethodName?: string;
+  advertisementRole?: string;
+  advRole?: string;
+  commission?: string;
 };
 
 function buildSignature(queryParams: Record<string, string | number>, secret: string): string {
@@ -148,9 +151,25 @@ Deno.serve(async () => {
       const amountUsdt = Number(order.amount);
       const ts = new Date(order.createTime).toISOString();
       const side = order.tradeType === "BUY" ? "buy" : "sell";
+
+      const advRole = String(
+        order.advertisementRole ||
+        (order as any).advRole ||
+        "",
+      ).toUpperCase();
+      const commissionVal = Number(order.commission);
+      const isTaker =
+        advRole === "TAKER" ||
+        (advRole !== "MAKER" && commissionVal === 0 && order.commission !== undefined);
+
+      const roleTag = isTaker
+        ? (side === "buy" ? "Beli Langsung (Taker)" : "Jual Langsung (Taker)")
+        : "Iklan Sendiri (Maker)";
+
       const noteParts = [
         order.counterPartNickName ? `@${order.counterPartNickName}` : null,
         order.payMethodName ?? null,
+        roleTag,
       ].filter(Boolean);
       const note = noteParts.length ? noteParts.join(" · ") : null;
 

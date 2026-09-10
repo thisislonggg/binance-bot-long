@@ -105,6 +105,7 @@ export function parseFlexibleNumber(val: unknown): number {
 }
 
 export type TradeSide = "buy" | "sell";
+export type TradeRole = "maker" | "taker";
 
 export type Trade = {
   id: number;
@@ -116,6 +117,9 @@ export type Trade = {
   /** 'manual' = dicatat sendiri | 'binance_sync' = dari Binance C2C API */
   source: "manual" | "binance_sync";
   binance_order_no: string | null;
+  /** 'taker' = beli/jual langsung dari merchant lain | 'maker' = melalui iklan sendiri */
+  trade_role?: TradeRole;
+  is_taker?: boolean;
   /** Profit bersih per transaksi jual (IDR). Undefined untuk transaksi beli. */
   profit_idr?: number;
   /** HPP rata-rata saat transaksi jual terjadi (IDR/USDT). Undefined untuk transaksi beli. */
@@ -125,6 +129,29 @@ export type Trade = {
   /** Estimasi fee transaksi yang dikenakan (IDR). */
   fee_idr?: number;
 };
+
+/**
+ * Deteksi apakah transaksi merupakan Taker (Beli langsung dari merchant lain, bukan iklan sendiri).
+ * Pada Binance P2P, Taker tidak dikenakan fee beli (0% fee).
+ */
+export function isTakerTrade(trade: {
+  note?: string | null;
+  trade_role?: string | null;
+  role?: string | null;
+  is_taker?: boolean;
+}): boolean {
+  if (trade.is_taker === true || trade.trade_role === "taker" || trade.role === "taker") return true;
+  if (trade.is_taker === false || trade.trade_role === "maker" || trade.role === "maker") return false;
+  if (!trade.note) return false;
+  const n = trade.note.toLowerCase();
+  return (
+    n.includes("taker") ||
+    n.includes("beli langsung") ||
+    n.includes("ambil langsung") ||
+    n.includes("direct") ||
+    n.includes("[taker]")
+  );
+}
 
 export type PnlSummary = {
   configured: boolean;
@@ -337,6 +364,7 @@ const logTradeSchema = z.object({
   price: z.number().positive(),
   amountUsdt: z.number().positive(),
   note: z.string().max(200).optional(),
+  role: z.enum(["maker", "taker"]).optional(),
 });
 
 export const logTrade = createServerFn({ method: "POST" })
@@ -347,11 +375,21 @@ export const logTrade = createServerFn({ method: "POST" })
     const db = getSupabase();
     if (!db) return { ok: false };
     const normalizedPrice = normalizeTradePrice(data.price);
-    const { error } = await db.from("trades").insert({
+
+    let finalNote = data.note?.trim() || "";
+    if (data.role === "taker" && !isTakerTrade({ note: finalNote })) {
+      const tag = data.side === "buy" ? "Beli Langsung (Taker)" : "Jual Langsung (Taker)";
+      finalNote = finalNote ? `${finalNote} · ${tag}` : tag;
+    } else if (data.role === "maker" && !finalNote.toLowerCase().includes("maker")) {
+      const tag = data.side === "buy" ? "Iklan Sendiri (Maker)" : "Iklan Sendiri (Maker)";
+      finalNote = finalNote ? `${finalNote} · ${tag}` : tag;
+    }
+
+    const { error } = await (db as any).from("trades").insert({
       side: data.side,
       price: normalizedPrice,
       amount_usdt: data.amountUsdt,
-      note: data.note ?? null,
+      note: finalNote || null,
     });
     return { ok: !error };
   });
@@ -363,6 +401,7 @@ const updateTradeSchema = z.object({
   price: z.number().positive(),
   amountUsdt: z.number().positive(),
   note: z.string().max(200).optional(),
+  role: z.enum(["maker", "taker"]).optional(),
 });
 
 export const updateTrade = createServerFn({ method: "POST" })
@@ -373,16 +412,80 @@ export const updateTrade = createServerFn({ method: "POST" })
     const db = getSupabase();
     if (!db) return { ok: false };
     const normalizedPrice = normalizeTradePrice(data.price);
-    const { error } = await db
+
+    let finalNote = data.note?.trim() || "";
+    if (data.role) {
+      // Bersihkan penanda peran lama
+      finalNote = finalNote
+        .replace(/\s*·\s*Beli Langsung \(Taker\)/gi, "")
+        .replace(/\s*·\s*Jual Langsung \(Taker\)/gi, "")
+        .replace(/\s*·\s*Iklan Sendiri \(Maker\)/gi, "")
+        .replace(/\s*\[Taker\]/gi, "")
+        .replace(/\s*\[Maker\]/gi, "")
+        .trim();
+      const tag = data.role === "taker"
+        ? (data.side === "buy" ? "Beli Langsung (Taker)" : "Jual Langsung (Taker)")
+        : "Iklan Sendiri (Maker)";
+      finalNote = finalNote ? `${finalNote} · ${tag}` : tag;
+    }
+
+    const { error } = await (db as any)
       .from("trades")
       .update({
         side: data.side,
         price: normalizedPrice,
         amount_usdt: data.amountUsdt,
-        note: data.note ?? null,
+        note: finalNote || null,
       })
       .eq("id", data.id);
     return { ok: !error };
+  });
+
+const setTradeRoleSchema = z.object({
+  sessionToken: z.string().optional(),
+  id: z.number(),
+  role: z.enum(["maker", "taker"]),
+});
+
+/**
+ * Ubah peran transaksi (Maker / Taker) dengan cepat.
+ * Memungkinkan pengguna menandai transaksi Beli Langsung (Taker bebas fee) secara instan.
+ */
+export const setTradeRole = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => setTradeRoleSchema.parse(data))
+  .handler(async ({ data }): Promise<{ ok: boolean }> => {
+    await requireSession(data.sessionToken);
+
+    const db = getSupabase();
+    if (!db) return { ok: false };
+
+    const { data: trade, error: fetchErr } = await (db as any)
+      .from("trades")
+      .select("id, side, note")
+      .eq("id", data.id)
+      .maybeSingle();
+
+    if (fetchErr || !trade) return { ok: false };
+
+    let cleanNote = ((trade as any).note || "")
+      .replace(/\s*·\s*Beli Langsung \(Taker\)/gi, "")
+      .replace(/\s*·\s*Jual Langsung \(Taker\)/gi, "")
+      .replace(/\s*·\s*Iklan Sendiri \(Maker\)/gi, "")
+      .replace(/\s*\[Taker\]/gi, "")
+      .replace(/\s*\[Maker\]/gi, "")
+      .trim();
+
+    const tag = data.role === "taker"
+      ? ((trade as any).side === "buy" ? "Beli Langsung (Taker)" : "Jual Langsung (Taker)")
+      : "Iklan Sendiri (Maker)";
+    const newNote = cleanNote ? `${cleanNote} · ${tag}` : tag;
+
+    const { error: updateErr } = await (db as any)
+      .from("trades")
+      .update({ note: newNote })
+      .eq("id", data.id);
+
+    return { ok: !updateErr };
   });
 
 const deleteTradeSchema = z.object({
@@ -492,12 +595,16 @@ export const getPnlSummary = createServerFn({ method: "POST" })
 
     // ── Algoritma AVCO (Weighted Moving Average Cost) ─────────────────────────
     // Setiap transaksi BELI memperbarui rata-rata tertimbang modal (HPP).
+    // Transaksi Beli Langsung (Taker): fee = 0%, stok masuk 100% utuh, HPP = harga beli mentah.
+    // Transaksi Iklan Sendiri (Maker): dikenakan Maker fee (0.07% / 0.08%).
     // Setiap transaksi JUAL menggunakan rata-rata HPP saat itu sebagai cost basis.
     // Hasil: open_position_avg_cost_idr selalu mencerminkan modal riil per USDT.
 
-    let inventory = 0;   // stok USDT yang sedang dipegang
-    let avgHpp = 0;      // rata-rata HPP tertimbang dari stok (selalu termasuk fee beli)
-    let lastBuyHpp = 0;  // HPP dari lot beli terakhir (untuk fallback)
+    let inventory = 0;        // stok USDT yang sedang dipegang
+    let avgHpp = 0;           // rata-rata HPP tertimbang dari stok
+    let avgBuyFeePerUsdt = 0; // rata-rata fee beli riil per USDT yang melekat pada stok
+    let lastBuyHpp = 0;       // HPP dari lot beli terakhir (untuk fallback)
+    let lastBuyFeePerUsdt = 0;// fee beli per USDT dari lot beli terakhir
 
     const realized: {
       ts: string;
@@ -514,9 +621,7 @@ export const getPnlSummary = createServerFn({ method: "POST" })
     let unmatchedSell = 0;
     let totalMatchedSellUsdt = 0;
 
-
     const normalizedTrades: Trade[] = [];
-
 
     for (const rawTrade of rawTrades) {
       const rawPrice = Number(rawTrade.price);
@@ -528,46 +633,54 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       const price = normalizeTradePrice(rawPrice);
       const isBinanceSync = rawTrade.source === "binance_sync";
       const isManual = rawTrade.source === "manual";
-      // Fee rate berbasis waktu transaksi: sebelum cut-off tetap 0.08%, setelah cut-off 0.07%
-      const feeRate = isBinanceSync ? getBinanceFeeRate(rawTrade.ts) : 0;
+      const isTaker = isTakerTrade(rawTrade);
+      // Fee maker standar (0.08% sebelum cut-off, 0.07% setelahnya)
+      const baseFeeRate = isBinanceSync ? getBinanceFeeRate(rawTrade.ts) : 0;
 
       if (rawTrade.side === "buy") {
-        // Untuk binance_sync: stok yang masuk dikurangi fee (0.08% sebelum cut-off, 0.07% setelahnya)
-        // (misal beli 10.000 USDT → masuk amount × (1 - feeRate))
-        // Untuk manual: jumlah penuh dipakai (user sudah input jumlah aktual)
-        const actualAmount = isBinanceSync
-          ? amount * (1 - feeRate)  // USDT yang benar-benar diterima
-          : amount;
-        // HPP = total IDR dibayar / USDT diterima = price / (1 - fee)
-        const hpp = isBinanceSync
-          ? price / (1 - feeRate)   // biaya per USDT yang diterima
-          : calcHpp(price, feeRate); // manual tetap pakai calcHpp
+        // DETEKSI BELI LANGSUNG DARI MERCHANT LAIN (TAKER):
+        // Jika beli langsung: Bebas fee maker beli (feeRate = 0), stok masuk 100% penuh,
+        // dan HPP adalah harga beli riil mentah. Fee baru terhitung ketika menjual.
+        const effectiveBuyFeeRate = isTaker ? 0 : baseFeeRate;
+
+        const actualAmount = isBinanceSync && !isTaker
+          ? amount * (1 - effectiveBuyFeeRate) // Dipotong maker fee jika via iklan sendiri
+          : amount;                            // Utuh 100% jika beli langsung (Taker) / manual
+
+        const hpp = isBinanceSync && !isTaker
+          ? price / (1 - effectiveBuyFeeRate)  // Biaya per USDT setelah fee maker
+          : price;                             // HPP mentah tanpa mark-up fee
+
+        const buyFeeIdr = isTaker ? 0 : (isBinanceSync ? amount * price * effectiveBuyFeeRate : 0);
+        const buyFeePerUsdt = actualAmount > 0 ? buyFeeIdr / actualAmount : 0;
+
         lastBuyHpp = hpp;
+        lastBuyFeePerUsdt = buyFeePerUsdt;
 
         if (inventory <= 1e-8) {
-          // Stok sebelumnya kosong atau habis -> set modal baru
           inventory = actualAmount;
           avgHpp = hpp;
+          avgBuyFeePerUsdt = buyFeePerUsdt;
         } else {
-          // Ada sisa stok lama -> perbarui rata-rata tertimbang
           const newInventory = inventory + actualAmount;
           avgHpp = (inventory * avgHpp + actualAmount * hpp) / newInventory;
+          avgBuyFeePerUsdt = (inventory * avgBuyFeePerUsdt + actualAmount * buyFeePerUsdt) / newInventory;
           inventory = newInventory;
         }
 
-        totalBuy += actualAmount;              // USDT yang benar-benar masuk ke stok
-        totalBuyIdr += amount * price;         // IDR yang dibayarkan (nominal penuh)
-        // Beli: push dengan fee_rate & estimasi fee_idr
-        const buyFeeIdr = isBinanceSync ? amount * price * feeRate : 0;
+        totalBuy += actualAmount;
+        totalBuyIdr += amount * price;
+
         normalizedTrades.push({
           ...rawTrade,
           price,
-          fee_rate: feeRate,
+          trade_role: isTaker ? "taker" : "maker",
+          is_taker: isTaker,
+          fee_rate: effectiveBuyFeeRate,
           fee_idr: buyFeeIdr,
         });
         continue;
       }
-
 
       // ── Sisi JUAL ──────────────────────────────────────────────────────────
       const tradeSellIdr = amount * price;
@@ -576,53 +689,46 @@ export const getPnlSummary = createServerFn({ method: "POST" })
 
       let tradeProfit = 0;
       let tradeFeeIdr = 0;
-      // Transaksi manual tidak dikenakan fee jual (fee jual hanya untuk binance_sync)
-      const netSellPerUsdt = isManual ? price : calcNetSell(price, feeRate);
 
-      // Saldo USDT yang keluar dari wallet saat jual sebagai Maker Binance P2P:
-      // - amount USDT dikirim ke pembeli
-      // - (amount × feeRate) USDT ditarik Binance sebagai maker fee dari Funding Wallet
-      // Total USDT keluar = amount × (1 + feeRate)
-      // Untuk manual: nominal penuh tanpa fee tambahan
+      // Fee jual dikenakan untuk maker binance_sync (0.07% / 0.08%).
+      // Jika jual sebagai taker (jual langsung) atau manual: bebas fee jual.
+      const effectiveSellFeeRate = isManual || isTaker ? 0 : baseFeeRate;
+      const netSellPerUsdt = isManual || isTaker ? price : calcNetSell(price, effectiveSellFeeRate);
+
       const isBinanceSyncSell = rawTrade.source === "binance_sync";
-      const actualSellAmount = isBinanceSyncSell
-        ? amount * (1 + feeRate)
+      const actualSellAmount = isBinanceSyncSell && !isTaker
+        ? amount * (1 + effectiveSellFeeRate)
         : amount;
 
-      // Porsi yang bisa di-match dengan inventaris yang ada (berdasar USDT aktual keluar)
       const matched = Math.min(actualSellAmount, Math.max(0, inventory));
       const unmatched = actualSellAmount - matched;
       const effectiveHpp = avgHpp > 0 ? avgHpp : (lastBuyHpp > 0 ? lastBuyHpp : 0);
 
       if (matched > 1e-8 && avgHpp > 0) {
-        // Cost basis = avgHpp saat ini (AVCO: rata-rata tertimbang semua stok)
-        // Profit dihitung berdasar porsi nominal yang ter-match
         const profitableAmount = Math.min(amount, matched);
-        const rawBuyForMatched = avgHpp / (1 + feeRate); // balik ke harga beli mentah
-        const buyFeeMatched = profitableAmount * rawBuyForMatched * feeRate;
-        // Fee jual hanya dihitung untuk transaksi Binance Sync
-        const sellFeeMatched = isManual ? 0 : profitableAmount * price * feeRate;
+        // Fee beli yang ter-match dari stok:
+        // JIKA BELI DARI MERCHANT LAIN (TAKER), avgBuyFeePerUsdt = 0, sehingga buyFeeMatched = 0!
+        const buyFeeMatched = profitableAmount * avgBuyFeePerUsdt;
+        // Fee jual dihitung saat menjual
+        const sellFeeMatched = profitableAmount * price * effectiveSellFeeRate;
         tradeFeeIdr += buyFeeMatched + sellFeeMatched;
         tradeProfit += (netSellPerUsdt - avgHpp) * profitableAmount;
         inventory -= matched;
         if (inventory < 1e-8) {
-          // Stok habis → reset modal ke 0 agar tampilan bersih
           inventory = 0;
           avgHpp = 0;
+          avgBuyFeePerUsdt = 0;
         }
       }
 
       if (unmatched > 1e-8) {
-        // Jual melebihi stok tercatat: gunakan HPP terakhir yang diketahui
         unmatchedSell += unmatched;
         const nominalMatched = Math.min(amount, matched);
         const nominalUnmatched = amount - nominalMatched;
 
         if (effectiveHpp > 0 && nominalUnmatched > 1e-8) {
-          const rawBuyFallback = effectiveHpp / (1 + feeRate);
-          const buyFeeUnmatched = nominalUnmatched * rawBuyFallback * feeRate;
-          // Fee jual hanya dihitung untuk transaksi Binance Sync
-          const sellFeeUnmatched = isManual ? 0 : nominalUnmatched * price * feeRate;
+          const buyFeeUnmatched = nominalUnmatched * lastBuyFeePerUsdt;
+          const sellFeeUnmatched = nominalUnmatched * price * effectiveSellFeeRate;
           tradeFeeIdr += buyFeeUnmatched + sellFeeUnmatched;
           tradeProfit += (netSellPerUsdt - effectiveHpp) * nominalUnmatched;
         }
@@ -636,13 +742,15 @@ export const getPnlSummary = createServerFn({ method: "POST" })
         matched_usdt: amount,
         sell_idr: tradeSellIdr,
       });
-      // Jual: push dengan profit_idr, avg_cost_at_sell, dan fee info ter-inject
+
       normalizedTrades.push({
         ...rawTrade,
         price,
+        trade_role: isTaker ? "taker" : "maker",
+        is_taker: isTaker,
         profit_idr: tradeProfit,
         avg_cost_at_sell: effectiveHpp,
-        fee_rate: feeRate,
+        fee_rate: effectiveSellFeeRate,
         fee_idr: tradeFeeIdr,
       });
     }
@@ -706,7 +814,7 @@ export const getPnlSummary = createServerFn({ method: "POST" })
       .in("key", [CUSTOM_STOCK_COST_KEY, CUSTOM_STOCK_AMOUNT_KEY]);
 
     if (Array.isArray(settingsRows)) {
-      for (const row of settingsRows) {
+      for (const row of settingsRows as any[]) {
         if (row.key === CUSTOM_STOCK_COST_KEY) {
           const val = parseFlexibleNumber(row.value);
           if (val > 0) customStockCostIdr = val;

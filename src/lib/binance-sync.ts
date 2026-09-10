@@ -41,7 +41,13 @@ export type BinanceC2cOrder = {
   createTime?: number | string; // epoch ms
   counterPartNickName?: string;
   payMethodName?: string;
-  commission?: string;
+  commission?: string | number;
+  advertisementRole?: "MAKER" | "TAKER" | string;
+  advRole?: string;
+  role?: string;
+  takerCommission?: string | number;
+  takerCommissionRate?: string | number;
+  commissionRate?: string | number;
 };
 
 // ── Fetch halaman dari Binance C2C API dengan Paginasi Penuh ─────────────────
@@ -243,9 +249,27 @@ export async function executeBinanceSync(
       const createTime = Number(order.createTime) || Date.now();
       const ts = new Date(createTime).toISOString();
       const side = String(order.tradeType).toUpperCase().includes("BUY") ? "buy" : "sell";
+
+      // Deteksi apakah transaksi adalah Beli Langsung dari merchant lain (Taker) vs Iklan Sendiri (Maker)
+      const advRole = String(
+        order.advertisementRole ||
+        order.advRole ||
+        order.role ||
+        "",
+      ).toUpperCase();
+      const commissionVal = parseFlexibleNumber(order.commission ?? order.takerCommission);
+      const isTaker =
+        advRole === "TAKER" ||
+        (advRole !== "MAKER" && commissionVal === 0 && (order.commission !== undefined || order.takerCommission !== undefined));
+
+      const roleTag = isTaker
+        ? (side === "buy" ? "Beli Langsung (Taker)" : "Jual Langsung (Taker)")
+        : "Iklan Sendiri (Maker)";
+
       const noteParts = [
         order.counterPartNickName ? `@${order.counterPartNickName}` : null,
         order.payMethodName ?? null,
+        roleTag,
       ].filter(Boolean);
       const note = noteParts.length ? noteParts.join(" · ") : null;
 
@@ -549,9 +573,39 @@ export const importBinanceCsvTrades = createServerFn({ method: "POST" })
 
       const counterparty = findVal(row, ["counterparty", "counterpartynickname", "lawantransaksi", "partner"]);
       const payMethod = findVal(row, ["paymethod", "paymethodname", "metodepembayaran", "payment"]);
+
+      const roleVal = findVal(row, [
+        "advertisementrole",
+        "advrole",
+        "role",
+        "peraniklan",
+        "peran",
+        "tipeperan",
+        "posisi",
+      ]).toUpperCase();
+      const feeValStr = findVal(row, [
+        "commission",
+        "takercommission",
+        "fee",
+        "biaya",
+        "komisi",
+        "feerate",
+        "transactionfee",
+      ]);
+      const feeVal = parseFlexibleNumber(feeValStr);
+      const isTaker =
+        roleVal.includes("TAKER") ||
+        roleVal.includes("AMBIL") ||
+        (feeValStr !== "" && feeVal === 0);
+
+      const roleTag = isTaker
+        ? (side === "buy" ? "Beli Langsung (Taker)" : "Jual Langsung (Taker)")
+        : (roleVal.includes("MAKER") || feeVal > 0 ? "Iklan Sendiri (Maker)" : null);
+
       const noteParts = [
         counterparty ? `@${counterparty}` : null,
         payMethod ?? null,
+        roleTag,
       ].filter(Boolean);
       const note = noteParts.length ? noteParts.join(" · ") : null;
 
