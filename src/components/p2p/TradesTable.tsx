@@ -233,13 +233,18 @@ export function TradesTable({
                 const isTaker = isTakerTrade(t);
                 return (
                   <tr key={t.id} className={cn("align-top", editingId === t.id && "bg-primary/5")}>
-                    <td className="num py-2.5 pr-3 text-muted-foreground">
-                      {new Date(t.ts).toLocaleString("id-ID", {
-                        day: "2-digit",
-                        month: "short",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
+                    <td className="num py-2.5 pr-3 text-muted-foreground whitespace-nowrap">
+                      <div>
+                        {new Date(t.ts).toLocaleString("id-ID", {
+                          timeZone: "Asia/Jakarta",
+                          day: "2-digit",
+                          month: "short",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          hour12: false,
+                        })}{" "}
+                        <span className="text-[0.65rem] text-muted-foreground/70">WIB</span>
+                      </div>
                     </td>
                     <td className="py-2.5 pr-3">
                       <div className="flex flex-col items-start gap-1">

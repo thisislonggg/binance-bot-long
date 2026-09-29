@@ -133,7 +133,13 @@ async function getLastSyncTs(): Promise<number | null> {
     .eq("key", SYNC_TS_KEY)
     .maybeSingle();
   const v = Number(data?.value);
-  return Number.isFinite(v) && v > 0 ? v : null;
+  if (!Number.isFinite(v) || v <= 0) return null;
+  // Jika timestamp yang tersimpan berada di masa depan (anomali jam), abaikan agar sync tidak macet
+  if (v > Date.now()) {
+    console.warn(`getLastSyncTs: timestamp tersimpan (${v}) berada di masa depan, reset ke null.`);
+    return null;
+  }
+  return v;
 }
 
 async function saveLastSyncTs(ts: number): Promise<void> {
@@ -156,13 +162,14 @@ export async function executeBinanceSync(
 
   const lastSync = await getLastSyncTs();
   const now = Date.now();
-  const MS_DAY = 24 * 60 * 60 * 1000;
+  const MS_HOUR = 60 * 60 * 1000;
+  const MS_DAY = 24 * MS_HOUR;
 
   // Tentukan window waktu (Binance membatasi query maksimal interval 30 hari, data s.d 180 hari)
   type Window = { start: number; end: number };
   const windows: Window[] = [];
 
-  if (!lastSync || forceFullHistory) {
+  if (!lastSync || forceFullHistory || lastSync > now) {
     // 7 chunk x 25 hari = 175 hari ke belakang
     for (let dayOffset = 175; dayOffset >= 0; dayOffset -= 25) {
       const winStart = now - (dayOffset + 25) * MS_DAY;
@@ -173,8 +180,15 @@ export async function executeBinanceSync(
       });
     }
   } else {
-    // Overlap 15 menit untuk memastikan order yang baru saja settled tercatat
-    let curStart = lastSync - 15 * 60 * 1000;
+    // Beri overlap aman 24 jam ke belakang (lastSync - 24 jam)
+    // Alasan: order Binance difilter berdasarkan createTime (waktu buka iklan/order),
+    // bukan waktu selesai. Jika proses transaksi butuh waktu, overlap 15 menit rawan terlewat.
+    // Karena tabel trades menggunakan upsert unik onConflict (binance_order_no), overlap 24 jam ini
+    // 100% aman dari duplikasi dan selalu menjaring order yang baru selesai.
+    let curStart = Math.max(now - 30 * MS_DAY, lastSync - 24 * MS_HOUR);
+    if (curStart >= now) {
+      curStart = now - 24 * MS_HOUR;
+    }
     while (curStart < now) {
       const curEnd = Math.min(curStart + 25 * MS_DAY, now);
       windows.push({ start: curStart, end: curEnd });

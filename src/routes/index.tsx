@@ -1815,6 +1815,20 @@ function Dashboard() {
                         </Label>
                       </div>
 
+                      {syncStatusQuery.data?.last_sync_ts ? (
+                        <span
+                          className="hidden sm:inline-flex items-center text-[0.68rem] text-muted-foreground bg-surface-2 px-2 py-1 rounded"
+                          title="Waktu terakhir data Binance berhasil disinkronkan"
+                        >
+                          Sync: {new Date(syncStatusQuery.data.last_sync_ts).toLocaleTimeString("id-ID", {
+                            timeZone: "Asia/Jakarta",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                            hour12: false,
+                          })} WIB
+                        </span>
+                      ) : null}
+
                       <Button
                         variant="outline"
                         size="sm"

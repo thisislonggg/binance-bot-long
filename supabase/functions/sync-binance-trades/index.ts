@@ -128,10 +128,13 @@ Deno.serve(async () => {
       .eq("key", SYNC_TS_KEY)
       .maybeSingle();
 
-    const lastSync = Number(syncSetting?.value);
+    const lastSyncVal = Number(syncSetting?.value);
     const now = Date.now();
-    const MS_30_DAYS = 30 * 24 * 60 * 60 * 1000;
-    const startMs = Number.isFinite(lastSync) && lastSync > 0 ? lastSync - 5 * 60 * 1000 : now - MS_30_DAYS;
+    const MS_24_HOURS = 24 * 60 * 60 * 1000;
+    const MS_30_DAYS = 30 * MS_24_HOURS;
+    const lastSync =
+      Number.isFinite(lastSyncVal) && lastSyncVal > 0 && lastSyncVal <= now ? lastSyncVal : null;
+    const startMs = lastSync ? Math.max(now - MS_30_DAYS, lastSync - MS_24_HOURS) : now - MS_24_HOURS;
     const endMs = now;
 
     const [buyOrders, sellOrders] = await Promise.all([
