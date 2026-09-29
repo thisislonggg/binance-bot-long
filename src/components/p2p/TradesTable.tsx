@@ -261,7 +261,11 @@ export function TradesTable({
                         ) : (
                           <span
                             className="rounded px-1.5 py-0.5 text-[0.6rem] font-medium bg-surface-2 text-muted-foreground"
-                            title="Melalui Iklan Sendiri (Maker): Dikenakan fee Maker Binance (0.07%)."
+                            title={
+                              t.fee_rate !== undefined
+                                ? `Melalui Iklan Sendiri (Maker): Dikenakan fee Maker Binance (${(t.fee_rate * 100).toFixed(2)}%).`
+                                : "Melalui Iklan Sendiri (Maker): Dikenakan fee Maker Binance (0.05%)."
+                            }
                           >
                             Iklan Sendiri
                           </span>
@@ -284,7 +288,7 @@ export function TradesTable({
                         isTaker ? (
                           <div
                             className="text-[0.67rem] font-semibold text-cyan-400"
-                            title="Beli Langsung dari Merchant Lain: Bebas fee maker beli (0%), saldo stok USDT bertambah penuh 100% tanpa potongan 0.07%."
+                            title="Beli Langsung dari Merchant Lain: Bebas fee maker beli (0%), saldo stok USDT bertambah penuh 100% tanpa potongan fee maker."
                           >
                             +{t.amount_usdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} stok (utuh)
                           </div>
@@ -391,7 +395,7 @@ export function TradesTable({
                               disabled={togglingRoleId === t.id}
                               title={
                                 isTaker
-                                  ? "Klik untuk ubah ke: Iklan Sendiri (Maker - Fee 0.07%)"
+                                  ? `Klik untuk ubah ke: Iklan Sendiri (Maker - Fee ${((t.fee_rate ?? 0.0005) * 100).toFixed(2)}%)`
                                   : "Klik untuk ubah ke: Beli Langsung dari Merchant Lain (Taker - Bebas Fee Beli)"
                               }
                               className={cn(

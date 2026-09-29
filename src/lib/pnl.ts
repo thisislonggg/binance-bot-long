@@ -10,14 +10,15 @@ import { getSupabase } from "./supabase";
  * selalu mencerminkan nilai wajar stok yang sedang dipegang secara presisi.
  *
  * KONSEP FEE & PERUBAHAN SALDO STOK (hanya berlaku untuk binance_sync):
- * - Sebelum cut-off permintaan perubahan (4 Sep 2026 10:00:00 WIB / 2026-09-04T03:00:00Z): fee historis 0.08%.
- * - Mulai cut-off dan seterusnya: fee baru 0.07%.
+ * - Sebelum cut-off ke-1 (4 Sep 2026 10:00:00 WIB / 2026-09-04T03:00:00Z): fee historis 0.08%.
+ * - Periode cut-off ke-1 s/d cut-off ke-2 (4 Sep 2026 s/d 29 Sep 2026 17:44:54 WIB / 2026-09-29T10:44:54Z): fee historis 0.07%.
+ * - Mulai cut-off ke-2 dan seterusnya (transaksi baru): fee aktif 0.05%.
  * - TRANSAKSI BELI (Maker):
- *   Stok bertambah = amount × (1 - fee_rate) → misal beli 10.000 USDT (fee 0.07%) → saldo bertambah +9.993 USDT.
+ *   Stok bertambah = amount × (1 - fee_rate) → misal beli 10.000 USDT (fee 0.05%) → saldo bertambah +9.995 USDT.
  *   HPP modal per USDT = harga_beli / (1 - fee_rate)
  * - TRANSAKSI JUAL (Maker):
- *   Stok berkurang = amount × (1 + fee_rate) → misal jual 10.000 USDT (fee 0.07%) → saldo berkurang -10.007 USDT
- *   (10.000 dikirim ke pembeli + 7 USDT dipotong Binance sebagai maker fee dari Funding Wallet).
+ *   Stok berkurang = amount × (1 + fee_rate) → misal jual 10.000 USDT (fee 0.05%) → saldo berkurang -10.005 USDT
+ *   (10.000 dikirim ke pembeli + 5 USDT dipotong Binance sebagai maker fee dari Funding Wallet).
  * - TRANSAKSI MANUAL (source = 'manual'):
  *   Bebas fee maker. Beli bertambah penuh amount, jual berkurang penuh amount, Net Jual = harga_jual mentah.
  * - Profit Bersih = (Net Jual − HPP) × jumlah nominal USDT matched
@@ -124,7 +125,7 @@ export type Trade = {
   profit_idr?: number;
   /** HPP rata-rata saat transaksi jual terjadi (IDR/USDT). Undefined untuk transaksi beli. */
   avg_cost_at_sell?: number;
-  /** Fee rate yang berlaku untuk transaksi ini (misal 0.0008 untuk 0.08% atau 0.0007 untuk 0.07%). */
+  /** Fee rate yang berlaku untuk transaksi ini (misal 0.0008 untuk 0.08%, 0.0007 untuk 0.07%, atau 0.0005 untuk 0.05%). */
   fee_rate?: number;
   /** Estimasi fee transaksi yang dikenakan (IDR). */
   fee_idr?: number;
@@ -508,14 +509,20 @@ const TRADES_LOOKBACK_LIMIT = 20000;
 
 /**
  * Fee Binance P2P untuk Maker (biasanya merchant):
- * - Sebelum cut-off (4 Sep 2026 10:00:00 WIB / 2026-09-04T03:00:00.000Z): rate historis 0.08% (0.0008).
- * - Mulai 4 Sep 2026 10:00:00 WIB dan seterusnya: rate aktif 0.07% (0.0007).
+ * - Sebelum cut-off ke-1 (4 Sep 2026 10:00:00 WIB / 2026-09-04T03:00:00.000Z): rate historis 0.08% (0.0008).
+ * - Periode cut-off ke-1 s/d cut-off ke-2 (4 Sep 2026 - 29 Sep 2026 17:44:54 WIB / 2026-09-29T10:44:54.000Z): rate historis 0.07% (0.0007).
+ * - Mulai 29 Sep 2026 17:44:54 WIB dan seterusnya: rate aktif 0.05% (0.0005).
  * - Fee beli DIMASUKKAN ke HPP (harga pokok pembelian).
  * - Fee jual DIKURANGKAN dari hasil penjualan saat menghitung profit.
  */
-export const FEE_CHANGE_TIMESTAMP = "2026-09-04T03:00:00.000Z";
-export const HISTORICAL_BINANCE_FEE_RATE = 0.0008; // 0.08% untuk transaksi sebelum cut-off
-export const CURRENT_BINANCE_FEE_RATE = 0.0007;    // 0.07% untuk transaksi baru
+export const FEE_CHANGE_TIMESTAMP_V1 = "2026-09-04T03:00:00.000Z";
+export const FEE_CHANGE_TIMESTAMP_V2 = "2026-09-29T10:44:54.000Z";
+export const FEE_CHANGE_TIMESTAMP = FEE_CHANGE_TIMESTAMP_V2;
+
+export const HISTORICAL_BINANCE_FEE_RATE_V1 = 0.0008; // 0.08% untuk transaksi sebelum cut-off ke-1
+export const HISTORICAL_BINANCE_FEE_RATE_V2 = 0.0007; // 0.07% untuk transaksi antara cut-off ke-1 dan ke-2
+export const HISTORICAL_BINANCE_FEE_RATE = 0.0007;    // alias backwards compatibility
+export const CURRENT_BINANCE_FEE_RATE = 0.0005;       // 0.05% untuk transaksi baru mulai cut-off sekarang
 
 export function getBinanceFeeRate(tradeTs?: string | number | null): number {
   if (!tradeTs) return CURRENT_BINANCE_FEE_RATE;
@@ -531,15 +538,19 @@ export function getBinanceFeeRate(tradeTs?: string | number | null): number {
     }
   }
   if (isNaN(time)) return CURRENT_BINANCE_FEE_RATE;
-  return time < new Date(FEE_CHANGE_TIMESTAMP).getTime()
-    ? HISTORICAL_BINANCE_FEE_RATE
-    : CURRENT_BINANCE_FEE_RATE;
+  if (time < new Date(FEE_CHANGE_TIMESTAMP_V1).getTime()) {
+    return HISTORICAL_BINANCE_FEE_RATE_V1;
+  }
+  if (time < new Date(FEE_CHANGE_TIMESTAMP_V2).getTime()) {
+    return HISTORICAL_BINANCE_FEE_RATE_V2;
+  }
+  return CURRENT_BINANCE_FEE_RATE;
 }
 
 /**
  * Harga Pokok Pembelian (HPP) per USDT.
  * HPP = harga beli × (1 + fee_rate)
- * Contoh: beli Rp 16.200 (fee 0.07%), HPP = 16.200 × 1.0007 = Rp 16.211,34
+ * Contoh: beli Rp 16.200 (fee 0.05%), HPP = 16.200 × 1.0005 = Rp 16.208,10
  */
 export function calcHpp(buyPrice: number, feeRate: number = CURRENT_BINANCE_FEE_RATE): number {
   return buyPrice * (1 + feeRate);
@@ -548,7 +559,7 @@ export function calcHpp(buyPrice: number, feeRate: number = CURRENT_BINANCE_FEE_
 /**
  * Hasil bersih per USDT setelah fee jual.
  * Net Sell = harga jual × (1 - fee_rate)
- * Contoh: jual Rp 16.250 (fee 0.07%), net = 16.250 × 0.9993 = Rp 16.238,625
+ * Contoh: jual Rp 16.250 (fee 0.05%), net = 16.250 × 0.9995 = Rp 16.241,875
  */
 export function calcNetSell(sellPrice: number, feeRate: number = CURRENT_BINANCE_FEE_RATE): number {
   return sellPrice * (1 - feeRate);
@@ -596,7 +607,7 @@ export const getPnlSummary = createServerFn({ method: "POST" })
     // ── Algoritma AVCO (Weighted Moving Average Cost) ─────────────────────────
     // Setiap transaksi BELI memperbarui rata-rata tertimbang modal (HPP).
     // Transaksi Beli Langsung (Taker): fee = 0%, stok masuk 100% utuh, HPP = harga beli mentah.
-    // Transaksi Iklan Sendiri (Maker): dikenakan Maker fee (0.07% / 0.08%).
+    // Transaksi Iklan Sendiri (Maker): dikenakan Maker fee berjenjang sesuai waktu transaksi (0.08% / 0.07% / 0.05%).
     // Setiap transaksi JUAL menggunakan rata-rata HPP saat itu sebagai cost basis.
     // Hasil: open_position_avg_cost_idr selalu mencerminkan modal riil per USDT.
 

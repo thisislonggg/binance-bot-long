@@ -539,7 +539,7 @@ export function buildSnapshot(input: {
     candidateSell = NaN;
   }
 
-  // ── 4. Penegakan Minimum Margin & Proteksi Fee 2 Arah (0.14%) ──────────────
+  // ── 4. Penegakan Minimum Margin & Proteksi Fee 2 Arah (0.10%) ──────────────
   let marginAdjusted = false;
   let minMarginUsed = NaN;
   let marginBreakdown: Record<string, number> = {};
@@ -559,8 +559,8 @@ export function buildSnapshot(input: {
       capitalSharePct,
     });
 
-    // Minimum spread absolut yang wajib dipertahankan (menutup 0.14% fee ~Rp 23 + minimal profit)
-    const absoluteMinSpread = Math.max(minMarginUsed, Math.round(base * 0.0016));
+    // Minimum spread absolut yang wajib dipertahankan (menutup 0.10% fee ~Rp 16 + minimal profit)
+    const absoluteMinSpread = Math.max(minMarginUsed, Math.round(base * 0.0012));
 
     if (naturalMargin >= absoluteMinSpread) {
       myBuyPrice = candidateBuy;

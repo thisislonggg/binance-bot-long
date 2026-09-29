@@ -905,12 +905,12 @@ function Dashboard() {
           const buyAd = s.my_buy_price || 16200;
           const isTakerSim = simBuyMethod === "taker";
           // Jika Beli Langsung dari merchant lain (Taker): Bebas fee beli (fee = 0), fee hanya terhitung ketika menjual!
-          const buyFee = isTakerSim ? 0 : buyAd * 0.0007;
-          const buyHpp = isTakerSim ? buyAd : buyAd * 1.0007;
+          const buyFee = isTakerSim ? 0 : buyAd * 0.0005;
+          const buyHpp = isTakerSim ? buyAd : buyAd * 1.0005;
 
           const sellAd = s.my_sell_price || 16250;
-          const sellFee = sellAd * 0.0007;
-          const sellNet = sellAd * 0.9993;
+          const sellFee = sellAd * 0.0005;
+          const sellNet = sellAd * 0.9995;
 
           const netSpreadAbs = sellNet - buyHpp;
           const netSpreadPct = buyHpp > 0 ? (netSpreadAbs / buyHpp) * 100 : 0;
@@ -941,14 +941,14 @@ function Dashboard() {
                         !isTakerSim ? "bg-primary/20 text-primary shadow-sm" : "text-muted-foreground hover:text-foreground",
                       )}
                     >
-                      Iklan Sendiri (Maker · Fee 0.07%)
+                      Iklan Sendiri (Maker · Fee 0.05%)
                     </button>
                   </div>
                 </div>
                 <span className="text-[0.68rem] text-muted-foreground">
                   {isTakerSim
-                    ? "✨ Fee beli Rp 0 (0%), fee dipotong hanya saat menjual (0.07%)."
-                    : "Fee Maker Beli 0.07% + Maker Jual 0.07% = 0.14%."}
+                    ? "✨ Fee beli Rp 0 (0%), fee dipotong hanya saat menjual (0.05%)."
+                    : "Fee Maker Beli 0.05% + Maker Jual 0.05% = 0.10%."}
                 </span>
               </div>
 
@@ -998,7 +998,7 @@ function Dashboard() {
                   {/* Rincian Fee Beli & HPP Riil */}
                   <div className="mt-3 rounded-md border border-bid/20 bg-surface-2/70 p-2.5 space-y-1.5 text-xs">
                     <div className="flex items-center justify-between text-muted-foreground">
-                      <span>{isTakerSim ? "Fee Beli Langsung (Taker):" : "Fee Maker Beli (0.07%):"}</span>
+                      <span>{isTakerSim ? "Fee Beli Langsung (Taker):" : "Fee Maker Beli (0.05%):"}</span>
                       <span className={cn("num font-semibold", isTakerSim ? "text-cyan-400" : "text-foreground/85")}>
                         {isTakerSim ? "Rp 0 (Bebas Fee)" : `+${fmtRp2(buyFee)}/USDT`}
                       </span>
@@ -1067,7 +1067,7 @@ function Dashboard() {
                   {/* Rincian Fee Jual & Net Bersih */}
                   <div className="mt-3 rounded-md border border-ask/20 bg-surface-2/70 p-2.5 space-y-1.5 text-xs">
                     <div className="flex items-center justify-between text-muted-foreground">
-                      <span>Fee Maker Jual (0.07%):</span>
+                      <span>Fee Maker Jual (0.05%):</span>
                       <span className="num font-semibold text-foreground/85">-{fmtRp2(sellFee)}/USDT</span>
                     </div>
                     <div className="flex items-center justify-between border-t border-border/50 pt-1.5 font-bold">
@@ -1101,7 +1101,7 @@ function Dashboard() {
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <span className="text-muted-foreground">
-                    Total Fee ({isTakerSim ? "0.07% Saat Jual Saja" : "0.14% Beli + Jual"}):{" "}
+                    Total Fee ({isTakerSim ? "0.05% Saat Jual Saja" : "0.10% Beli + Jual"}):{" "}
                     <strong className="text-foreground">{fmtRp2(totalFeePerUsdt)}/USDT</strong>
                   </span>
                   <span className="inline-flex items-center gap-1 rounded bg-bid/15 px-2 py-0.5 font-bold text-bid">
@@ -1908,11 +1908,11 @@ function Dashboard() {
                           {tradeSide === "buy" ? (
                             <>
                               <SelectItem value="taker">Beli Langsung (Taker · Bebas Fee)</SelectItem>
-                              <SelectItem value="maker">Iklan Sendiri (Maker · Fee 0.07%)</SelectItem>
+                              <SelectItem value="maker">Iklan Sendiri (Maker · Fee 0.05%)</SelectItem>
                             </>
                           ) : (
                             <>
-                              <SelectItem value="maker">Iklan Sendiri (Maker · Fee 0.07%)</SelectItem>
+                              <SelectItem value="maker">Iklan Sendiri (Maker · Fee 0.05%)</SelectItem>
                               <SelectItem value="taker">Jual Langsung (Taker · Bebas Fee)</SelectItem>
                             </>
                           )}

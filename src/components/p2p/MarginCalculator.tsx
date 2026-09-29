@@ -22,7 +22,7 @@ export function MarginCalculator({
     if (defaultSellPrice > 0) setSellPrice(defaultSellPrice);
   }, [defaultBuyPrice, defaultSellPrice]);
 
-  const BINANCE_FEE_RATE = 0.0007; // 0.07% Maker Fee
+  const BINANCE_FEE_RATE = 0.0005; // 0.05% Maker Fee
 
   const capitalIdr = usdtAmount * buyPrice;
   const revenueIdr = usdtAmount * sellPrice;
@@ -52,8 +52,8 @@ export function MarginCalculator({
             <h3 className="text-base font-bold text-foreground">Kalkulator Simulasi Margin & Perputaran Modal</h3>
             <p className="text-xs text-muted-foreground">
               {buyMethod === "taker"
-                ? "Simulasi Beli Langsung (Taker 0% Fee Beli): Fee hanya terhitung saat menjual (0.07%)."
-                : "Simulasi Iklan Sendiri (Maker): Fee 0.07% Beli + 0.07% Jual."}
+                ? "Simulasi Beli Langsung (Taker 0% Fee Beli): Fee hanya terhitung saat menjual (0.05%)."
+                : "Simulasi Iklan Sendiri (Maker): Fee 0.05% Beli + 0.05% Jual."}
             </p>
           </div>
         </div>
@@ -88,7 +88,7 @@ export function MarginCalculator({
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            Iklan Sendiri (Maker · Fee 0.07%)
+            Iklan Sendiri (Maker · Fee 0.05%)
           </button>
         </div>
       </div>
@@ -191,7 +191,7 @@ export function MarginCalculator({
               <span className="num font-bold text-foreground text-sm">{fmtRp(revenueIdr)}</span>
             </div>
             <div className="flex items-center justify-between text-xs text-muted-foreground border-b border-border/40 pb-2">
-              <span>{buyMethod === "taker" ? "Fee Binance (0% Beli + 0.07% Jual Saja)" : "Fee Binance (0.07% Beli + 0.07% Jual)"}</span>
+              <span>{buyMethod === "taker" ? "Fee Binance (0% Beli + 0.05% Jual Saja)" : "Fee Binance (0.05% Beli + 0.05% Jual)"}</span>
               <span className="num font-semibold text-ask text-xs">-{fmtRp(totalFeePerCycle)}</span>
             </div>
             <div className="flex items-center justify-between text-xs text-muted-foreground border-b border-border/40 pb-2">

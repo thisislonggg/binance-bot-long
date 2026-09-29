@@ -265,8 +265,8 @@ export function computeCompetitorPricing(input: {
     : fallbackBuyPrice;
 
   // 4. Hitung dan Terapkan Batas Pengaman JUAL (Sell Floor Guard)
-  // Biaya Maker Jual Binance P2P ~ 0.07% - 0.1%
-  const MAKER_FEE_RATE = 0.0007;
+  // Biaya Maker Jual Binance P2P ~ 0.05%
+  const MAKER_FEE_RATE = 0.0005;
   const effectiveHpp = stockHpp > 0 ? stockHpp : (fairPrice > 0 ? fairPrice - 30 : 16_150);
 
   // Floor Jual: HPP + Fee Jual + Target Minimal Laba Bersih
