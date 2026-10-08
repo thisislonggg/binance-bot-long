@@ -39,6 +39,8 @@ export type VerifierSettings = {
   telegram_bot_token?: string;
   /** Chat ID Telegram penerima */
   telegram_chat_id?: string;
+  /** Apakah fitur auto-deteksi verifikasi wajah (liveness check) buyer diaktifkan */
+  liveness_enabled?: boolean;
 };
 
 export const DEFAULT_VERIFIER_SETTINGS: VerifierSettings = {
@@ -50,6 +52,7 @@ export const DEFAULT_VERIFIER_SETTINGS: VerifierSettings = {
   telegram_enabled: false,
   telegram_bot_token: "",
   telegram_chat_id: "",
+  liveness_enabled: true,
 };
 
 export type ActiveP2pOrder = {
@@ -174,6 +177,7 @@ const saveVerifierSettingsSchema = z.object({
     telegram_enabled: z.boolean(),
     telegram_bot_token: z.string().optional(),
     telegram_chat_id: z.string().optional(),
+    liveness_enabled: z.boolean().optional(),
   }),
 });
 
@@ -607,9 +611,15 @@ export const checkBalanceDelta = createServerFn({ method: "POST" })
       matchedOrders = [ord];
       messageBody = `✅ DANA MASUK VALID: Kenaikan saldo ${fmtIdr(delta)} cocok persis dengan Order #${ord.orderNumber.slice(-6)} (@${ord.counterPartNickName}).`;
 
-      const { getLivenessRecordsInternal } = await import("./liveness-verifier");
-      const livenessRecords = await getLivenessRecordsInternal();
-      const isLivenessDone = Boolean(livenessRecords[ord.orderNumber]?.status === "COMPLETED");
+      let isLivenessDone = true;
+      let livenessLine = "";
+
+      if (settings.liveness_enabled !== false) {
+        const { getLivenessRecordsInternal } = await import("./liveness-verifier");
+        const livenessRecords = await getLivenessRecordsInternal();
+        isLivenessDone = Boolean(livenessRecords[ord.orderNumber]?.status === "COMPLETED");
+        livenessLine = `🛡️ *Liveness Wajah:* ${isLivenessDone ? "✅ Completed (Lolos)" : "⚠️ Belum Terverifikasi (Cek Chat)"}`;
+      }
 
       waNotificationText = [
         "✅ *DANA MASUK TERVERIFIKASI (BRI)*",
@@ -618,12 +628,14 @@ export const checkBalanceDelta = createServerFn({ method: "POST" })
         `👤 *Pembeli:* @${ord.counterPartNickName}`,
         `📦 *Jumlah:* ${ord.amountUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT`,
         `🆔 *Order:* #${ord.orderNumber}`,
-        `🛡️ *Liveness Wajah:* ${isLivenessDone ? "✅ Completed (Lolos)" : "⚠️ Belum Terverifikasi (Cek Chat)"}`,
+        ...(livenessLine ? [livenessLine] : []),
         `⏱️ *Waktu:* ${new Date().toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta" })} WIB`,
         "━━━━━━━━━━━━━━━━━━",
-        isLivenessDone
-          ? "🎉 *Semua aman: Saldo BRI masuk pas & Liveness lolos. Silakan release kripto secara MANUAL di Binance!*"
-          : "⚠️ *PERHATIAN:* Dana sudah masuk, tetapi Liveness pembeli belum tercatat selesai. Harap pastikan verifikasi wajah sebelum rilis manual!",
+        settings.liveness_enabled !== false
+          ? (isLivenessDone
+              ? "🎉 *Semua aman: Saldo BRI masuk pas & Liveness lolos. Silakan release kripto secara MANUAL di Binance!*"
+              : "⚠️ *PERHATIAN:* Dana sudah masuk, tetapi Liveness pembeli belum tercatat selesai. Harap pastikan verifikasi wajah sebelum rilis manual!")
+          : "💡 *Saldo rekening BRI sudah bertambah pas. Silakan release kripto di Binance!*",
       ].join("\n");
     } else if (singleMatches.length > 1) {
       // ⚠️ Skenario Khusus: Ada 2+ order bernilai kembar!

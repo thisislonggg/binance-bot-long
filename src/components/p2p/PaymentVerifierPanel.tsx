@@ -141,6 +141,7 @@ export function PaymentVerifierPanel({ sessionToken }: PaymentVerifierPanelProps
   const [telegramEnabled, setTelegramEnabled] = useState(false);
   const [telegramBotToken, setTelegramBotToken] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
+  const [livenessEnabled, setLivenessEnabled] = useState(true);
   const [isEditingSettings, setIsEditingSettings] = useState(false);
 
   // Local state input saldo & simulasi
@@ -157,6 +158,7 @@ export function PaymentVerifierPanel({ sessionToken }: PaymentVerifierPanelProps
       setTelegramEnabled(state.settings.telegram_enabled ?? false);
       setTelegramBotToken(state.settings.telegram_bot_token || "");
       setTelegramChatId(state.settings.telegram_chat_id || "");
+      setLivenessEnabled(state.settings.liveness_enabled ?? true);
     }
   }, [state?.settings]);
 
@@ -251,8 +253,17 @@ Completed`;
     retry: false,
   });
 
-  // Sambungkan WebSocket chat otomatis jika kredensial Binance tersedia
+  // Sambungkan WebSocket chat otomatis jika kredensial Binance tersedia dan fitur liveness aktif
   useEffect(() => {
+    if (!livenessEnabled) {
+      setChatStreamStatus("disconnected");
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      return;
+    }
+
     const creds = chatCredsQuery.data;
     if (!creds?.ok || !creds.chatWssUrl || !creds.listenKey) {
       if (creds?.error) setChatStreamStatus("disconnected");
@@ -302,7 +313,7 @@ Completed`;
     } catch {
       setChatStreamStatus("error");
     }
-  }, [chatCredsQuery.data]);
+  }, [chatCredsQuery.data, livenessEnabled]);
 
   // Mutasi memproses pesan chat Binance (auto / paste)
   const processChatMutation = useMutation({
@@ -366,6 +377,7 @@ Completed`;
       telegram_enabled: telegramEnabled,
       telegram_bot_token: telegramBotToken,
       telegram_chat_id: telegramChatId,
+      liveness_enabled: livenessEnabled,
     });
   };
 
@@ -415,19 +427,23 @@ Completed`;
                 <Badge
                   variant="outline"
                   className={`text-[0.62rem] px-2 py-0.5 font-medium flex items-center gap-1 ${
-                    chatStreamStatus === "connected"
-                      ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/10"
-                      : chatStreamStatus === "connecting"
-                        ? "border-amber-500/40 text-amber-400 bg-amber-500/10"
-                        : "border-border text-muted-foreground bg-surface"
+                    !livenessEnabled
+                      ? "border-border text-muted-foreground bg-surface"
+                      : chatStreamStatus === "connected"
+                        ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/10"
+                        : chatStreamStatus === "connecting"
+                          ? "border-amber-500/40 text-amber-400 bg-amber-500/10"
+                          : "border-border text-muted-foreground bg-surface"
                   }`}
                 >
-                  <span className={`size-1.5 rounded-full ${chatStreamStatus === "connected" ? "bg-emerald-400 animate-pulse" : chatStreamStatus === "connecting" ? "bg-amber-400 animate-ping" : "bg-muted-foreground"}`} />
-                  {chatStreamStatus === "connected"
-                    ? "Binance Chat Stream: Aktif"
-                    : chatStreamStatus === "connecting"
-                      ? "Menghubungkan Chat…"
-                      : "Chat Stream: Mode Polling / Manual"}
+                  <span className={`size-1.5 rounded-full ${!livenessEnabled ? "bg-muted-foreground" : chatStreamStatus === "connected" ? "bg-emerald-400 animate-pulse" : chatStreamStatus === "connecting" ? "bg-amber-400 animate-ping" : "bg-muted-foreground"}`} />
+                  {!livenessEnabled
+                    ? "Fitur Liveness: Nonaktif (OFF)"
+                    : chatStreamStatus === "connected"
+                      ? "Binance Chat Stream: Aktif"
+                      : chatStreamStatus === "connecting"
+                        ? "Menghubungkan Chat…"
+                        : "Chat Stream: Mode Polling / Manual"}
                 </Badge>
               </div>
               <p className="text-xs text-muted-foreground mt-0.5">
@@ -437,6 +453,27 @@ Completed`;
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* Sakelar Cepat Liveness ON/OFF */}
+            <div className="flex items-center gap-2 bg-surface/90 px-2.5 py-1 rounded-md border border-border shadow-xs">
+              <Switch
+                id="header-liveness-toggle"
+                checked={livenessEnabled}
+                onCheckedChange={(checked) => {
+                  setLivenessEnabled(checked);
+                  if (state?.settings) {
+                    saveSettingsMutation.mutate({
+                      ...state.settings,
+                      liveness_enabled: checked,
+                    });
+                  }
+                }}
+              />
+              <Label htmlFor="header-liveness-toggle" className="text-xs cursor-pointer text-foreground font-semibold flex items-center gap-1.5 select-none">
+                <Camera className={`size-3.5 ${livenessEnabled ? "text-sky-400" : "text-muted-foreground"}`} />
+                Liveness: {livenessEnabled ? "ON" : "OFF"}
+              </Label>
+            </div>
+
             <Button
               variant="outline"
               size="sm"
@@ -670,6 +707,18 @@ Completed`;
                 <Label htmlFor="tg-switch" className="text-xs cursor-pointer text-foreground flex items-center gap-1.5">
                   <Send className="size-3.5 text-sky-400" />
                   Aktifkan Cadangan Telegram Bot
+                </Label>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="liveness-setting-switch"
+                  checked={livenessEnabled}
+                  onCheckedChange={setLivenessEnabled}
+                />
+                <Label htmlFor="liveness-setting-switch" className="text-xs cursor-pointer text-foreground flex items-center gap-1.5">
+                  <Camera className="size-3.5 text-sky-400" />
+                  Aktifkan Fitur Verifikasi Wajah / Liveness Binance
                 </Label>
               </div>
 
@@ -914,7 +963,11 @@ Completed`;
                           </Badge>
 
                           {/* Liveness Status Badge */}
-                          {isVerified ? (
+                          {!livenessEnabled ? (
+                            <Badge variant="outline" className="text-[0.65rem] border-border text-muted-foreground font-semibold">
+                              Liveness OFF
+                            </Badge>
+                          ) : isVerified ? (
                             <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/40 text-[0.65rem] font-semibold flex items-center gap-1">
                               <CheckCircle2 className="size-3" />
                               Liveness: Completed {record?.verificationTimeText ? `(${record.verificationTimeText})` : ""}
@@ -1021,7 +1074,12 @@ Completed`;
 
                     {/* Banner Status Kesiapan Release (Rilis Tetap Manual di Binance) */}
                     <div className="pt-2 border-t border-border/50 flex flex-wrap items-center justify-between gap-2 text-xs">
-                      {isVerified ? (
+                      {!livenessEnabled ? (
+                        <div className="flex items-center gap-1.5 text-muted-foreground font-medium text-[0.72rem]">
+                          <Info className="size-3.5 shrink-0" />
+                          <span>Fitur liveness dinonaktifkan di pengaturan. Release tetap dilakukan secara manual di Binance saat saldo bank cocok.</span>
+                        </div>
+                      ) : isVerified ? (
                         <div className="flex items-center gap-1.5 text-emerald-400 font-medium text-[0.72rem]">
                           <CheckCircle2 className="size-3.5 shrink-0" />
                           <span>Liveness Selesai: Buyer telah lolos verifikasi wajah. Jika saldo bank sudah masuk cocok, order aman direlease manual di Binance.</span>
