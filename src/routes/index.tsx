@@ -1299,7 +1299,7 @@ function Dashboard() {
                 }`}
               >
                 <ShieldCheck className="size-3.5 text-emerald-400" />
-                Pantau Pembayaran (WA)
+                Pantau Pembayaran & Liveness (WA)
               </button>
 
             </div>

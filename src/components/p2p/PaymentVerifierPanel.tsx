@@ -20,6 +20,12 @@ import {
   User,
   CreditCard,
   Copy,
+  MessageSquare,
+  Camera,
+  Sparkles,
+  X,
+  CheckCheck,
+  ShieldAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -38,12 +44,19 @@ import {
   type ActiveP2pOrder,
   type AlertLog,
 } from "@/lib/payment-verifier";
+import {
+  getBinanceChatCredentials,
+  processLivenessChatMessage,
+  setOrderLivenessStatus,
+  parseLivenessChatMessage,
+  type OrderLivenessRecord,
+} from "@/lib/liveness-verifier";
 
 interface PaymentVerifierPanelProps {
   sessionToken?: string | null;
 }
 
-// ── Audio Alert Synthesizer (Web Audio API - Nada Lonceng Merdu) ────────────
+// ── Audio Alert Synthesizer (Web Audio API - Nada Lonceng Merdu Pembayaran) ──
 function playPaymentChime() {
   try {
     const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -75,6 +88,37 @@ function playPaymentChime() {
   } catch {
     // Abaikan jika browser membatasi audio autoplay
   }
+}
+
+// ── Audio Alert Synthesizer untuk Verifikasi Wajah / Liveness Selesai ────────
+function playLivenessChime() {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const now = ctx.currentTime;
+
+    // Nada G5 (784 Hz) lalu C6 (1046.5 Hz)
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    osc1.type = "triangle";
+    osc1.frequency.setValueAtTime(784, now);
+    gain1.gain.setValueAtTime(0.3, now);
+    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.5);
+
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.type = "sine";
+    osc2.frequency.setValueAtTime(1046.5, now + 0.12);
+    gain2.gain.setValueAtTime(0.35, now + 0.12);
+    gain2.gain.exponentialRampToValueAtTime(0.001, now + 1.0);
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+    osc2.start(now + 0.12);
+    osc2.stop(now + 1.0);
+  } catch {}
 }
 
 export function PaymentVerifierPanel({ sessionToken }: PaymentVerifierPanelProps) {
@@ -183,6 +227,134 @@ export function PaymentVerifierPanel({ sessionToken }: PaymentVerifierPanelProps
     onError: (err: any) => toast.error(`Gagal cek saldo: ${err.message}`),
   });
 
+  // ── Liveness Verification State & WebSocket Monitor ──────────────────────
+  const [chatStreamStatus, setChatStreamStatus] = useState<"disconnected" | "connecting" | "connected" | "error">("disconnected");
+  const [isPasteChatModalOpen, setIsPasteChatModalOpen] = useState(false);
+  const [pastedChatText, setPastedChatText] = useState("");
+  const wsRef = useRef<WebSocket | null>(null);
+
+  const sampleChatText = `Verifikasi wajah
+SINARMAS_EXCHANGE requested to conduct liveness check
+Order number:
+22941387807730757632
+Last verification time:
+2026-10-08 12:58
+Status:
+Completed`;
+
+  // Query kredensial WebSocket chat Binance SAPI
+  const chatCredsQuery = useQuery({
+    queryKey: ["binance-chat-creds"],
+    queryFn: () => getBinanceChatCredentials({ data: { sessionToken: sessionToken ?? undefined } }),
+    enabled: Boolean(sessionToken),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  // Sambungkan WebSocket chat otomatis jika kredensial Binance tersedia
+  useEffect(() => {
+    const creds = chatCredsQuery.data;
+    if (!creds?.ok || !creds.chatWssUrl || !creds.listenKey) {
+      if (creds?.error) setChatStreamStatus("disconnected");
+      return;
+    }
+
+    try {
+      setChatStreamStatus("connecting");
+      const baseWs = creds.chatWssUrl.startsWith("wss://") || creds.chatWssUrl.startsWith("ws://")
+        ? creds.chatWssUrl
+        : `wss://${creds.chatWssUrl}`;
+      const url = `${baseWs}/${creds.listenKey}?token=${creds.listenToken}&clientType=web`;
+
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setChatStreamStatus("connected");
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const payload = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+          const content = typeof payload === "string" ? payload : payload.content || payload.text || JSON.stringify(payload);
+          const parsed = parseLivenessChatMessage(content);
+          if (parsed.isLivenessMessage && parsed.isCompleted) {
+            processChatMutation.mutate({
+              chatText: content,
+              orderNumberHint: payload.orderNo || payload.orderNumber,
+              source: "binance_chat_ws",
+            });
+          }
+        } catch {}
+      };
+
+      ws.onerror = () => {
+        setChatStreamStatus("error");
+      };
+
+      ws.onclose = () => {
+        setChatStreamStatus("disconnected");
+      };
+
+      return () => {
+        ws.close();
+      };
+    } catch {
+      setChatStreamStatus("error");
+    }
+  }, [chatCredsQuery.data]);
+
+  // Mutasi memproses pesan chat Binance (auto / paste)
+  const processChatMutation = useMutation({
+    mutationFn: (args: { chatText: string; orderNumberHint?: string; counterPartNickNameHint?: string; source?: any }) =>
+      processLivenessChatMessage({
+        data: {
+          sessionToken: sessionToken ?? undefined,
+          chatText: args.chatText,
+          orderNumberHint: args.orderNumberHint,
+          counterPartNickNameHint: args.counterPartNickNameHint,
+          source: args.source || "chat_paste",
+        },
+      }),
+    onSuccess: (res) => {
+      if (res.ok) {
+        if (soundEnabled) playLivenessChime();
+        toast.success(res.message, { duration: 8000 });
+        verifierQuery.refetch();
+        setPastedChatText("");
+        setIsPasteChatModalOpen(false);
+      } else {
+        toast.warning(res.message);
+      }
+    },
+    onError: (err: any) => toast.error(`Gagal verifikasi chat: ${err.message}`),
+  });
+
+  // Mutasi toggle manual status liveness (1-Click di order)
+  const toggleLivenessMutation = useMutation({
+    mutationFn: (args: { orderNumber: string; completed: boolean; counterPartNickName?: string }) =>
+      setOrderLivenessStatus({
+        data: {
+          sessionToken: sessionToken ?? undefined,
+          orderNumber: args.orderNumber,
+          completed: args.completed,
+          counterPartNickName: args.counterPartNickName,
+        },
+      }),
+    onSuccess: (res) => {
+      if (res.completed) {
+        if (soundEnabled) playLivenessChime();
+        toast.success(`Liveness order #${res.orderNumber} berhasil diverifikasi!`);
+      } else {
+        toast.info(`Status liveness order #${res.orderNumber} dibatalkan.`);
+      }
+      verifierQuery.refetch();
+    },
+    onError: (err: any) => toast.error(`Gagal ubah status liveness: ${err.message}`),
+  });
+
+  const parsedPreview = pastedChatText.trim() ? parseLivenessChatMessage(pastedChatText) : null;
+
   const handleSaveSettings = (e: React.FormEvent) => {
     e.preventDefault();
     saveSettingsMutation.mutate({
@@ -221,6 +393,7 @@ export function PaymentVerifierPanel({ sessionToken }: PaymentVerifierPanelProps
   const activeOrders = state?.activeOrders ?? [];
   const baseline = state?.baselineBalanceIdr ?? 0;
   const recentLogs = state?.recentLogs ?? [];
+  const livenessVerifiedCount = activeOrders.filter((o) => o.livenessVerified).length;
 
   return (
     <div className="space-y-5">
@@ -232,21 +405,47 @@ export function PaymentVerifierPanel({ sessionToken }: PaymentVerifierPanelProps
               <ShieldCheck className="size-6" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-base font-bold text-foreground">
-                  Pemantau Saldo Bank & Verifikasi Pembayaran P2P
+                  Pemantau Saldo Bank & Verifikasi Liveness P2P
                 </h2>
                 <Badge variant={baseline > 0 ? "bid" : "outline"} className="text-[0.65rem] px-2 py-0.5">
                   {baseline > 0 ? "Aktif & Siaga" : "Menunggu Setup"}
                 </Badge>
+                <Badge
+                  variant="outline"
+                  className={`text-[0.62rem] px-2 py-0.5 font-medium flex items-center gap-1 ${
+                    chatStreamStatus === "connected"
+                      ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/10"
+                      : chatStreamStatus === "connecting"
+                        ? "border-amber-500/40 text-amber-400 bg-amber-500/10"
+                        : "border-border text-muted-foreground bg-surface"
+                  }`}
+                >
+                  <span className={`size-1.5 rounded-full ${chatStreamStatus === "connected" ? "bg-emerald-400 animate-pulse" : chatStreamStatus === "connecting" ? "bg-amber-400 animate-ping" : "bg-muted-foreground"}`} />
+                  {chatStreamStatus === "connected"
+                    ? "Binance Chat Stream: Aktif"
+                    : chatStreamStatus === "connecting"
+                      ? "Menghubungkan Chat…"
+                      : "Chat Stream: Mode Polling / Manual"}
+                </Badge>
               </div>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Mendeteksi dana masuk ke rekening BRI secara otomatis, mencocokkan dengan order aktif, dan mengirimkan alert instan ke WhatsApp.
+                Mendeteksi mutasi BRI & auto-verifikasi liveness wajah buyer dari Binance chat secara otomatis. Rilis kripto tetap dilakukan manual di aplikasi Binance.
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setIsPasteChatModalOpen(!isPasteChatModalOpen)}
+              className="h-8 text-xs gap-1.5 bg-surface hover:bg-surface-3 text-sky-400 border-sky-500/30 hover:border-sky-500/50"
+            >
+              <Camera className="size-3.5" />
+              {isPasteChatModalOpen ? "Tutup Verif Chat" : "Verifikasi Wajah / Chat"}
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -269,8 +468,8 @@ export function PaymentVerifierPanel({ sessionToken }: PaymentVerifierPanelProps
           </div>
         </div>
 
-        {/* 3 Kartu Metrik Ringkas */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 text-xs">
+        {/* 4 Kartu Metrik Ringkas */}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
           {/* Kartu 1: Saldo Terpantau */}
           <div className="rounded-xl border border-border/70 bg-surface/80 p-3.5 space-y-1.5">
             <span className="text-[0.68rem] text-muted-foreground uppercase font-semibold tracking-wider">
@@ -315,7 +514,28 @@ export function PaymentVerifierPanel({ sessionToken }: PaymentVerifierPanelProps
             </span>
           </div>
 
-          {/* Kartu 3: Target Notifikasi WhatsApp */}
+          {/* Kartu 3: Status Liveness Wajah Pembeli */}
+          <div className="rounded-xl border border-border/70 bg-surface/80 p-3.5 space-y-1.5">
+            <span className="text-[0.68rem] text-muted-foreground uppercase font-semibold tracking-wider flex items-center justify-between">
+              <span>Verifikasi Liveness Wajah</span>
+              <Camera className="size-3 text-sky-400" />
+            </span>
+            <div className="num font-bold text-sky-400 text-lg flex items-center gap-1.5">
+              {livenessVerifiedCount} / {activeOrders.length} Selesai
+            </div>
+            <div className="flex items-center justify-between text-[0.7rem] text-muted-foreground">
+              <span>{activeOrders.length > 0 && activeOrders.every((o) => o.livenessVerified) ? "Semua Terverifikasi ✅" : "Pantau Chat Binance"}</span>
+              <button
+                type="button"
+                onClick={() => setIsPasteChatModalOpen(true)}
+                className="text-sky-400 hover:underline font-medium"
+              >
+                Cek Chat
+              </button>
+            </div>
+          </div>
+
+          {/* Kartu 4: Target Notifikasi WhatsApp */}
           <div className="rounded-xl border border-border/70 bg-surface/80 p-3.5 space-y-1.5">
             <span className="text-[0.68rem] text-muted-foreground uppercase font-semibold tracking-wider">
               Tujuan Notifikasi WhatsApp
@@ -520,6 +740,133 @@ export function PaymentVerifierPanel({ sessionToken }: PaymentVerifierPanelProps
         </div>
       )}
 
+      {/* ── Panel Verifikasi Wajah / Tempel Chat Binance (Jika Dibuka) ────── */}
+      {isPasteChatModalOpen && (
+        <div className="panel p-5 border-sky-500/40 bg-gradient-to-br from-surface to-sky-500/5 space-y-4 animate-in fade-in-50">
+          <div className="flex items-center justify-between border-b border-border/60 pb-3">
+            <div className="flex items-center gap-2.5">
+              <div className="rounded-xl bg-sky-500/15 p-2.5 text-sky-400 border border-sky-500/30">
+                <Camera className="size-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-bold text-foreground">
+                    Auto-Verifikasi Liveness Wajah dari Binance Chat
+                  </h3>
+                  <Badge variant="outline" className="text-[0.62rem] border-sky-500/40 text-sky-400">
+                    Format Resmi Binance
+                  </Badge>
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Tempel teks pesan chat Binance saat pembeli selesai verifikasi liveness. Sistem akan auto-verifikasi nomor order dan mengirim notifikasi WhatsApp.
+                </p>
+              </div>
+            </div>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setIsPasteChatModalOpen(false)}
+              className="h-7 text-xs"
+            >
+              <X className="size-3.5 mr-1" />
+              Tutup
+            </Button>
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                <MessageSquare className="size-3.5 text-sky-400" />
+                Tempel Teks Pesan dari Binance Chat:
+              </Label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setPastedChatText(sampleChatText)}
+                className="h-7 text-[0.7rem] gap-1 text-sky-400 bg-surface border-sky-500/30 hover:bg-sky-500/10"
+              >
+                <Sparkles className="size-3" />
+                Isi Contoh Pesan Binance (Simulasi)
+              </Button>
+            </div>
+
+            <textarea
+              value={pastedChatText}
+              onChange={(e) => setPastedChatText(e.target.value)}
+              placeholder="Tempel pesan chat Binance di sini...&#10;Contoh:&#10;Verifikasi wajah&#10;SINARMAS_EXCHANGE requested to conduct liveness check&#10;Order number:&#10;22941387807730757632&#10;Last verification time:&#10;2026-10-08 12:58&#10;Status:&#10;Completed"
+              rows={6}
+              className="w-full rounded-md border border-input bg-surface p-3 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-sky-500"
+            />
+
+            {/* Live Parsing Preview */}
+            {parsedPreview && (
+              <div className="rounded-lg border border-border/80 bg-surface-2/70 p-3 space-y-2 text-xs">
+                <span className="text-[0.68rem] text-muted-foreground uppercase font-semibold tracking-wider">
+                  Hasil Analisis Pesan:
+                </span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 text-xs">
+                  <div className="p-2 rounded bg-surface border border-border/60">
+                    <span className="text-[0.65rem] text-muted-foreground block">Tipe Pesan:</span>
+                    <span className="font-semibold text-foreground">
+                      {parsedPreview.isLivenessMessage ? "✅ Verifikasi Wajah" : "❌ Bukan Pesan Liveness"}
+                    </span>
+                  </div>
+                  <div className="p-2 rounded bg-surface border border-border/60">
+                    <span className="text-[0.65rem] text-muted-foreground block">Nomor Order:</span>
+                    <span className="font-semibold font-mono text-foreground">
+                      {parsedPreview.orderNumber ? `#${parsedPreview.orderNumber}` : "❌ Tidak Ditemukan"}
+                    </span>
+                  </div>
+                  <div className="p-2 rounded bg-surface border border-border/60">
+                    <span className="text-[0.65rem] text-muted-foreground block">Waktu Verifikasi:</span>
+                    <span className="font-semibold text-foreground">
+                      {parsedPreview.verificationTime || "—"}
+                    </span>
+                  </div>
+                  <div className="p-2 rounded bg-surface border border-border/60">
+                    <span className="text-[0.65rem] text-muted-foreground block">Status Liveness:</span>
+                    <span className={`font-semibold ${parsedPreview.isCompleted ? "text-emerald-400" : "text-amber-400"}`}>
+                      {parsedPreview.status}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+              <p className="text-[0.68rem] text-muted-foreground">
+                🔒 <strong>Aturan Keamanan:</strong> Fitur ini hanya menandai status liveness & memberi alert. Rilis kripto tetap dilakukan secara manual di aplikasi Binance setelah mengecek mutasi bank.
+              </p>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPastedChatText("")}
+                  disabled={!pastedChatText}
+                  className="h-8 text-xs"
+                >
+                  Bersihkan
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={processChatMutation.isPending || !pastedChatText.trim()}
+                  onClick={() => processChatMutation.mutate({ chatText: pastedChatText, source: "chat_paste" })}
+                  className="h-8 text-xs font-semibold gap-1.5 bg-sky-500 hover:bg-sky-600 text-white"
+                >
+                  <CheckCheck className="size-3.5" />
+                  {processChatMutation.isPending ? "Memproses…" : "Verifikasi Pesan Chat Sekarang"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Section Order P2P Aktif Menunggu Dana & Input Saldo ─────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Kolom Kiri (2 Kolom): Tabel Order Aktif Menunggu Dana */}
@@ -545,68 +892,153 @@ export function PaymentVerifierPanel({ sessionToken }: PaymentVerifierPanelProps
               </p>
             </div>
           ) : (
-            <div className="space-y-2.5">
-              {activeOrders.map((ord) => (
-                <div
-                  key={ord.orderNumber}
-                  className="rounded-xl border border-amber-500/30 bg-gradient-to-r from-surface to-amber-500/5 p-3.5 flex flex-wrap items-center justify-between gap-3 transition-all hover:border-amber-500/50"
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="text-[0.65rem] border-amber-500/40 text-amber-400 font-semibold uppercase">
-                        {ord.orderStatus || "MENUNGGU DANA"}
-                      </Badge>
-                      <button
-                        type="button"
-                        onClick={() => handleCopy(ord.orderNumber, "Nomor order")}
-                        className="text-xs font-mono font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1"
-                        title="Klik untuk salin order number"
-                      >
-                        #{ord.orderNumber.slice(-8)}
-                        <Copy className="size-2.5 text-muted-foreground" />
-                      </button>
-                      <span className="text-xs text-muted-foreground">·</span>
-                      <span className="text-xs font-medium text-foreground/90 flex items-center gap-1">
-                        <User className="size-3 text-muted-foreground" />
-                        @{ord.counterPartNickName}
-                      </span>
-                    </div>
+            <div className="space-y-3">
+              {activeOrders.map((ord) => {
+                const isVerified = ord.livenessVerified;
+                const record = ord.livenessRecord;
 
-                    <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                      <span>Kripto: <strong className="text-foreground">{ord.amountUsdt.toLocaleString("id-ID")} USDT</strong></span>
-                      <span>Kurs: Rp {ord.unitPriceIdr.toLocaleString("id-ID")}</span>
-                      {ord.payMethodName && (
-                        <span className="flex items-center gap-1 text-[0.7rem] bg-surface-2 px-1.5 py-0.5 rounded border border-border">
-                          <CreditCard className="size-3" />
-                          {ord.payMethodName}
-                        </span>
-                      )}
-                    </div>
-                  </div>
+                return (
+                  <div
+                    key={ord.orderNumber}
+                    className={`rounded-xl border p-4 space-y-3 transition-all ${
+                      isVerified
+                        ? "border-emerald-500/40 bg-gradient-to-r from-surface to-emerald-500/5 hover:border-emerald-500/60"
+                        : "border-amber-500/30 bg-gradient-to-r from-surface to-amber-500/5 hover:border-amber-500/50"
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge variant="outline" className="text-[0.65rem] border-amber-500/40 text-amber-400 font-semibold uppercase">
+                            {ord.orderStatus || "MENUNGGU DANA"}
+                          </Badge>
 
-                  {/* Tagihan Nominal IDR & Tombol Uji Coba */}
-                  <div className="flex items-center gap-3 text-right">
-                    <div>
-                      <span className="text-[0.65rem] text-muted-foreground uppercase font-semibold">Nominal Tagihan</span>
-                      <div className="num font-extrabold text-base text-emerald-400">
-                        Rp {ord.totalPriceIdr.toLocaleString("id-ID")}
+                          {/* Liveness Status Badge */}
+                          {isVerified ? (
+                            <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/40 text-[0.65rem] font-semibold flex items-center gap-1">
+                              <CheckCircle2 className="size-3" />
+                              Liveness: Completed {record?.verificationTimeText ? `(${record.verificationTimeText})` : ""}
+                            </Badge>
+                          ) : (
+                            <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/30 text-[0.65rem] font-semibold flex items-center gap-1">
+                              <Clock className="size-3" />
+                              Liveness: Menunggu Wajah
+                            </Badge>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => handleCopy(ord.orderNumber, "Nomor order")}
+                            className="text-xs font-mono font-bold text-foreground hover:text-primary transition-colors flex items-center gap-1"
+                            title="Klik untuk salin order number"
+                          >
+                            #{ord.orderNumber.slice(-8)}
+                            <Copy className="size-2.5 text-muted-foreground" />
+                          </button>
+                          <span className="text-xs text-muted-foreground">·</span>
+                          <span className="text-xs font-medium text-foreground/90 flex items-center gap-1">
+                            <User className="size-3 text-muted-foreground" />
+                            @{ord.counterPartNickName}
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                          <span>Kripto: <strong className="text-foreground">{ord.amountUsdt.toLocaleString("id-ID")} USDT</strong></span>
+                          <span>Kurs: Rp {ord.unitPriceIdr.toLocaleString("id-ID")}</span>
+                          {ord.payMethodName && (
+                            <span className="flex items-center gap-1 text-[0.7rem] bg-surface-2 px-1.5 py-0.5 rounded border border-border">
+                              <CreditCard className="size-3" />
+                              {ord.payMethodName}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Tagihan Nominal IDR & Tombol Aksi */}
+                      <div className="flex flex-wrap items-center gap-2.5 text-right">
+                        <div className="text-right">
+                          <span className="text-[0.65rem] text-muted-foreground uppercase font-semibold">Nominal Tagihan</span>
+                          <div className="num font-extrabold text-base text-emerald-400">
+                            Rp {ord.totalPriceIdr.toLocaleString("id-ID")}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {/* Tombol Liveness */}
+                          {!isVerified ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => toggleLivenessMutation.mutate({ orderNumber: ord.orderNumber, completed: true, counterPartNickName: ord.counterPartNickName })}
+                              disabled={toggleLivenessMutation.isPending}
+                              className="h-8 text-[0.7rem] gap-1 text-emerald-400 border-emerald-500/30 bg-surface hover:bg-emerald-500/10"
+                              title="Tandai pembeli telah selesai verifikasi wajah di Binance"
+                            >
+                              <ShieldCheck className="size-3" />
+                              Tandai Lolos
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => toggleLivenessMutation.mutate({ orderNumber: ord.orderNumber, completed: false })}
+                              disabled={toggleLivenessMutation.isPending}
+                              className="h-8 text-[0.68rem] text-muted-foreground hover:text-rose-400"
+                              title="Batalkan tanda liveness"
+                            >
+                              Batal Verif
+                            </Button>
+                          )}
+
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setPastedChatText(sampleChatText.replace("22941387807730757632", ord.orderNumber));
+                              setIsPasteChatModalOpen(true);
+                            }}
+                            className="h-8 text-[0.7rem] gap-1 bg-surface text-sky-400 border-sky-500/30 hover:bg-sky-500/10"
+                            title="Buka panel tempel pesan chat Binance untuk order ini"
+                          >
+                            <MessageSquare className="size-3" />
+                            Chat
+                          </Button>
+
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleSimulatePayment(ord)}
+                            disabled={checkBalanceMutation.isPending}
+                            className="h-8 text-xs gap-1 bg-surface-2 hover:bg-emerald-500/20 border-emerald-500/30 text-emerald-400"
+                            title="Simulasikan seolah saldo bank naik pas sebesar nominal ini"
+                          >
+                            <ArrowUpRight className="size-3" />
+                            Tes Dana
+                          </Button>
+                        </div>
                       </div>
                     </div>
 
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleSimulatePayment(ord)}
-                      disabled={checkBalanceMutation.isPending}
-                      className="h-8 text-xs gap-1 bg-surface-2 hover:bg-emerald-500/20 border-emerald-500/30 text-emerald-400"
-                      title="Simulasikan seolah saldo bank naik pas sebesar nominal ini"
-                    >
-                      <ArrowUpRight className="size-3" />
-                      Tes Dana Masuk
-                    </Button>
+                    {/* Banner Status Kesiapan Release (Rilis Tetap Manual di Binance) */}
+                    <div className="pt-2 border-t border-border/50 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      {isVerified ? (
+                        <div className="flex items-center gap-1.5 text-emerald-400 font-medium text-[0.72rem]">
+                          <CheckCircle2 className="size-3.5 shrink-0" />
+                          <span>Liveness Selesai: Buyer telah lolos verifikasi wajah. Jika saldo bank sudah masuk cocok, order aman direlease manual di Binance.</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5 text-amber-400 font-medium text-[0.72rem]">
+                          <AlertTriangle className="size-3.5 shrink-0" />
+                          <span>Menunggu Liveness: Minta buyer verifikasi wajah di chat Binance sebelum Anda merelease koin!</span>
+                        </div>
+                      )}
+                      <span className="text-[0.68rem] text-muted-foreground font-semibold shrink-0">
+                        ⚠️ Rilis Kripto Tetap Manual di Binance
+                      </span>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

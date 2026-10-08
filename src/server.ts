@@ -45,6 +45,7 @@ function isH3SwallowedErrorBody(body: string): boolean {
 }
 
 import { handleIncomingBankNotificationWebhook } from "./lib/payment-verifier";
+import { handleIncomingChatMessageWebhook } from "./lib/liveness-verifier";
 
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
@@ -67,6 +68,27 @@ export default {
           const amount = url.searchParams.get("amount") || undefined;
           const sender = url.searchParams.get("sender") || undefined;
           const result = await handleIncomingBankNotificationWebhook({ text, title, amount, sender });
+          return new Response(JSON.stringify(result), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+      }
+
+      // Webhook Penerima Pesan Chat Binance / Verifikasi Wajah Liveness
+      if (url.pathname === "/api/webhook/binance-chat" || url.pathname === "/api/webhook/liveness") {
+        if (request.method === "POST") {
+          const body = await request.json().catch(() => ({}));
+          const result = await handleIncomingChatMessageWebhook(body);
+          return new Response(JSON.stringify(result), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (request.method === "GET") {
+          const text = url.searchParams.get("text") || url.searchParams.get("content") || "";
+          const orderNo = url.searchParams.get("orderNo") || url.searchParams.get("orderNumber") || undefined;
+          const result = await handleIncomingChatMessageWebhook({ text, orderNo });
           return new Response(JSON.stringify(result), {
             status: 200,
             headers: { "content-type": "application/json" },

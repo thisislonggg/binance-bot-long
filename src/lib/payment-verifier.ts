@@ -64,6 +64,8 @@ export type ActiveP2pOrder = {
   createTime: number;
   counterPartNickName: string;
   payMethodName?: string;
+  livenessVerified?: boolean;
+  livenessRecord?: import("./liveness-verifier").OrderLivenessRecord;
 };
 
 export type AlertLog = {
@@ -136,7 +138,20 @@ export const getVerifierState = createServerFn({ method: "POST" })
     }
 
     // Ambil order aktif langsung dari Binance SAPI
-    const activeOrders = await fetchActiveP2pSellOrdersInternal();
+    const rawActiveOrders = await fetchActiveP2pSellOrdersInternal();
+
+    // Gabungkan dengan data status liveness verification
+    const { getLivenessRecordsInternal } = await import("./liveness-verifier");
+    const livenessRecords = await getLivenessRecordsInternal();
+
+    const activeOrders: ActiveP2pOrder[] = rawActiveOrders.map((ord) => {
+      const liveRec = livenessRecords[ord.orderNumber];
+      return {
+        ...ord,
+        livenessVerified: Boolean(liveRec && liveRec.status === "COMPLETED"),
+        livenessRecord: liveRec,
+      };
+    });
 
     return {
       configured: Boolean(settings.wa_phone || settings.telegram_chat_id),
@@ -592,6 +607,10 @@ export const checkBalanceDelta = createServerFn({ method: "POST" })
       matchedOrders = [ord];
       messageBody = `✅ DANA MASUK VALID: Kenaikan saldo ${fmtIdr(delta)} cocok persis dengan Order #${ord.orderNumber.slice(-6)} (@${ord.counterPartNickName}).`;
 
+      const { getLivenessRecordsInternal } = await import("./liveness-verifier");
+      const livenessRecords = await getLivenessRecordsInternal();
+      const isLivenessDone = Boolean(livenessRecords[ord.orderNumber]?.status === "COMPLETED");
+
       waNotificationText = [
         "✅ *DANA MASUK TERVERIFIKASI (BRI)*",
         "━━━━━━━━━━━━━━━━━━",
@@ -599,9 +618,12 @@ export const checkBalanceDelta = createServerFn({ method: "POST" })
         `👤 *Pembeli:* @${ord.counterPartNickName}`,
         `📦 *Jumlah:* ${ord.amountUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT`,
         `🆔 *Order:* #${ord.orderNumber}`,
+        `🛡️ *Liveness Wajah:* ${isLivenessDone ? "✅ Completed (Lolos)" : "⚠️ Belum Terverifikasi (Cek Chat)"}`,
         `⏱️ *Waktu:* ${new Date().toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta" })} WIB`,
         "━━━━━━━━━━━━━━━━━━",
-        "💡 *Saldo rekening BRI sudah bertambah pas. Silakan release kripto di Binance!*",
+        isLivenessDone
+          ? "🎉 *Semua aman: Saldo BRI masuk pas & Liveness lolos. Silakan release kripto secara MANUAL di Binance!*"
+          : "⚠️ *PERHATIAN:* Dana sudah masuk, tetapi Liveness pembeli belum tercatat selesai. Harap pastikan verifikasi wajah sebelum rilis manual!",
       ].join("\n");
     } else if (singleMatches.length > 1) {
       // ⚠️ Skenario Khusus: Ada 2+ order bernilai kembar!
