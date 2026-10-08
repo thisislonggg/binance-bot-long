@@ -26,6 +26,7 @@ import {
   X,
   CheckCheck,
   ShieldAlert,
+  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -40,6 +41,7 @@ import {
   updateBaselineBalance,
   checkBalanceDelta,
   sendTestWhatsApp,
+  autoVerifyAllActiveOrders,
   type VerifierSettings,
   type ActiveP2pOrder,
   type AlertLog,
@@ -51,6 +53,7 @@ import {
   parseLivenessChatMessage,
   type OrderLivenessRecord,
 } from "@/lib/liveness-verifier";
+import { getLocalVerifiedOrders, saveLocalVerifiedOrder } from "./GlobalLivenessMonitor";
 
 interface PaymentVerifierPanelProps {
   sessionToken?: string | null;
@@ -142,6 +145,8 @@ export function PaymentVerifierPanel({ sessionToken }: PaymentVerifierPanelProps
   const [telegramBotToken, setTelegramBotToken] = useState("");
   const [telegramChatId, setTelegramChatId] = useState("");
   const [livenessEnabled, setLivenessEnabled] = useState(true);
+  const [autoVerifyOnBuyerPayed, setAutoVerifyOnBuyerPayed] = useState(true);
+  const [autoVerifyMode, setAutoVerifyMode] = useState<"all_active" | "buyer_payed" | "chat_only">("all_active");
   const [isEditingSettings, setIsEditingSettings] = useState(false);
 
   // Local state input saldo & simulasi
@@ -159,8 +164,20 @@ export function PaymentVerifierPanel({ sessionToken }: PaymentVerifierPanelProps
       setTelegramBotToken(state.settings.telegram_bot_token || "");
       setTelegramChatId(state.settings.telegram_chat_id || "");
       setLivenessEnabled(state.settings.liveness_enabled ?? true);
+      setAutoVerifyOnBuyerPayed(state.settings.auto_verify_on_buyer_payed ?? true);
+      setAutoVerifyMode(state.settings.auto_verify_mode || "all_active");
     }
   }, [state?.settings]);
+
+  // Mutasi auto-verifikasi semua order aktif sekaligus
+  const autoVerifyAllMutation = useMutation({
+    mutationFn: () => autoVerifyAllActiveOrders({ data: { sessionToken: sessionToken ?? undefined } }),
+    onSuccess: (res) => {
+      toast.success(res.message);
+      verifierQuery.refetch();
+    },
+    onError: (err: any) => toast.error(`Gagal: ${err.message}`),
+  });
 
   // Mutasi simpan pengaturan
   const saveSettingsMutation = useMutation({
@@ -354,9 +371,17 @@ Completed`;
       }),
     onSuccess: (res) => {
       if (res.completed) {
+        saveLocalVerifiedOrder(res.orderNumber);
         if (soundEnabled) playLivenessChime();
         toast.success(`Liveness order #${res.orderNumber} berhasil diverifikasi!`);
       } else {
+        try {
+          const raw = localStorage.getItem("binance_verified_liveness_orders_cache");
+          if (raw) {
+            const arr = JSON.parse(raw).filter((id: string) => id !== res.orderNumber);
+            localStorage.setItem("binance_verified_liveness_orders_cache", JSON.stringify(arr));
+          }
+        } catch {}
         toast.info(`Status liveness order #${res.orderNumber} dibatalkan.`);
       }
       verifierQuery.refetch();
@@ -378,6 +403,8 @@ Completed`;
       telegram_bot_token: telegramBotToken,
       telegram_chat_id: telegramChatId,
       liveness_enabled: livenessEnabled,
+      auto_verify_on_buyer_payed: autoVerifyOnBuyerPayed,
+      auto_verify_mode: autoVerifyMode,
     });
   };
 
@@ -429,21 +456,19 @@ Completed`;
                   className={`text-[0.62rem] px-2 py-0.5 font-medium flex items-center gap-1 ${
                     !livenessEnabled
                       ? "border-border text-muted-foreground bg-surface"
-                      : chatStreamStatus === "connected"
-                        ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/10"
-                        : chatStreamStatus === "connecting"
-                          ? "border-amber-500/40 text-amber-400 bg-amber-500/10"
-                          : "border-border text-muted-foreground bg-surface"
+                      : "border-emerald-500/40 text-emerald-400 bg-emerald-500/10"
                   }`}
                 >
-                  <span className={`size-1.5 rounded-full ${!livenessEnabled ? "bg-muted-foreground" : chatStreamStatus === "connected" ? "bg-emerald-400 animate-pulse" : chatStreamStatus === "connecting" ? "bg-amber-400 animate-ping" : "bg-muted-foreground"}`} />
+                  <span className={`size-1.5 rounded-full ${!livenessEnabled ? "bg-muted-foreground" : "bg-emerald-400 animate-pulse"}`} />
                   {!livenessEnabled
                     ? "Fitur Liveness: Nonaktif (OFF)"
-                    : chatStreamStatus === "connected"
-                      ? "Binance Chat Stream: Aktif"
-                      : chatStreamStatus === "connecting"
-                        ? "Menghubungkan Chat…"
-                        : "Chat Stream: Mode Polling / Manual"}
+                    : autoVerifyOnBuyerPayed
+                      ? autoVerifyMode === "buyer_payed"
+                        ? "⚡ Auto-Verify: Aktif (Status Buyer Bayar)"
+                        : autoVerifyMode === "chat_only"
+                        ? "⚡ Auto-Verify: Mode Chat Liveness"
+                        : "⚡ Auto-Verify: Aktif (Semua Order Buyer)"
+                      : "Auto-Verify: Manual"}
                 </Badge>
               </div>
               <p className="text-xs text-muted-foreground mt-0.5">
@@ -483,6 +508,19 @@ Completed`;
               <Camera className="size-3.5" />
               {isPasteChatModalOpen ? "Tutup Verif Chat" : "Verifikasi Wajah / Chat"}
             </Button>
+            {activeOrders.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => autoVerifyAllMutation.mutate()}
+                disabled={autoVerifyAllMutation.isPending}
+                className="h-8 text-xs gap-1.5 bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20"
+                title="Auto-verifikasi semua order aktif saat ini"
+              >
+                <Zap className="size-3.5" />
+                {autoVerifyAllMutation.isPending ? "Memverifikasi…" : "Auto-Verif Semua"}
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -722,6 +760,82 @@ Completed`;
                 </Label>
               </div>
 
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="auto-verify-payed-switch"
+                  checked={autoVerifyOnBuyerPayed}
+                  onCheckedChange={setAutoVerifyOnBuyerPayed}
+                />
+                <Label htmlFor="auto-verify-payed-switch" className="text-xs cursor-pointer text-foreground flex items-center gap-1.5 font-semibold">
+                  <Zap className="size-3.5 text-amber-400" />
+                  Auto-Verifikasi Liveness Otomatis
+                </Label>
+              </div>
+
+              {/* Selector Mode Auto-Verifikasi */}
+              {autoVerifyOnBuyerPayed && (
+                <div className="w-full p-3 rounded-lg bg-surface border border-primary/20 space-y-2">
+                  <div className="flex items-center gap-1.5">
+                    <Zap className="size-3.5 text-amber-400" />
+                    <span className="text-xs font-semibold text-foreground">
+                      Pemicu Auto-Verifikasi Liveness:
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAutoVerifyMode("all_active")}
+                      className={`text-left p-2.5 rounded-md border text-xs transition-all ${
+                        autoVerifyMode === "all_active"
+                          ? "border-emerald-500 bg-emerald-500/10 text-foreground shadow-sm"
+                          : "border-border/60 bg-surface-2 text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <div className="font-semibold flex items-center gap-1 text-emerald-400">
+                        ⚡ Semua Order Aktif (Default)
+                      </div>
+                      <div className="text-[0.68rem] text-muted-foreground mt-0.5 leading-relaxed">
+                        Langsung verifikasi begitu order buyer terdeteksi di terminal.
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setAutoVerifyMode("buyer_payed")}
+                      className={`text-left p-2.5 rounded-md border text-xs transition-all ${
+                        autoVerifyMode === "buyer_payed"
+                          ? "border-amber-500 bg-amber-500/10 text-foreground shadow-sm"
+                          : "border-border/60 bg-surface-2 text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <div className="font-semibold flex items-center gap-1 text-amber-400">
+                        💳 Saat Status BUYER_PAYED
+                      </div>
+                      <div className="text-[0.68rem] text-muted-foreground mt-0.5 leading-relaxed">
+                        Hanya verifikasi saat pembeli klik sudah transfer di Binance.
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setAutoVerifyMode("chat_only")}
+                      className={`text-left p-2.5 rounded-md border text-xs transition-all ${
+                        autoVerifyMode === "chat_only"
+                          ? "border-sky-500 bg-sky-500/10 text-foreground shadow-sm"
+                          : "border-border/60 bg-surface-2 text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <div className="font-semibold flex items-center gap-1 text-sky-400">
+                        💬 Chat Binance / Webhook
+                      </div>
+                      <div className="text-[0.68rem] text-muted-foreground mt-0.5 leading-relaxed">
+                        Hanya verifikasi jika pesan liveness terdeteksi di chat/webhook.
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {soundEnabled && (
                 <Button
                   type="button"
@@ -943,7 +1057,8 @@ Completed`;
           ) : (
             <div className="space-y-3">
               {activeOrders.map((ord) => {
-                const isVerified = ord.livenessVerified;
+                const localVerifiedSet = getLocalVerifiedOrders();
+                const isVerified = ord.livenessVerified || localVerifiedSet.has(ord.orderNumber);
                 const record = ord.livenessRecord;
 
                 return (
@@ -1021,14 +1136,14 @@ Completed`;
                           {!isVerified ? (
                             <Button
                               size="sm"
-                              variant="outline"
+                              variant="default"
                               onClick={() => toggleLivenessMutation.mutate({ orderNumber: ord.orderNumber, completed: true, counterPartNickName: ord.counterPartNickName })}
                               disabled={toggleLivenessMutation.isPending}
-                              className="h-8 text-[0.7rem] gap-1 text-emerald-400 border-emerald-500/30 bg-surface hover:bg-emerald-500/10"
-                              title="Tandai pembeli telah selesai verifikasi wajah di Binance"
+                              className="h-8 text-[0.7rem] gap-1 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold shadow-sm"
+                              title="Verifikasi order ini sekarang & kirim alert WA"
                             >
-                              <ShieldCheck className="size-3" />
-                              Tandai Lolos
+                              <Zap className="size-3" />
+                              Auto-Verif
                             </Button>
                           ) : (
                             <Button

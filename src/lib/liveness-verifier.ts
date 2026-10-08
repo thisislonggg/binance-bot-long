@@ -56,9 +56,24 @@ export type ParsedLivenessMessage = {
 
 // ── Parser Pesan Verifikasi Wajah Binance Chat ──────────────────────────────
 export function parseLivenessChatMessage(text: string): ParsedLivenessMessage {
-  const clean = (text || "").trim();
+  let clean = (text || "").trim();
   if (!clean) {
     return { isLivenessMessage: false, isCompleted: false, rawText: "" };
+  }
+
+  // Handle jika input adalah string JSON dari WebSocket atau webhook
+  let orderNumberFromPayload: string | undefined;
+  if (clean.startsWith("{") && clean.endsWith("}")) {
+    try {
+      const obj = JSON.parse(clean);
+      if (typeof obj === "object" && obj !== null) {
+        orderNumberFromPayload = obj.orderNo || obj.orderNumber || obj.data?.orderNo || obj.data?.orderNumber;
+        const innerText = obj.content || obj.text || obj.data?.content || obj.data?.text || obj.message;
+        if (typeof innerText === "string") {
+          clean = innerText.trim();
+        }
+      }
+    } catch {}
   }
 
   // 1. Cek indikator verifikasi wajah / liveness check
@@ -67,33 +82,36 @@ export function parseLivenessChatMessage(text: string): ParsedLivenessMessage {
     /facial\s*verification/i.test(clean) ||
     /liveness\s*check/i.test(clean) ||
     /conduct\s*liveness/i.test(clean) ||
-    /face\s*verification/i.test(clean);
+    /face\s*verification/i.test(clean) ||
+    /\bliveness\b/i.test(clean) ||
+    /face\s*check/i.test(clean) ||
+    /verifikasi\s*muka/i.test(clean) ||
+    /biometrik/i.test(clean);
 
   if (!isLivenessMessage) {
     return { isLivenessMessage: false, isCompleted: false, rawText: clean };
   }
 
-  // 2. Cek status: Completed / Selesai / Success
+  // 2. Cek status: Completed / Selesai / Success / Pass / Passed / Lolos / Approved / Done
   const statusMatch = clean.match(/status[:\s]+([A-Za-z]+)/i);
   const statusStr = statusMatch ? statusMatch[1].trim() : "";
   const isCompleted =
-    /completed/i.test(statusStr) ||
-    /selesai/i.test(statusStr) ||
-    /success/i.test(statusStr) ||
-    /\bcompleted\b/i.test(clean) ||
-    /\bselesai\b/i.test(clean);
+    /completed|selesai|success|pass|passed|approved|lolos|verified|terverifikasi|done|ok/i.test(statusStr) ||
+    /\b(completed|selesai|success|passed|approved|lolos|terverifikasi)\b/i.test(clean);
 
   // 3. Ekstrak Order Number: 15-25 digit
-  let orderNumber: string | undefined;
-  const orderRegex = /(?:Order\s*number|Order\s*no|Nomor\s*pesanan|Pesanan|Order)[:\s]+(\d{15,25})/i;
-  const matchOrder = clean.match(orderRegex);
-  if (matchOrder) {
-    orderNumber = matchOrder[1].trim();
-  } else {
-    // Fallback digit panjang (18 s/d 22 digit khas order Binance P2P)
-    const digitMatch = clean.match(/\b(\d{18,22})\b/);
-    if (digitMatch) {
-      orderNumber = digitMatch[1].trim();
+  let orderNumber: string | undefined = orderNumberFromPayload;
+  if (!orderNumber) {
+    const orderRegex = /(?:Order\s*number|Order\s*no|Nomor\s*pesanan|Pesanan|Order)[:\s]+(\d{15,25})/i;
+    const matchOrder = clean.match(orderRegex);
+    if (matchOrder) {
+      orderNumber = matchOrder[1].trim();
+    } else {
+      // Fallback digit panjang (15 s/d 25 digit khas order Binance P2P)
+      const digitMatch = clean.match(/\b(\d{15,25})\b/);
+      if (digitMatch) {
+        orderNumber = digitMatch[1].trim();
+      }
     }
   }
 
@@ -124,85 +142,108 @@ export function parseLivenessChatMessage(text: string): ParsedLivenessMessage {
   };
 }
 
+// ── In-Memory Cache Fallback (Aktif saat Supabase offline atau belum dikonfigurasi) ─
+const inMemoryLivenessRecords: Record<string, OrderLivenessRecord> = {};
+let inMemorySettings: VerifierSettings = { ...DEFAULT_VERIFIER_SETTINGS };
+
 // ── Helper DB Internal: Ambil & Simpan Riwayat Liveness ──────────────────────
 export async function getLivenessRecordsInternal(): Promise<Record<string, OrderLivenessRecord>> {
   const db = getSupabase();
-  if (!db) return {};
+  let dbRecords: Record<string, OrderLivenessRecord> = {};
 
-  try {
-    const { data } = await db
-      .from("user_settings")
-      .select("value")
-      .eq("key", LIVENESS_RECORDS_KEY)
-      .maybeSingle();
+  if (db) {
+    try {
+      const { data } = await db
+        .from("user_settings")
+        .select("value")
+        .eq("key", LIVENESS_RECORDS_KEY)
+        .maybeSingle();
 
-    if (data?.value) {
-      return JSON.parse(data.value) as Record<string, OrderLivenessRecord>;
+      if (data?.value) {
+        dbRecords = JSON.parse(data.value) as Record<string, OrderLivenessRecord>;
+      }
+    } catch (err) {
+      console.warn("getLivenessRecordsInternal db error:", err);
     }
-  } catch (err) {
-    console.warn("getLivenessRecordsInternal error:", err);
   }
 
-  return {};
+  // Gabungkan in-memory records dan db records
+  return { ...inMemoryLivenessRecords, ...dbRecords };
 }
 
 export async function saveLivenessRecordInternal(
   record: OrderLivenessRecord,
 ): Promise<{ ok: boolean; records: Record<string, OrderLivenessRecord> }> {
+  // Selalu simpan di in-memory cache
+  inMemoryLivenessRecords[record.orderNumber] = record;
+
   const db = getSupabase();
-  if (!db) return { ok: false, records: {} };
-
-  const existing = await getLivenessRecordsInternal();
-  existing[record.orderNumber] = record;
-
-  // Pertahankan maksimal 100 record terakhir agar hemat storage
-  const keys = Object.keys(existing);
-  if (keys.length > 100) {
-    const sortedKeys = keys.sort((a, b) => {
-      const ta = new Date(existing[a]?.verifiedAt || 0).getTime();
-      const tb = new Date(existing[b]?.verifiedAt || 0).getTime();
-      return tb - ta;
-    });
-    const pruned: Record<string, OrderLivenessRecord> = {};
-    for (const k of sortedKeys.slice(0, 100)) {
-      pruned[k] = existing[k]!;
-    }
-    await db.from("user_settings").upsert(
-      { key: LIVENESS_RECORDS_KEY, value: JSON.stringify(pruned) } as any,
-      { onConflict: "key" },
-    );
-    return { ok: true, records: pruned };
+  if (!db) {
+    return { ok: true, records: inMemoryLivenessRecords };
   }
 
-  await db.from("user_settings").upsert(
-    { key: LIVENESS_RECORDS_KEY, value: JSON.stringify(existing) } as any,
-    { onConflict: "key" },
-  );
+  try {
+    const existing = await getLivenessRecordsInternal();
+    existing[record.orderNumber] = record;
 
-  return { ok: true, records: existing };
+    // Pertahankan maksimal 100 record terakhir agar hemat storage
+    const keys = Object.keys(existing);
+    if (keys.length > 100) {
+      const sortedKeys = keys.sort((a, b) => {
+        const ta = new Date(existing[a]?.verifiedAt || 0).getTime();
+        const tb = new Date(existing[b]?.verifiedAt || 0).getTime();
+        return tb - ta;
+      });
+      const pruned: Record<string, OrderLivenessRecord> = {};
+      for (const k of sortedKeys.slice(0, 100)) {
+        pruned[k] = existing[k]!;
+      }
+      await db.from("user_settings").upsert(
+        { key: LIVENESS_RECORDS_KEY, value: JSON.stringify(pruned) } as any,
+        { onConflict: "key" },
+      );
+      return { ok: true, records: pruned };
+    }
+
+    await db.from("user_settings").upsert(
+      { key: LIVENESS_RECORDS_KEY, value: JSON.stringify(existing) } as any,
+      { onConflict: "key" },
+    );
+
+    return { ok: true, records: existing };
+  } catch (err) {
+    console.warn("Gagal menyimpan liveness record ke Supabase:", err);
+    return { ok: true, records: inMemoryLivenessRecords };
+  }
 }
 
 export async function deleteLivenessRecordInternal(
   orderNumber: string,
 ): Promise<{ ok: boolean; records: Record<string, OrderLivenessRecord> }> {
+  delete inMemoryLivenessRecords[orderNumber];
+
   const db = getSupabase();
-  if (!db) return { ok: false, records: {} };
+  if (!db) return { ok: true, records: inMemoryLivenessRecords };
 
-  const existing = await getLivenessRecordsInternal();
-  delete existing[orderNumber];
+  try {
+    const existing = await getLivenessRecordsInternal();
+    delete existing[orderNumber];
 
-  await db.from("user_settings").upsert(
-    { key: LIVENESS_RECORDS_KEY, value: JSON.stringify(existing) } as any,
-    { onConflict: "key" },
-  );
+    await db.from("user_settings").upsert(
+      { key: LIVENESS_RECORDS_KEY, value: JSON.stringify(existing) } as any,
+      { onConflict: "key" },
+    );
 
-  return { ok: true, records: existing };
+    return { ok: true, records: existing };
+  } catch {
+    return { ok: true, records: inMemoryLivenessRecords };
+  }
 }
 
 // ── Helper DB Internal: Ambil Pengaturan Verifier (WA & Telegram) ────────────
 async function getVerifierSettingsInternal(): Promise<VerifierSettings> {
   const db = getSupabase();
-  if (!db) return DEFAULT_VERIFIER_SETTINGS;
+  if (!db) return inMemorySettings;
 
   try {
     const { data } = await db
@@ -212,15 +253,17 @@ async function getVerifierSettingsInternal(): Promise<VerifierSettings> {
       .maybeSingle();
 
     if (data?.value) {
-      return { ...DEFAULT_VERIFIER_SETTINGS, ...JSON.parse(data.value) };
+      const parsed = JSON.parse(data.value);
+      inMemorySettings = { ...DEFAULT_VERIFIER_SETTINGS, ...parsed };
+      return inMemorySettings;
     }
   } catch {}
 
-  return DEFAULT_VERIFIER_SETTINGS;
+  return inMemorySettings;
 }
 
 // ── Kirim Notifikasi WhatsApp & Telegram untuk Liveness ─────────────────────
-async function notifyLivenessCompleted(record: OrderLivenessRecord): Promise<void> {
+export async function notifyLivenessCompleted(record: OrderLivenessRecord): Promise<void> {
   const settings = await getVerifierSettingsInternal();
   if (!settings.wa_phone && !settings.telegram_chat_id) return;
 
@@ -279,11 +322,11 @@ export const getBinanceChatCredentials = createServerFn({ method: "POST" })
       };
     }
 
-    const DEFAULT_BINANCE_URL = "https://api.binance.com";
-    const baseUrl =
+    const rawBaseUrl =
       process.env["BINANCE_PROXY_URL"] ||
       process.env["BINANCE_API_BASE_URL"] ||
-      DEFAULT_BINANCE_URL;
+      "https://api.binance.com";
+    const baseUrl = rawBaseUrl.replace(/\/sapi\/.*$/, "").replace(/\/+$/, "");
 
     try {
       const timestamp = Date.now();

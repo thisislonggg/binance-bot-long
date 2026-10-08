@@ -40,6 +40,7 @@ import { AdsTable } from "@/components/p2p/AdsTable";
 import { ArbitrageScanner } from "@/components/p2p/ArbitrageScanner";
 import { MarginCalculator } from "@/components/p2p/MarginCalculator";
 import { PaymentVerifierPanel } from "@/components/p2p/PaymentVerifierPanel";
+import { GlobalLivenessMonitor } from "@/components/p2p/GlobalLivenessMonitor";
 
 import { StatCard } from "@/components/p2p/StatCard";
 import { TradesTable } from "@/components/p2p/TradesTable";
@@ -829,6 +830,7 @@ function Dashboard() {
   return (
     <div className="min-h-screen bg-background text-foreground pb-12">
       <Toaster position="top-right" richColors />
+      <GlobalLivenessMonitor sessionToken={sessionToken} />
 
       {/* ── Top Header ───────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur-md">
