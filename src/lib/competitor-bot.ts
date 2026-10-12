@@ -11,7 +11,7 @@ export type CompetitorFilterConfig = {
   minUsdtAmount: number;          // Minimal USDT yang dimiliki/dijual merchant (misal: 500 USDT)
   maxUsdtAmount: number;          // Batas maksimal USDT (0 = Bebas, mencegah whale besar)
   minOrderLimitIdr: number;       // Toleransi maksimal syarat min order kompetitor (0 = Bebas, misal: 50 Jt)
-  minMaxLimitIdr: number;         // Kapasitas order maksimal harus >= nominal ini (0 = Bebas)
+  minMaxLimitIdr: number;         // Min Transaksi: kapasitas order merchant harus >= nominal ini (0 = Bebas)
   verifiedOnly: boolean;          // Hanya ikuti Verified Merchant (centang kuning)
   userTypeFilter: "all" | "merchant_only" | "user_only"; // Filter tipe user Binance
   minCompletionRate: number;      // Minimal % penyelesaian 30 hari (misal: 95%)
@@ -335,11 +335,11 @@ export function evaluateCompetitorAds(
       });
     }
 
-    // 3. Filter Batas Pesanan Maksimal IDR (harus mampu melayani order besar)
+    // 3. Filter Min Transaksi (harus mampu melayani order minimal nominal ini)
     if (config.minMaxLimitIdr > 0 && ad.max_limit_idr > 0 && ad.max_limit_idr < config.minMaxLimitIdr) {
       reasons.push({
         code: "MAX_LIMIT_TOO_LOW",
-        message: `Maks pesanan merchant Rp ${ad.max_limit_idr.toLocaleString("id-ID")} < target min Rp ${config.minMaxLimitIdr.toLocaleString("id-ID")}`,
+        message: `Kapasitas merchant Rp ${ad.max_limit_idr.toLocaleString("id-ID")} < target min transaksi Rp ${config.minMaxLimitIdr.toLocaleString("id-ID")}`,
       });
     }
 

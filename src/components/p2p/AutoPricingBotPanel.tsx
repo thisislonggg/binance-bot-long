@@ -746,6 +746,11 @@ export function AutoPricingBotPanel({
                     Min Limit &ge; Batas ({disqualificationStats.MIN_LIMIT_TOO_HIGH})
                   </Badge>
                 )}
+                {disqualificationStats.MAX_LIMIT_TOO_LOW && (
+                  <Badge variant="outline" className="h-5 px-1.5 text-[0.62rem] border-amber-500/30 text-amber-400">
+                    Kapasitas &lt; Min ({disqualificationStats.MAX_LIMIT_TOO_LOW})
+                  </Badge>
+                )}
                 {disqualificationStats.UNVERIFIED && (
                   <Badge variant="outline" className="h-5 px-1.5 text-[0.62rem] border-border text-muted-foreground">
                     Non-Verified ({disqualificationStats.UNVERIFIED})
@@ -1177,14 +1182,19 @@ export function AutoPricingBotPanel({
                   </p>
                 </div>
 
-                {/* Min Max Limit IDR (Kapasitas Order Maksimal) */}
+                {/* Min Max Limit IDR (Min Transaksi yang bisa dilayani) */}
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <Label className="text-xs font-semibold text-foreground">
-                      Kapasitas Maks Transaksi
-                    </Label>
+                    <div>
+                      <Label className="text-xs font-semibold text-foreground">
+                        Min Transaksi
+                      </Label>
+                      <p className="text-[0.65rem] text-muted-foreground">
+                        Kapasitas merchant harus sanggup melayani minimal nominal ini
+                      </p>
+                    </div>
                     <span className="num text-xs font-bold text-primary">
-                      {config.minMaxLimitIdr === 0 ? "Bebas (0)" : fmtRp(config.minMaxLimitIdr)}
+                      {config.minMaxLimitIdr === 0 ? "Bebas (0)" : `≥ ${fmtRp(config.minMaxLimitIdr)}`}
                     </span>
                   </div>
                   <Input
@@ -1194,11 +1204,12 @@ export function AutoPricingBotPanel({
                     value={config.minMaxLimitIdr}
                     onChange={(e) => updateConfig({ minMaxLimitIdr: Math.max(0, Number(e.target.value)) })}
                     className="h-8 text-xs bg-surface-2 font-semibold"
-                    placeholder="0 = Bebas"
+                    placeholder="0 = Bebas (Nonaktif)"
                   />
                   <div className="flex items-center gap-1 pt-1 flex-wrap">
                     {[
-                      { label: "Bebas", val: 0 },
+                      { label: "Bebas (0)", val: 0 },
+                      { label: "5 Jt", val: 5_000_000 },
                       { label: "10 Jt", val: 10_000_000 },
                       { label: "25 Jt", val: 25_000_000 },
                       { label: "50 Jt", val: 50_000_000 },
@@ -1218,7 +1229,7 @@ export function AutoPricingBotPanel({
                     ))}
                   </div>
                   <p className="text-[0.65rem] text-muted-foreground">
-                    Hanya ikuti merchant yang mampu melayani pesanan hingga nominal ini.
+                    Otomatis mengabaikan merchant dengan kapasitas maksimal di bawah nominal ini (hanya ikuti lawan yang mampu memenuhi target pesanan Anda).
                   </p>
                 </div>
               </div>
