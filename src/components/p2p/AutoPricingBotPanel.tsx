@@ -344,6 +344,21 @@ export function AutoPricingBotPanel({
     }
   };
 
+  const handleApplySellOnly = () => {
+    if (onApplyPrice) {
+      onApplyPrice({
+        buyPrice: recommendedBuyPrice,
+        sellPrice: recommendedSellPrice,
+        targetSide: "sell",
+      });
+      toast.success(
+        `Harga Jual Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")} diterapkan ke form!`
+      );
+    } else {
+      handleCopy(recommendedSellPrice, "sell");
+    }
+  };
+
   const handleCopyBuyDetails = () => {
     const text =
       bankAllocation.autoBuyStockUsdt > 0
@@ -399,7 +414,16 @@ export function AutoPricingBotPanel({
       if (res.ok) {
         toast.success(res.message);
       } else {
-        toast.error(`Binance C2C: ${res.message}`);
+        toast.error(res.message, {
+          duration: 9000,
+          action: {
+            label: "Terapkan ke Form",
+            onClick: () => {
+              if (side === "buy") handleApplyBuyOnly();
+              else handleApplySellOnly();
+            },
+          },
+        });
       }
     } catch (err: unknown) {
       const errStr = err instanceof Error ? err.message : String(err);

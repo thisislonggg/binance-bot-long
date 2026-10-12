@@ -103,34 +103,63 @@ async function binanceMerchantRequest<T = unknown>(options: {
   const signature = createHmac("sha256", apiSecret).update(qs).digest("hex");
   const fullQs = `${qs}&signature=${signature}`;
 
-  const url = `${baseUrl.replace(/\/$/, "")}${options.endpoint}?${fullQs}`;
+  // Sesuai spesifikasi Binance API:
+  // Untuk POST, payload harus dikirim di request body jika Content-Type adalah form-urlencoded.
+  // Untuk GET, parameter dikirim di query string URL.
+  const isPost = options.method === "POST";
+  let url = isPost
+    ? `${baseUrl.replace(/\/$/, "")}${options.endpoint}`
+    : `${baseUrl.replace(/\/$/, "")}${options.endpoint}?${fullQs}`;
 
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15_000);
 
-    const resp = await fetch(url, {
+    let resp = await fetch(url, {
       method: options.method,
       headers: {
         "X-MBX-APIKEY": apiKey,
-        "Content-Type": "application/x-www-form-urlencoded",
+        ...(isPost ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
         "User-Agent": "Binance-Merchant-Bot/2.0",
       },
+      body: isPost ? fullQs : undefined,
       signal: controller.signal,
     }).finally(() => clearTimeout(timeout));
 
-    const rawText = await resp.text();
+    let rawText = await resp.text();
     let json: Record<string, unknown> = {};
 
     try {
       json = JSON.parse(rawText);
     } catch {
-      return {
-        ok: false,
-        code: resp.status,
-        error: `Respons Binance bukan format JSON: ${rawText.slice(0, 200)}`,
-        message: `HTTP Status ${resp.status}`,
-      };
+      // Abaikan jika bukan JSON
+    }
+
+    // Jika POST via body gagal dengan code -1000 atau respons non-OK, coba fallback dengan query string di URL
+    if (isPost && (!resp.ok || json["code"] === "-1000" || json["code"] === -1000)) {
+      try {
+        const fallbackUrl = `${baseUrl.replace(/\/$/, "")}${options.endpoint}?${fullQs}`;
+        const fbController = new AbortController();
+        const fbTimeout = setTimeout(() => fbController.abort(), 15_000);
+        const fbResp = await fetch(fallbackUrl, {
+          method: "POST",
+          headers: {
+            "X-MBX-APIKEY": apiKey,
+            "User-Agent": "Binance-Merchant-Bot/2.0",
+          },
+          signal: fbController.signal,
+        }).finally(() => clearTimeout(fbTimeout));
+
+        const fbText = await fbResp.text();
+        const fbJson = JSON.parse(fbText);
+        if (fbResp.ok && (fbJson["code"] === "000000" || fbJson["code"] === "0" || fbJson["success"] === true)) {
+          resp = fbResp;
+          rawText = fbText;
+          json = fbJson;
+        }
+      } catch {
+        // Abaikan jika fallback gagal
+      }
     }
 
     // Kode sukses Binance adalah "000000", "0", atau HTTP 200 dengan status sukses
@@ -151,6 +180,9 @@ async function binanceMerchantRequest<T = unknown>(options: {
         friendlyMsg = "Alamat IP server belum terdaftar di whitelist IP API Key Binance.";
       } else if (errMsg.includes("permission") || errMsg.includes("merchant")) {
         friendlyMsg = "Akun belum memiliki izin C2C Merchant API. Pastikan akun sudah berstatus P2P Merchant.";
+      } else if (code === "-1000" || errMsg.toLowerCase().includes("unknown error")) {
+        friendlyMsg =
+          "Binance C2C menolak update via API (Error -1000). Umumnya terjadi karena akun belum memiliki hak Binance P2Pro Merchant API atau nomor iklan tidak valid. Anda dapat menggunakan tombol 'Terapkan ke Form Beli' untuk memasukkan harga & stok secara instan 1-klik ke form!";
       }
 
       return {
@@ -265,34 +297,56 @@ export const updateMerchantAd = createServerFn({ method: "POST" })
       };
     }
 
-    const params: Record<string, string | number> = {
+    const fullParams: Record<string, string | number> = {
       advNo: data.advNo.trim(),
       price: Math.round(data.price),
       priceType: data.priceType ?? 1,
     };
 
     if (data.amount && data.amount > 0) {
-      params["initAmount"] = Math.floor(data.amount * 100) / 100;
-      params["amount"] = Math.floor(data.amount * 100) / 100;
+      fullParams["initAmount"] = Math.floor(data.amount * 100) / 100;
+      fullParams["amount"] = Math.floor(data.amount * 100) / 100;
     }
 
     if (data.minSingleTransAmount && data.minSingleTransAmount > 0) {
-      params["minSingleTransAmount"] = Math.round(data.minSingleTransAmount);
+      fullParams["minSingleTransAmount"] = Math.round(data.minSingleTransAmount);
     }
 
     if (data.maxSingleTransAmount && data.maxSingleTransAmount > 0) {
-      params["maxSingleTransAmount"] = Math.round(data.maxSingleTransAmount);
+      fullParams["maxSingleTransAmount"] = Math.round(data.maxSingleTransAmount);
     }
 
     if (data.payMethods && data.payMethods.length > 0) {
-      params["payMethods"] = JSON.stringify(data.payMethods);
+      fullParams["payMethods"] = JSON.stringify(data.payMethods);
     }
 
-    return binanceMerchantRequest({
+    // 1. Coba kirim update dengan seluruh parameter
+    const res = await binanceMerchantRequest({
       endpoint: "/sapi/v1/c2c/ads/update",
       method: "POST",
-      params,
+      params: fullParams,
     });
+
+    // 2. Jika gagal dan payload memiliki amount / limits, coba fallback update HANYA HARGA (advNo & price).
+    // Di Binance P2P, iklan yang sedang ONLINE sering menolak perubahan limit/stok, tapi mengizinkan perubahan harga real-time!
+    if (!res.ok && (data.amount || data.maxSingleTransAmount)) {
+      const priceOnlyRes = await binanceMerchantRequest({
+        endpoint: "/sapi/v1/c2c/ads/update",
+        method: "POST",
+        params: {
+          advNo: data.advNo.trim(),
+          price: Math.round(data.price),
+        },
+      });
+      if (priceOnlyRes.ok) {
+        return {
+          ...priceOnlyRes,
+          message: `Harga iklan #${data.advNo} berhasil diupdate ke Rp ${Math.round(data.price).toLocaleString("id-ID")}. (Catatan: Stok & limit iklan aktif perlu disesuaikan via Binance Web/App).`,
+        };
+      }
+    }
+
+    return res;
   });
 
 // ── 3. Update Status Iklan (Nyalakan / Jeda) ─────────────────────────────────
