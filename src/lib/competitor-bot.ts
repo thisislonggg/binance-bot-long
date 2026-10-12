@@ -289,10 +289,10 @@ export function computeCompetitorPricing(input: {
   }
 
   // 5. Hitung dan Terapkan Batas Pengaman BELI (Buy Ceiling Guard)
-  // Ceiling Beli: Mencegah beli kemahalan di pucuk
+  // Ceiling Beli: Mencegah beli kemahalan di pucuk yang mengikis spread minimal terhadap harga jual
   const calculatedBuyCeiling = Math.round(
     config.buyCeilingMode === "auto_fair"
-      ? (fairPrice > 0 ? fairPrice - config.minProfitMarginRp : 16_300)
+      ? (rawSellPrice > 0 ? rawSellPrice - config.minSpreadRp : (fairPrice > 0 ? fairPrice : 16_300))
       : config.manualBuyCeilingRp,
   );
 
@@ -304,7 +304,7 @@ export function computeCompetitorPricing(input: {
   let recommendedBuyPrice = rawBuyPrice;
   if (recommendedBuyPrice > calculatedBuyCeiling) {
     buyGuard.triggered = true;
-    buyGuard.reason = `Harga pasar (Rp ${rawBuyPrice.toLocaleString("id-ID")}) di atas batas atas wajar (Ceiling Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}). Harga dikunci di batas Ceiling.`;
+    buyGuard.reason = `Harga pasar (Rp ${rawBuyPrice.toLocaleString("id-ID")}) di atas batas atas wajar (Ceiling Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}, sisa spread < Rp ${config.minSpreadRp}). Harga dikunci di batas Ceiling.`;
     recommendedBuyPrice = calculatedBuyCeiling;
   }
 

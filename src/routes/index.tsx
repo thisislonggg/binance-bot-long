@@ -41,6 +41,7 @@ import { ArbitrageScanner } from "@/components/p2p/ArbitrageScanner";
 import { MarginCalculator } from "@/components/p2p/MarginCalculator";
 import { PaymentVerifierPanel } from "@/components/p2p/PaymentVerifierPanel";
 import { GlobalLivenessMonitor } from "@/components/p2p/GlobalLivenessMonitor";
+import { AutoPricingBotPanel } from "@/components/p2p/AutoPricingBotPanel";
 
 import { StatCard } from "@/components/p2p/StatCard";
 import { TradesTable } from "@/components/p2p/TradesTable";
@@ -213,9 +214,6 @@ function Dashboard() {
   const [editingTradeId, setEditingTradeId] = useState<number | null>(null);
   const [deletingTradeId, setDeletingTradeId] = useState<number | null>(null);
   const [togglingRoleId, setTogglingRoleId] = useState<number | null>(null);
-
-  // State Simulasi Metode Ambil Stok pada Rekomendasi
-  const [simBuyMethod, setSimBuyMethod] = useState<"maker" | "taker">("taker");
 
   // State Auto-sync Binance
   const [autoSyncBinance, setAutoSyncBinance] = useState(true);
@@ -902,320 +900,105 @@ function Dashboard() {
       {/* ── Main Body ───────────────────────────────────────────────────────── */}
       <main className="mx-auto max-w-7xl px-4 pt-5 sm:px-6 space-y-5">
 
-        {/* ── Dual Trading Recommendations ─────────────────────────────────── */}
-        {s ? (() => {
-          const buyAd = s.my_buy_price || 16200;
-          const isTakerSim = simBuyMethod === "taker";
-          // Jika Beli Langsung dari merchant lain (Taker): Bebas fee beli (fee = 0), fee hanya terhitung ketika menjual!
-          const buyFee = isTakerSim ? 0 : buyAd * 0.0005;
-          const buyHpp = isTakerSim ? buyAd : buyAd * 1.0005;
+        {/* ── Bot Auto-Pricing: Merchant Tracker & Competitor Filter ─────── */}
+        {s && (
+          <AutoPricingBotPanel
+            sellRefAds={s.all_sell_ads || s.top_sell_ref_ads || []}
+            buyRefAds={s.all_buy_ads || s.top_buy_ref_ads || []}
+            fairPrice={s.fair_price || 0}
+            stockHpp={pnl?.open_position_avg_cost_idr || 0}
+            onApplyPrice={(prices) => {
+              setTradePrice(String(tradeSide === "buy" ? Math.round(prices.buyPrice) : Math.round(prices.sellPrice)));
+              setShowManualForm(true);
+              toast.success(
+                `Harga ${tradeSide === "buy" ? "Beli" : "Jual"} Rp ${Math.round(
+                  tradeSide === "buy" ? prices.buyPrice : prices.sellPrice,
+                ).toLocaleString("id-ID")} dimasukkan ke form transaksi!`
+              );
+            }}
+            onRefresh={() => {
+              snapshotQuery.refetch();
+              pnlQuery.refetch();
+            }}
+            isRefreshing={snapshotQuery.isFetching}
+          />
+        )}
 
-          const sellAd = s.my_sell_price || 16250;
-          const sellFee = sellAd * 0.0005;
-          const sellNet = sellAd * 0.9995;
-
-          const netSpreadAbs = sellNet - buyHpp;
-          const netSpreadPct = buyHpp > 0 ? (netSpreadAbs / buyHpp) * 100 : 0;
-          const totalFeePerUsdt = buyFee + sellFee;
-
-          return (
-            <div className="space-y-2.5">
-              {/* Selector Metode Simulasi Ambil Stok */}
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/25 bg-surface-2/60 px-3.5 py-2 text-xs">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-semibold text-foreground">Metode Ambil Stok:</span>
-                  <div className="inline-flex rounded-md bg-surface p-0.5 border border-border">
-                    <button
-                      type="button"
-                      onClick={() => setSimBuyMethod("taker")}
-                      className={cn(
-                        "rounded px-2.5 py-1 text-[0.7rem] font-semibold transition-colors",
-                        isTakerSim ? "bg-cyan-500/20 text-cyan-400 shadow-sm" : "text-muted-foreground hover:text-foreground",
-                      )}
-                    >
-                      Beli Langsung Merchant Lain (Taker · Bebas Fee Beli)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSimBuyMethod("maker")}
-                      className={cn(
-                        "rounded px-2.5 py-1 text-[0.7rem] font-semibold transition-colors",
-                        !isTakerSim ? "bg-primary/20 text-primary shadow-sm" : "text-muted-foreground hover:text-foreground",
-                      )}
-                    >
-                      Iklan Sendiri (Maker · Fee 0.05%)
-                    </button>
-                  </div>
-                </div>
-                <span className="text-[0.68rem] text-muted-foreground">
-                  {isTakerSim
-                    ? "✨ Fee beli Rp 0 (0%), fee dipotong hanya saat menjual (0.05%)."
-                    : "Fee Maker Beli 0.05% + Maker Jual 0.05% = 0.10%."}
-                </span>
+        {/* ── Sinkronisasi Benchmark Multi-Platform ─────────────────────────── */}
+        {s && (
+          <div className="panel p-3.5 border-border/70 bg-surface-2/40 space-y-2.5 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-2">
+              <div className="flex items-center gap-2">
+                <Globe className="size-3.5 text-primary" />
+                <span className="font-bold text-foreground">Sinkronisasi Pasar Multi-Platform:</span>
               </div>
+              <span className="text-[0.68rem] text-muted-foreground">
+                Nilai Wajar Pasar P2P: <strong className="text-foreground">{fmtRp2(s.fair_price)}</strong>
+              </span>
+            </div>
 
-              <div className="grid grid-cols-1 gap-3.5 md:grid-cols-12">
-                {/* Rekomendasi BELI */}
-                <div className="panel p-4.5 md:col-span-6 border-bid/30 bg-gradient-to-br from-surface to-bid/5">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className="size-2 rounded-full bg-bid animate-pulse" />
-                      <span className="text-xs font-bold text-bid uppercase tracking-wider">
-                        {isTakerSim ? "Rekomendasi Beli Langsung (Taker)" : "Rekomendasi Pasang Iklan Beli"}
-                      </span>
-                    </div>
-
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleCopyPrice(buyAd, "buy")}
-                      className="h-6.5 gap-1 border-bid/30 bg-bid/10 text-bid hover:bg-bid/20 text-xs font-semibold px-2"
-                    >
-                      {copiedPrice === "buy" ? (
-                        <>
-                          <Check className="size-3" /> Disalin
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="size-3" /> Salin Harga
-                        </>
-                      )}
-                    </Button>
-                  </div>
-
-                  <div className="mt-2 flex items-baseline justify-between gap-2">
-                    <div>
-                      <div className="text-[0.68rem] font-medium text-muted-foreground uppercase tracking-wider">
-                        {isTakerSim ? "Harga Ambil (Bebas Fee)" : "Harga Iklan (Sebelum Fee)"}
-                      </div>
-                      <div className="num text-2xl sm:text-3xl font-bold text-foreground">
-                        {fmtRp2(buyAd)}
-                      </div>
-                    </div>
-                    <div className="num text-xs font-medium text-bid text-right">
-                      {s.my_buy_price && s.fair_price ? fmtRp(s.my_buy_price - s.fair_price) : "—"} vs Fair
-                    </div>
-                  </div>
-
-                  {/* Rincian Fee Beli & HPP Riil */}
-                  <div className="mt-3 rounded-md border border-bid/20 bg-surface-2/70 p-2.5 space-y-1.5 text-xs">
-                    <div className="flex items-center justify-between text-muted-foreground">
-                      <span>{isTakerSim ? "Fee Beli Langsung (Taker):" : "Fee Maker Beli (0.05%):"}</span>
-                      <span className={cn("num font-semibold", isTakerSim ? "text-cyan-400" : "text-foreground/85")}>
-                        {isTakerSim ? "Rp 0 (Bebas Fee)" : `+${fmtRp2(buyFee)}/USDT`}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between border-t border-border/50 pt-1.5 font-bold">
-                      <span className="text-foreground">HPP Modal Riil {isTakerSim ? "(Tanpa Mark-up):" : "(Sesudah Fee):"}</span>
-                      <span className="num text-bid text-sm">{fmtRp2(buyHpp)}/USDT</span>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2.5 text-xs text-muted-foreground">
-                    <span>Kedalaman: <strong>{s.buy_depth?.ads_used ?? 0} iklan</strong> ({fmtRp(s.buy_depth?.depth_reached_idr ?? 0)})</span>
-                    <a
-                      href="https://p2p.binance.com/en/trade/buy/USDT?fiat=IDR"
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="inline-flex items-center gap-1 text-bid hover:underline"
-                    >
-                      Binance P2P <ExternalLink className="size-3" />
-                    </a>
-                  </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 text-center">
+              {/* Indodax Spot */}
+              <div className="rounded border border-border/60 bg-surface/80 p-2">
+                <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                  🇮🇩 Indodax Orderbook
                 </div>
-
-                {/* Rekomendasi JUAL */}
-                <div className="panel p-4.5 md:col-span-6 border-ask/30 bg-gradient-to-br from-surface to-ask/5">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className="size-2 rounded-full bg-ask animate-pulse" />
-                      <span className="text-xs font-bold text-ask uppercase tracking-wider">
-                        Rekomendasi Pasang Jual
-                      </span>
-                    </div>
-
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleCopyPrice(sellAd, "sell")}
-                      className="h-6.5 gap-1 border-ask/30 bg-ask/10 text-ask hover:bg-ask/20 text-xs font-semibold px-2"
-                    >
-                      {copiedPrice === "sell" ? (
-                        <>
-                          <Check className="size-3" /> Disalin
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="size-3" /> Salin Harga
-                        </>
-                      )}
-                    </Button>
-                  </div>
-
-                  <div className="mt-2 flex items-baseline justify-between gap-2">
-                    <div>
-                      <div className="text-[0.68rem] font-medium text-muted-foreground uppercase tracking-wider">
-                        Harga Iklan (Sebelum Fee)
-                      </div>
-                      <div className="num text-2xl sm:text-3xl font-bold text-foreground">
-                        {fmtRp2(sellAd)}
-                      </div>
-                    </div>
-                    <div className="num text-xs font-medium text-ask text-right">
-                      +{s.my_sell_price && s.fair_price ? fmtRp(s.my_sell_price - s.fair_price) : "—"} vs Fair
-                    </div>
-                  </div>
-
-                  {/* Rincian Fee Jual & Net Bersih */}
-                  <div className="mt-3 rounded-md border border-ask/20 bg-surface-2/70 p-2.5 space-y-1.5 text-xs">
-                    <div className="flex items-center justify-between text-muted-foreground">
-                      <span>Fee Maker Jual (0.05%):</span>
-                      <span className="num font-semibold text-foreground/85">-{fmtRp2(sellFee)}/USDT</span>
-                    </div>
-                    <div className="flex items-center justify-between border-t border-border/50 pt-1.5 font-bold">
-                      <span className="text-foreground">Net Diterima (Sesudah Fee):</span>
-                      <span className="num text-ask text-sm">{fmtRp2(sellNet)}/USDT</span>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 flex items-center justify-between border-t border-border/50 pt-2.5 text-xs text-muted-foreground">
-                    <span>Kedalaman: <strong>{s.sell_depth?.ads_used ?? 0} iklan</strong> ({fmtRp(s.sell_depth?.depth_reached_idr ?? 0)})</span>
-                    <a
-                      href="https://p2p.binance.com/en/trade/sell/USDT?fiat=IDR"
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="inline-flex items-center gap-1 text-ask hover:underline"
-                    >
-                      Binance P2P <ExternalLink className="size-3" />
-                    </a>
-                  </div>
+                <div className="num font-bold text-foreground mt-0.5">
+                  {s.cross_platform?.indodax_ask ? fmtRp(s.cross_platform.indodax_ask) : s.cross_platform?.indodax_usdt_idr_spot ? fmtRp(s.cross_platform.indodax_usdt_idr_spot) : "—"}
+                </div>
+                <div className="text-[0.62rem] text-muted-foreground flex items-center justify-center gap-1.5 mt-0.5">
+                  <span className="text-bid font-semibold">Ask: {s.cross_platform?.indodax_ask ? fmtRp(s.cross_platform.indodax_ask) : "—"}</span>
+                  <span>|</span>
+                  <span className="text-ask font-semibold">Bid: {s.cross_platform?.indodax_bid ? fmtRp(s.cross_platform.indodax_bid) : "—"}</span>
                 </div>
               </div>
 
-              {/* Baris Ringkasan Margin 1 Putaran Beli-Jual */}
-              <div className="panel px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 border-primary/20 bg-surface-2/40 text-xs">
-                <div className="flex items-center gap-2">
-                  <Coins className="size-4 text-primary" />
-                  <span className="text-muted-foreground">Simulasi 1 Putaran:</span>
-                  <span className="font-semibold text-foreground">
-                    Spread Iklan: +{fmtRp(sellAd - buyAd)} ({fmtPct(s.spread_pct)})
-                  </span>
+              {/* Bybit Benchmark */}
+              <div className="rounded border border-border/60 bg-surface/80 p-2">
+                <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                  🌐 Bybit
                 </div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <span className="text-muted-foreground">
-                    Total Fee ({isTakerSim ? "0.05% Saat Jual Saja" : "0.10% Beli + Jual"}):{" "}
-                    <strong className="text-foreground">{fmtRp2(totalFeePerUsdt)}/USDT</strong>
-                  </span>
-                  <span className="inline-flex items-center gap-1 rounded bg-bid/15 px-2 py-0.5 font-bold text-bid">
-                    <TrendingUp className="size-3" />
-                    Margin Bersih Riil: +{fmtRp2(netSpreadAbs)}/USDT ({fmtPct(netSpreadPct)})
-                  </span>
+                <div className="num font-bold text-foreground mt-0.5">
+                  {s.cross_platform?.bybit_usdt_idr ? fmtRp(s.cross_platform.bybit_usdt_idr) : "—"}
                 </div>
+                <div className="text-[0.62rem] text-muted-foreground">USDT/IDR Est</div>
               </div>
 
-              {/* ── Sinkronisasi Benchmark Multi-Platform & Panduan Ambil Stok ── */}
-              <div className="panel p-3.5 border-border/70 bg-surface-2/40 space-y-2.5 text-xs">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-2">
-                  <div className="flex items-center gap-2">
-                    <Globe className="size-3.5 text-primary" />
-                    <span className="font-bold text-foreground">Sinkronisasi Pasar Multi-Platform:</span>
-                  </div>
-                  <span className="text-[0.68rem] text-muted-foreground">
-                    Acuan Nilai Wajar: <strong className="text-foreground">{fmtRp2(s.fair_price)}</strong>
-                  </span>
+              {/* OKX Benchmark */}
+              <div className="rounded border border-border/60 bg-surface/80 p-2">
+                <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                  🌐 OKX
                 </div>
-
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 text-center">
-                  {/* Indodax Spot */}
-                  <div className="rounded border border-border/60 bg-surface/80 p-2">
-                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
-                      🇮🇩 Indodax Orderbook
-                    </div>
-                    <div className="num font-bold text-foreground mt-0.5">
-                      {s.cross_platform?.indodax_ask ? fmtRp(s.cross_platform.indodax_ask) : s.cross_platform?.indodax_usdt_idr_spot ? fmtRp(s.cross_platform.indodax_usdt_idr_spot) : "—"}
-                    </div>
-                    <div className="text-[0.62rem] text-muted-foreground flex items-center justify-center gap-1.5 mt-0.5">
-                      <span className="text-bid font-semibold">Ask: {s.cross_platform?.indodax_ask ? fmtRp(s.cross_platform.indodax_ask) : "—"}</span>
-                      <span>|</span>
-                      <span className="text-ask font-semibold">Bid: {s.cross_platform?.indodax_bid ? fmtRp(s.cross_platform.indodax_bid) : "—"}</span>
-                    </div>
-                  </div>
-
-                  {/* Bybit Benchmark */}
-                  <div className="rounded border border-border/60 bg-surface/80 p-2">
-                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
-                      🌐 Bybit
-                    </div>
-                    <div className="num font-bold text-foreground mt-0.5">
-                      {s.cross_platform?.bybit_usdt_idr ? fmtRp(s.cross_platform.bybit_usdt_idr) : "—"}
-                    </div>
-                    <div className="text-[0.62rem] text-muted-foreground">USDT/IDR Est</div>
-                  </div>
-
-                  {/* OKX Benchmark */}
-                  <div className="rounded border border-border/60 bg-surface/80 p-2">
-                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
-                      🌐 OKX
-                    </div>
-                    <div className="num font-bold text-foreground mt-0.5">
-                      {s.cross_platform?.okx_usdt_idr ? fmtRp(s.cross_platform.okx_usdt_idr) : "—"}
-                    </div>
-                    <div className="text-[0.62rem] text-muted-foreground">USDT/IDR Est</div>
-                  </div>
-
-                  {/* CoinGecko */}
-                  <div className="rounded border border-border/60 bg-surface/80 p-2">
-                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
-                      🪙 CoinGecko
-                    </div>
-                    <div className="num font-bold text-foreground mt-0.5">
-                      {s.cross_platform?.coingecko_usdt_idr ? fmtRp(s.cross_platform.coingecko_usdt_idr) : "—"}
-                    </div>
-                    <div className="text-[0.62rem] text-muted-foreground">Tether Global IDR</div>
-                  </div>
-
-                  {/* Forex Kurs USD/IDR */}
-                  <div className="rounded border border-border/60 bg-surface/80 p-2 col-span-2 sm:col-span-1">
-                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
-                      🏦 Kurs USD/IDR
-                    </div>
-                    <div className="num font-bold text-foreground mt-0.5">
-                      {s.cross_platform?.forex_usd_idr ? fmtRp(s.cross_platform.forex_usd_idr) : "—"}
-                    </div>
-                    <div className="text-[0.62rem] text-muted-foreground">Pasar Uang Antar Bank</div>
-                  </div>
+                <div className="num font-bold text-foreground mt-0.5">
+                  {s.cross_platform?.okx_usdt_idr ? fmtRp(s.cross_platform.okx_usdt_idr) : "—"}
                 </div>
+                <div className="text-[0.62rem] text-muted-foreground">USDT/IDR Est</div>
+              </div>
 
-                {/* Advice Ambil Stok */}
-                <div className="rounded-md border border-primary/20 bg-primary/5 p-2.5 flex items-start gap-2 text-xs">
-                  <div className="mt-0.5 rounded bg-primary/20 p-1 text-primary">
-                    <Zap className="size-3.5" />
-                  </div>
-                  <div>
-                    <strong className="text-foreground">Strategi Optimal Ambil Stok USDT:</strong>{" "}
-                    <span className="text-muted-foreground">
-                      Pasang Iklan Beli di harga{" "}
-                      <strong className="text-bid font-bold">{fmtRp2(buyAd)}</strong> (+1 Rupiah di atas kompetitor teratas)
-                      untuk menempati antrian pertama (Rank #1) tanpa overpay. HPP modal efektif setelah fee:{" "}
-                      <strong className="text-foreground">{fmtRp2(buyHpp)}/USDT</strong>.
-                      {(s.cross_platform?.indodax_ask || s.cross_platform?.indodax_usdt_idr_spot) ? (
-                        (() => {
-                          const indodaxBuyPrice = s.cross_platform?.indodax_ask || s.cross_platform?.indodax_usdt_idr_spot || 0;
-                          return buyAd < indodaxBuyPrice ? (
-                            <> Ambil via P2P lebih hemat <strong className="text-bid">{fmtRp(indodaxBuyPrice - buyAd)}/USDT</strong> dibanding beli instan di Indodax (Ask: {fmtRp(indodaxBuyPrice)}).</>
-                          ) : (
-                            <> Harga beli instan Indodax sedang bersaing (Ask: {fmtRp(indodaxBuyPrice)}).</>
-                          );
-                        })()
-                      ) : null}
-                    </span>
-                  </div>
+              {/* CoinGecko */}
+              <div className="rounded border border-border/60 bg-surface/80 p-2">
+                <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                  🪙 CoinGecko
                 </div>
+                <div className="num font-bold text-foreground mt-0.5">
+                  {s.cross_platform?.coingecko_usdt_idr ? fmtRp(s.cross_platform.coingecko_usdt_idr) : "—"}
+                </div>
+                <div className="text-[0.62rem] text-muted-foreground">Tether Global IDR</div>
+              </div>
 
+              {/* Forex Kurs USD/IDR */}
+              <div className="rounded border border-border/60 bg-surface/80 p-2 col-span-2 sm:col-span-1">
+                <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                  🏦 Kurs USD/IDR
+                </div>
+                <div className="num font-bold text-foreground mt-0.5">
+                  {s.cross_platform?.forex_usd_idr ? fmtRp(s.cross_platform.forex_usd_idr) : "—"}
+                </div>
+                <div className="text-[0.62rem] text-muted-foreground">Pasar Uang Antar Bank</div>
               </div>
             </div>
-          );
-        })() : null}
+          </div>
+        )}
 
 
 

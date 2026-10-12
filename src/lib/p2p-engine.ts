@@ -108,6 +108,8 @@ export type Snapshot = {
   cross_platform: Record<string, number>;
   top_sell_ref_ads: Ad[];
   top_buy_ref_ads: Ad[];
+  all_sell_ads?: Ad[];
+  all_buy_ads?: Ad[];
   history: HistoryPoint[];
 };
 
@@ -473,10 +475,9 @@ export function buildSnapshot(input: {
       ? (lwpSell + lwpBuy) / 2
       : ([lwpSell, lwpBuy].find((v) => Number.isFinite(v)) ?? NaN);
 
-  if (Number.isFinite(fairPrice) && Number.isFinite(crossBenchmark)) {
-    // 70% bobot P2P orderbook + 30% bobot cross-platform benchmark
-    fairPrice = fairPrice * 0.7 + crossBenchmark * 0.3;
-  } else if (!Number.isFinite(fairPrice) && Number.isFinite(crossBenchmark)) {
+  // Fair price utama: Murni dari konsensus tertimbang likuiditas order book Binance P2P.
+  // Benchmark lintas-platform (Forex/Indodax) hanya digunakan sebagai fallback jika orderbook P2P kosong.
+  if (!Number.isFinite(fairPrice) && Number.isFinite(crossBenchmark)) {
     fairPrice = crossBenchmark;
   }
 
@@ -644,8 +645,10 @@ export function buildSnapshot(input: {
     sell_ref_outliers: sellOutliers,
     buy_ref_outliers: buyOutliers,
     cross_platform: input.crossPlatform,
-    top_sell_ref_ads: sellSorted.slice(0, 5),
-    top_buy_ref_ads: buySorted.slice(0, 5),
+    top_sell_ref_ads: sellSorted,
+    top_buy_ref_ads: buySorted,
+    all_sell_ads: sellSorted,
+    all_buy_ads: buySorted,
     history: nextHistory,
   };
 }
