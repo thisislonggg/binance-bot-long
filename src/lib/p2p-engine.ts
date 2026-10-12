@@ -37,6 +37,8 @@ export type Ad = {
   price: number;
   min_limit_idr: number;
   max_limit_idr: number;
+  raw_max_limit_idr?: number;
+  dynamic_max_limit_idr?: number;
   available_idr: number;
   available_usdt: number;
   pay_methods: string[];
@@ -45,6 +47,7 @@ export type Ad = {
   is_verified: boolean;
   completion_rate: number | null;
   month_order_count: number | null;
+  is_tradable?: boolean;
 };
 
 export type HistoryPoint = { ts: string; fair_price: number };
@@ -136,9 +139,11 @@ export function parseAds(rawAds: any[]): Ad[] {
     const seller = item?.advertiser ?? {};
     const price = Number(adv.price);
     const minLimit = Number(adv.minSingleTransAmount ?? 0);
-    const maxLimit = Number(adv.maxSingleTransAmount ?? 0);
-    const surplus = Number(adv.surplusAmount ?? 0);
-    if (!Number.isFinite(price) || !Number.isFinite(surplus)) continue;
+    const rawMaxLimit = Number(adv.maxSingleTransAmount ?? 0);
+    const dynamicMaxLimit = Number(adv.dynamicMaxSingleTransAmount ?? 0);
+    const tradableQty = Number(adv.tradableQuantity ?? adv.surplusAmount ?? 0);
+    const surplus = Number(adv.surplusAmount ?? tradableQty);
+    if (!Number.isFinite(price) || (!Number.isFinite(surplus) && !Number.isFinite(tradableQty))) continue;
 
     // Normalisasi completion rate: Binance P2P API mengembalikan monthFinishRate sebagai desimal rasio 0.0 - 1.0 (misal: 0.985 = 98.5%)
     let completionRate: number | null = null;
@@ -155,14 +160,30 @@ export function parseAds(rawAds: any[]): Ad[] {
       }
     }
 
-    const availableIdr = maxLimit ? Math.min(surplus * price, maxLimit) : surplus * price;
+    // Limit transaksi maksimal aktual di Binance (sesuai yang muncul di banner iklan):
+    // Binance selalu membatasi limit maksimal sebesar dynamicMaxSingleTransAmount jika ada,
+    // atau nilai terkecil antara batas konfigurasi maxSingleTransAmount dengan kapasitas sisa stok saat ini.
+    let effectiveMaxLimit = rawMaxLimit;
+    if (dynamicMaxLimit > 0) {
+      effectiveMaxLimit = dynamicMaxLimit;
+    } else if (rawMaxLimit > 0 && tradableQty > 0 && price > 0) {
+      effectiveMaxLimit = Math.min(rawMaxLimit, tradableQty * price);
+    } else if (dynamicMaxLimit <= 0 && rawMaxLimit <= 0 && tradableQty > 0) {
+      effectiveMaxLimit = tradableQty * price;
+    }
+
+    const effectiveQty = tradableQty > 0 ? tradableQty : surplus;
+    const availableIdr = effectiveMaxLimit > 0 ? Math.min(effectiveQty * price, effectiveMaxLimit) : effectiveQty * price;
+
     parsed.push({
       adv_no: adv.advNo ?? null,
       price,
-      min_limit_idr: Number.isFinite(minLimit) ? minLimit : 0,
-      max_limit_idr: Number.isFinite(maxLimit) ? maxLimit : 0,
+      min_limit_idr: Number.isFinite(minLimit) ? Math.round(minLimit) : 0,
+      max_limit_idr: Number.isFinite(effectiveMaxLimit) ? Math.round(effectiveMaxLimit) : 0,
+      raw_max_limit_idr: Number.isFinite(rawMaxLimit) && rawMaxLimit > 0 ? Math.round(rawMaxLimit) : undefined,
+      dynamic_max_limit_idr: Number.isFinite(dynamicMaxLimit) && dynamicMaxLimit > 0 ? Math.round(dynamicMaxLimit) : undefined,
       available_idr: Math.round(availableIdr * 100) / 100,
-      available_usdt: Math.round(surplus * 100) / 100,
+      available_usdt: Math.round(effectiveQty * 100) / 100,
       pay_methods: (adv.tradeMethods ?? []).map(
         (m: any) => m?.tradeMethodName ?? m?.identifier ?? "?",
       ),
@@ -171,6 +192,7 @@ export function parseAds(rawAds: any[]): Ad[] {
       is_verified: Boolean(seller.userIdentity || seller.userGrade),
       completion_rate: completionRate,
       month_order_count: Number.isFinite(Number(seller.monthOrderCount)) ? Number(seller.monthOrderCount) : null,
+      is_tradable: adv.isTradable ?? true,
     });
   }
   return parsed;
@@ -662,8 +684,8 @@ export function buildSnapshot(input: {
     cross_platform: input.crossPlatform,
     top_sell_ref_ads: sellSorted,
     top_buy_ref_ads: buySorted,
-    all_sell_ads: sellSorted,
-    all_buy_ads: buySorted,
+    all_sell_ads: [...sellRefRaw].sort((a, b) => a.price - b.price),
+    all_buy_ads: [...buyRefRaw].sort((a, b) => b.price - a.price),
     history: nextHistory,
   };
 }

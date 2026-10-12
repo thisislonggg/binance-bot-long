@@ -622,11 +622,27 @@ export function AutoPricingBotPanel({
         {showRadar && (
           <div className="rounded-xl border border-border/80 bg-surface p-3.5 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-2">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <Radio className="size-4 text-primary animate-pulse" />
                 <h4 className="text-xs font-bold text-foreground uppercase tracking-wider">
                   Radar Pasar: Analisis Kelayakan Kompetitor
                 </h4>
+                <Badge variant="outline" className="h-5 px-1.5 text-[0.62rem] border-emerald-500/30 text-emerald-400 bg-emerald-500/10 gap-1 font-semibold">
+                  <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Live Binance P2P
+                </Badge>
+                {onRefresh && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={onRefresh}
+                    disabled={isRefreshing}
+                    className="h-6 w-6 p-0 text-muted-foreground hover:text-foreground hover:bg-surface-2"
+                    title="Segarkan data live Binance sekarang"
+                  >
+                    <RefreshCw className={`size-3 ${isRefreshing ? "animate-spin text-primary" : ""}`} />
+                  </Button>
+                )}
               </div>
 
               <div className="flex items-center gap-1.5">
@@ -770,7 +786,7 @@ export function AutoPricingBotPanel({
                     <th className="p-2">Merchant</th>
                     <th className="p-2 text-right">Harga</th>
                     <th className="p-2 text-right">Kapasitas USDT</th>
-                    <th className="p-2 text-right">Batas Limit Transaksi</th>
+                    <th className="p-2 text-right">Batas Limit Transaksi (Live)</th>
                     <th className="p-2 text-left">Metode Bayar</th>
                     <th className="p-2 text-center">Rate</th>
                     <th className="p-2">Status Filter Bot</th>
@@ -843,10 +859,22 @@ export function AutoPricingBotPanel({
                               {Math.round(usdt).toLocaleString("id-ID")} USDT
                             </span>
                           </td>
-                          <td className="p-2 text-right num text-muted-foreground text-[0.7rem]">
-                            <div>{fmtRp(item.ad.min_limit_idr)}</div>
+                          <td className="p-2 text-right num text-[0.7rem]">
+                            <div className="font-semibold text-foreground">
+                              {fmtRp(item.ad.min_limit_idr)}
+                            </div>
                             {item.ad.max_limit_idr > 0 && (
-                              <div className="text-[0.65rem] opacity-75">s/d {fmtRp(item.ad.max_limit_idr)}</div>
+                              <div className="text-[0.65rem] text-muted-foreground">
+                                s/d {fmtRp(item.ad.max_limit_idr)}
+                              </div>
+                            )}
+                            {item.ad.raw_max_limit_idr && item.ad.raw_max_limit_idr > item.ad.max_limit_idr && (
+                              <div
+                                className="text-[0.58rem] text-muted-foreground/60 italic"
+                                title={`Plafon konfigurasi merchant: ${fmtRp(item.ad.raw_max_limit_idr)} (dibatasi sisa kuota/stok live)`}
+                              >
+                                Plafon: {fmtRp(item.ad.raw_max_limit_idr)}
+                              </div>
                             )}
                           </td>
                           <td className="p-2 text-muted-foreground text-[0.68rem] max-w-[120px] truncate" title={item.ad.pay_methods.join(", ")}>

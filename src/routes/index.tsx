@@ -107,7 +107,7 @@ export const Route = createFileRoute("/")({
 
 const HISTORY_KEY = "p2p_price_history";
 const SESSION_KEY = "p2p_session_token";
-const POLL_SECONDS = 60;
+const POLL_SECONDS = 15;
 const BINANCE_SYNC_SECONDS = 180;
 
 function loadHistory(): HistoryPoint[] {

@@ -65,7 +65,12 @@ export function AdsTable({
 
                 {/* Limit */}
                 <td className="num hidden py-2.5 pr-4 text-right text-muted-foreground sm:table-cell">
-                  {fmtRp(minLimit)} – {fmtRp(maxLimit)}
+                  <div className="font-medium text-foreground/90">{fmtRp(minLimit)} – {fmtRp(maxLimit)}</div>
+                  {a?.raw_max_limit_idr && a.raw_max_limit_idr > maxLimit ? (
+                    <div className="text-[0.62rem] opacity-60 italic" title={`Plafon konfigurasi merchant: ${fmtRp(a.raw_max_limit_idr)}`}>
+                      Plafon: {fmtRp(a.raw_max_limit_idr)}
+                    </div>
+                  ) : null}
                 </td>
 
                 {/* Merchant & Metode Pembayaran */}

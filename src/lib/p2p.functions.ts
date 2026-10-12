@@ -5,9 +5,11 @@ import { requireSession } from "./auth";
 import { buildSnapshot, parseAds, CFG, type Ad, type HistoryPoint, type Snapshot } from "./p2p-engine";
 import { getSupabase } from "./supabase";
 
-const BINANCE_P2P_URLS = [
+const DEFAULT_BINANCE_P2P_URLS = [
   "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search",
   "https://c2c.binance.com/bapi/c2c/v2/friendly/c2c/adv/search",
+  "https://p2p.binance.info/bapi/c2c/v2/friendly/c2c/adv/search",
+  "https://c2c.binance.info/bapi/c2c/v2/friendly/c2c/adv/search",
 ];
 const INDODAX_TICKER_URL = "https://indodax.com/api/ticker/usdtidr";
 const COINGECKO_URL = "https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=idr";
@@ -19,13 +21,22 @@ const HEADERS = {
   "clientType": "web",
 };
 
+// Cache data real-time terakhir dari Binance agar tidak terpental ke mock jika terjadi temporary glitch
+let lastLiveSellAds: Ad[] = [];
+let lastLiveBuyAds: Ad[] = [];
+
 async function fetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: number = 17650): Promise<Ad[]> {
-  for (const url of BINANCE_P2P_URLS) {
+  const customProxy = process.env.BINANCE_P2P_PROXY_URL || process.env.BINANCE_PROXY_URL;
+  const urls = customProxy
+    ? [customProxy, ...DEFAULT_BINANCE_P2P_URLS]
+    : DEFAULT_BINANCE_P2P_URLS;
+
+  for (const url of urls) {
     try {
       const resp = await fetch(url, {
         method: "POST",
         headers: HEADERS,
-        signal: AbortSignal.timeout(4000),
+        signal: AbortSignal.timeout(4500),
         body: JSON.stringify({
           page: 1,
           rows: CFG.ROWS_PER_SIDE,
@@ -40,14 +51,28 @@ async function fetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: number
       if (!resp.ok) continue;
       const data: any = await resp.json();
       const parsed = parseAds(data?.data ?? []);
-      if (parsed.length > 0) return parsed;
+      if (parsed.length > 0) {
+        if (tradeType === "BUY") {
+          lastLiveSellAds = parsed;
+        } else {
+          lastLiveBuyAds = parsed;
+        }
+        return parsed;
+      }
     } catch {
       // Coba mirror berikutnya
     }
   }
 
-  // Fallback: Jika Binance public API sedang geoblocked/rate-limited,
-  // buat simulasi order book presisi berbasis benchmark harga pasar nyata
+  // Jika koneksi temporer terputus tetapi sudah pernah menarik data live Binance, pakai data live terakhir
+  if (tradeType === "BUY" && lastLiveSellAds.length > 0) {
+    return lastLiveSellAds;
+  }
+  if (tradeType === "SELL" && lastLiveBuyAds.length > 0) {
+    return lastLiveBuyAds;
+  }
+
+  // Fallback: Jika Binance public API sedang geoblocked/rate-limited dan belum ada cache
   return generateFallbackAds(tradeType, benchmarkBasePrice);
 }
 
