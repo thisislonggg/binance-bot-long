@@ -1239,9 +1239,9 @@ export function AutoPricingBotPanel({
                             ? "bg-primary text-primary-foreground font-bold"
                             : "bg-surface-2 text-muted-foreground hover:text-foreground"
                         }`}
-                        title="Gunakan Saldo Kas Bebas PnL"
+                        title="Gunakan Saldo Kas Bebas PnL (Total Modal Rp 180 Juta)"
                       >
-                        Auto Kas PnL
+                        Auto Kas (180 Jt)
                       </button>
                     )}
                   </div>
@@ -2621,11 +2621,30 @@ export function AutoPricingBotPanel({
                           </span>
                           {config.bankBalanceSource === "auto" && <Check className="size-3.5 text-primary" />}
                         </div>
-                        <div className="num text-sm font-extrabold text-primary">
-                          {fmtRp(bankBalanceIdr)}
+                        <div className="flex items-baseline justify-between gap-2">
+                          <div className="num text-base sm:text-lg font-extrabold text-primary">
+                            Rp 180.000.000
+                          </div>
+                          <Badge variant="outline" className="border-primary/40 bg-primary/20 text-primary text-[0.62rem] font-bold">
+                            Total Value
+                          </Badge>
                         </div>
-                        <p className="text-[0.65rem] text-muted-foreground leading-tight">
-                          Total Modal <strong>Rp {(initialCapitalIdr || 180_000_000).toLocaleString("id-ID")}</strong> dikurangi modal sisa stok ({liveStockUsdt > 0 ? `${liveStockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT` : "0 USDT"}).
+                        <div className="rounded bg-surface-2/60 p-2 text-[0.68rem] space-y-1 border border-border/40">
+                          <div className="flex items-center justify-between text-muted-foreground">
+                            <span>Modal Sisa Stok ({liveStockUsdt > 0 ? `${liveStockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT` : "0 USDT"}):</span>
+                            <span className="font-semibold text-amber-500">
+                              -{fmtRp(stockCapitalIdr || bankAllocation.stockCapitalValuationIdr)}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between font-bold text-foreground pt-1 border-t border-border/40">
+                            <span>Sisa Kas Siap Beli:</span>
+                            <span className="text-bid font-extrabold">
+                              {fmtRp(bankAllocation.usableBankIdr)}
+                            </span>
+                          </div>
+                        </div>
+                        <p className="text-[0.62rem] text-muted-foreground leading-tight">
+                          Total modal Rp 180.000.000 otomatis dipotong modal terikat sisa stok USDT yang sedang berjalan.
                         </p>
                       </div>
 

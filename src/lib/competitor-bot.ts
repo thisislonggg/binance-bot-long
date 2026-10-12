@@ -1107,15 +1107,14 @@ export function computeCompetitorPricing(input: {
     baseBudgetIdr = config.manualBankBalanceIdr > 0 ? config.manualBankBalanceIdr : totalModalAwalIdr;
   } else {
     // Mode Auto:
-    // 1. Jika bankBalanceIdr diteruskan secara numerik (baik 0 maupun positif):
-    if (typeof bankBalanceIdr === "number") {
-      remainingBudgetBeforeAllocation = Math.max(0, bankBalanceIdr);
-      baseBudgetIdr = totalModalAwalIdr;
+    baseBudgetIdr = totalModalAwalIdr;
+    if (config.deductLiveStockFromBudget === false) {
+      // Pemotongan stok dinonaktifkan: gunakan modal penuh (Rp 180 Juta)
+      remainingBudgetBeforeAllocation = totalModalAwalIdr;
     } else {
-      // 2. Jika bankBalanceIdr tidak diteruskan, hitung dari modal awal dikurangi valuasi stok live
-      const deductedStock = config.deductLiveStockFromBudget !== false ? stockCapitalValuationIdr : 0;
+      // Pemotongan stok aktif: kurangi modal Rp 180 Juta dengan valuasi sisa stok USDT
+      const deductedStock = stockCapitalValuationIdr > 0 ? stockCapitalValuationIdr : 0;
       remainingBudgetBeforeAllocation = Math.max(0, totalModalAwalIdr - deductedStock);
-      baseBudgetIdr = totalModalAwalIdr;
     }
   }
 
