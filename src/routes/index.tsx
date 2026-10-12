@@ -689,8 +689,8 @@ function Dashboard() {
   });
 
   const handleStartEditCapital = () => {
-    const current = pnl?.initial_capital_idr ?? 0;
-    setCapitalInputStr(current > 0 ? String(current) : "");
+    const current = pnl?.initial_capital_idr && pnl.initial_capital_idr > 0 ? pnl.initial_capital_idr : 180_000_000;
+    setCapitalInputStr(String(current));
     setIsEditingCapital(true);
   };
 
@@ -850,8 +850,8 @@ function Dashboard() {
   const s = snapshotQuery.data;
   const pnl = pnlQuery.data;
 
-  // Sisa Uang Kas / Saldo Bank Bebas dari Modal PnL & Pendanaan
-  const initialCapital = pnl?.initial_capital_idr ?? 0;
+  // Sisa Uang Kas / Saldo Bank Bebas dari Modal PnL & Pendanaan (Default Total Modal 180 Juta)
+  const initialCapital = pnl?.initial_capital_idr && pnl.initial_capital_idr > 0 ? pnl.initial_capital_idr : 180_000_000;
   const fb = fundingBalanceQuery.data;
   const isFundingLive = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
   const stockUsdt = isFundingLive ? (fb!.usdt ?? 0) : (pnl?.open_position_usdt ?? 0);
@@ -861,9 +861,7 @@ function Dashboard() {
       : (s?.fair_price && s.fair_price > 0 ? s.fair_price : 17_850);
   const stockCapitalIdr = stockUsdt > 0 ? Math.round(stockUsdt * effectiveCost) : 0;
   const allTimeProfit = pnl?.all_time_profit_idr ?? 0;
-  const freeCashIdr = initialCapital > 0
-    ? Math.max(0, initialCapital - stockCapitalIdr + allTimeProfit)
-    : 0;
+  const freeCashIdr = Math.max(0, initialCapital - stockCapitalIdr + allTimeProfit);
 
   return (
     <div className="min-h-screen bg-background text-foreground pb-12">
@@ -1178,7 +1176,7 @@ function Dashboard() {
             <div className="space-y-5">
               {/* ── Panel Manajemen Modal Awal & Posisi Ekuitas ─────────────── */}
               {(() => {
-                const initialCapital = pnl?.initial_capital_idr ?? 0;
+                const initialCapital = pnl?.initial_capital_idr && pnl.initial_capital_idr > 0 ? pnl.initial_capital_idr : 180_000_000;
                 const fb = fundingBalanceQuery.data;
                 const isFundingLive = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
                 const stockUsdt = isFundingLive ? (fb!.usdt ?? 0) : (pnl?.open_position_usdt ?? 0);
@@ -1189,18 +1187,14 @@ function Dashboard() {
                 const stockCapitalIdr = stockUsdt > 0 ? Math.round(stockUsdt * effectiveCost) : 0;
                 const allTimeProfit = pnl?.all_time_profit_idr ?? 0;
 
-                // Sisa Kas Bebas = Modal Awal - Modal di Stok + Keuntungan Realisasi
-                const freeCashIdr = initialCapital > 0
-                  ? Math.max(0, initialCapital - stockCapitalIdr + allTimeProfit)
-                  : 0;
+                // Sisa Kas Bebas = Total Modal (180 Juta) - Modal di Stok + Keuntungan Realisasi
+                const freeCashIdr = Math.max(0, initialCapital - stockCapitalIdr + allTimeProfit);
 
-                // Total Ekuitas = Modal Awal + Total Profit
-                const totalEquityIdr = initialCapital > 0
-                  ? initialCapital + allTimeProfit
-                  : (stockCapitalIdr + allTimeProfit);
+                // Total Ekuitas = Total Modal + Total Profit
+                const totalEquityIdr = initialCapital + allTimeProfit;
 
-                const roiPct = initialCapital > 0 ? (allTimeProfit / initialCapital) * 100 : 0;
-                const utilPct = initialCapital > 0 ? Math.min(100, Math.max(0, (stockCapitalIdr / initialCapital) * 100)) : 0;
+                const roiPct = (allTimeProfit / initialCapital) * 100;
+                const utilPct = Math.min(100, Math.max(0, (stockCapitalIdr / initialCapital) * 100));
                 const cashPct = Math.max(0, 100 - utilPct);
 
                 return (

@@ -1070,7 +1070,7 @@ export function AutoPricingBotPanel({
                     variant="outline"
                     className="h-4.5 px-1.5 text-[0.6rem] border-bid/30 text-bid bg-bid/10 font-semibold"
                   >
-                    {config.bankBalanceSource === "auto" && bankBalanceIdr > 0 ? "Kas PnL" : "Rekening"}
+                    {config.bankBalanceSource === "auto" ? "Kas PnL (Auto)" : "Rekening (Manual)"}
                   </Badge>
                 </div>
                 <div className="flex items-center gap-1 text-[0.68rem] text-muted-foreground">
@@ -1095,7 +1095,7 @@ export function AutoPricingBotPanel({
                       Nilai Terikat: <strong className="text-foreground">{fmtRp(bankAllocation.stockCapitalValuationIdr)}</strong>
                     </div>
                     <div className="text-right text-muted-foreground">
-                      Total Modal: <strong className="text-foreground">{fmtRp(bankAllocation.totalBudgetIdr)}</strong>
+                      Total Modal: <strong className="text-foreground">{fmtRp(bankAllocation.totalBudgetIdr > 0 ? bankAllocation.totalBudgetIdr : (initialCapitalIdr || 180_000_000))}</strong>
                     </div>
                   </div>
                   <div className="text-[0.62rem] text-amber-600 dark:text-amber-400 border-t border-amber-500/20 pt-1 flex items-center justify-between">
@@ -1151,7 +1151,7 @@ export function AutoPricingBotPanel({
                       : "Rp 0"}
                   </div>
                   <div className="text-[0.6rem] text-muted-foreground truncate">
-                    {bankAllocation.totalBudgetIdr > 0 ? `Dari modal ${fmtRp(bankAllocation.totalBudgetIdr)}` : "Sesuai saldo"}
+                    {bankAllocation.totalBudgetIdr > 0 ? `Dari modal ${fmtRp(bankAllocation.totalBudgetIdr)}` : `Dari modal Rp ${(initialCapitalIdr || 180_000_000).toLocaleString("id-ID")}`}
                   </div>
                 </div>
 
@@ -1168,8 +1168,8 @@ export function AutoPricingBotPanel({
                 </div>
               </div>
 
-              {/* Quick Input / Preset Saldo jika Saldo Rp 0 */}
-              {bankAllocation.effectiveBankBalance === 0 && (
+              {/* Quick Input / Preset Saldo jika Saldo Rp 0 (Mode Manual) */}
+              {config.bankBalanceSource === "manual" && bankAllocation.effectiveBankBalance === 0 && (
                 <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 space-y-1.5 text-[0.7rem]">
                   <div className="flex items-center gap-1 text-amber-500 font-semibold">
                     <Info className="size-3 shrink-0" />
@@ -1230,7 +1230,7 @@ export function AutoPricingBotPanel({
                         {chip.label}
                       </button>
                     ))}
-                    {bankBalanceIdr > 0 && (
+                    {bankBalanceIdr >= 0 && (
                       <button
                         type="button"
                         onClick={() => updateConfig({ bankBalanceSource: "auto" })}
@@ -1241,7 +1241,7 @@ export function AutoPricingBotPanel({
                         }`}
                         title="Gunakan Saldo Kas Bebas PnL"
                       >
-                        Auto Kas
+                        Auto Kas PnL
                       </button>
                     )}
                   </div>
@@ -2622,10 +2622,10 @@ export function AutoPricingBotPanel({
                           {config.bankBalanceSource === "auto" && <Check className="size-3.5 text-primary" />}
                         </div>
                         <div className="num text-sm font-extrabold text-primary">
-                          {bankBalanceIdr > 0 ? fmtRp(bankBalanceIdr) : "Rp 0 (Belum terisi)"}
+                          {fmtRp(bankBalanceIdr)}
                         </div>
-                        <p className="text-[0.65rem] text-muted-foreground">
-                          Terhubung otomatis dengan Modal Awal PnL Tracker dikurangi modal stok berjalan.
+                        <p className="text-[0.65rem] text-muted-foreground leading-tight">
+                          Total Modal <strong>Rp {(initialCapitalIdr || 180_000_000).toLocaleString("id-ID")}</strong> dikurangi modal sisa stok ({liveStockUsdt > 0 ? `${liveStockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT` : "0 USDT"}).
                         </p>
                       </div>
 
@@ -2646,14 +2646,40 @@ export function AutoPricingBotPanel({
                         <div className="num text-sm font-extrabold text-foreground">
                           {config.manualBankBalanceIdr > 0 ? fmtRp(config.manualBankBalanceIdr) : "Rp 0"}
                         </div>
-                        <p className="text-[0.65rem] text-muted-foreground">
+                        <p className="text-[0.65rem] text-muted-foreground leading-tight">
                           Masukkan nominal saldo rekening fisik Anda secara langsung jika berbeda dari pembukuan PnL.
                         </p>
                       </div>
                     </div>
 
-                    {/* Input Nominal Saldo Manual & Quick Chips jika mode manual atau saldo auto kosong */}
-                    {(config.bankBalanceSource === "manual" || bankBalanceIdr === 0) && (
+                    {/* Breakdown Perhitungan Otomatis Kas Bebas PnL */}
+                    {config.bankBalanceSource === "auto" && (
+                      <div className="space-y-1.5 rounded-lg border border-primary/30 bg-primary/5 p-2.5 text-xs">
+                        <div className="flex items-center justify-between text-muted-foreground text-[0.7rem]">
+                          <span className="font-semibold text-foreground flex items-center gap-1">
+                            <Coins className="size-3 text-primary" /> Perhitungan Kas Bebas PnL:
+                          </span>
+                          <span className="font-bold text-primary">
+                            Total Modal: Rp {(initialCapitalIdr || 180_000_000).toLocaleString("id-ID")}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between font-medium text-[0.7rem] text-muted-foreground">
+                          <span>
+                            - Modal Terikat di Sisa Stok ({liveStockUsdt > 0 ? `${liveStockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT` : "0 USDT"}):
+                          </span>
+                          <span className="text-amber-500 font-bold">
+                            -{fmtRp(stockCapitalIdr || bankAllocation.stockCapitalValuationIdr)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between border-t border-primary/20 pt-1 font-bold text-xs text-foreground">
+                          <span>= Sisa Kas Bebas Siap Beli:</span>
+                          <span className="text-bid font-extrabold">{fmtRp(bankBalanceIdr)}</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Input Nominal Saldo Manual & Quick Chips jika mode manual */}
+                    {config.bankBalanceSource === "manual" && (
                       <div className="space-y-1.5 rounded-lg border border-border/70 bg-surface p-2.5">
                         <div className="flex items-center justify-between">
                           <Label className="text-xs font-semibold text-foreground">

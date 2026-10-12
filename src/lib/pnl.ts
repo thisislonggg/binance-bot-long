@@ -229,9 +229,9 @@ const EMPTY_SUMMARY: PnlSummary = {
   auto_stock_avg_cost_idr: 0,
   custom_stock_cost_idr: 0,
   is_custom_stock_cost: false,
-  initial_capital_idr: 0,
-  free_cash_idr: 0,
-  total_equity_idr: 0,
+  initial_capital_idr: 180_000_000,
+  free_cash_idr: 180_000_000,
+  total_equity_idr: 180_000_000,
   capital_utilization_pct: 0,
   roi_pct: 0,
   avg_buy_price_idr: 0,
@@ -257,14 +257,14 @@ export const getInitialCapital = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ initial_capital_idr: number }> => {
     await requireSession(data.sessionToken);
     const db = getSupabase();
-    if (!db) return { initial_capital_idr: 0 };
+    if (!db) return { initial_capital_idr: 180_000_000 };
     const { data: row } = await db
       .from("user_settings")
       .select("value")
       .eq("key", INITIAL_CAPITAL_KEY)
       .maybeSingle();
     const val = parseFlexibleNumber((row as any)?.value);
-    return { initial_capital_idr: val > 0 ? val : 0 };
+    return { initial_capital_idr: val > 0 ? val : 180_000_000 };
   });
 
 const setCapitalInputSchema = z.object({
@@ -849,8 +849,8 @@ export const getPnlSummary = createServerFn({ method: "POST" })
     const avgSellPrice = totalSell > 0 ? totalSellIdr / totalSell : 0;
     const avgProfitPerUsdt = totalMatchedSellUsdt > 0 ? allTimeProfit / totalMatchedSellUsdt : 0;
 
-    // ── Ambil Modal Awal Pengguna dari user_settings ──────────────────────────
-    let initialCapitalIdr = 0;
+    // ── Ambil Modal Awal Pengguna dari user_settings (Default 180 Juta) ───────
+    let initialCapitalIdr = 180_000_000;
     const { data: capRow } = await db
       .from("user_settings")
       .select("value")
@@ -860,14 +860,10 @@ export const getPnlSummary = createServerFn({ method: "POST" })
     if (parsedCap > 0) initialCapitalIdr = parsedCap;
 
     // ── Kalkulasi Ekuitas Modal, Sisa Kas Bebas, & Pertumbuhan ────────────────
-    // Sisa Kas Bebas = Modal Awal - Modal Terikat di Stok + Total Keuntungan
-    // Total Ekuitas = Modal Awal + Total Keuntungan
-    const freeCashIdr = initialCapitalIdr > 0
-      ? Math.max(0, initialCapitalIdr - openTotalCostIdr + allTimeProfit)
-      : 0;
-    const totalEquityIdr = initialCapitalIdr > 0
-      ? initialCapitalIdr + allTimeProfit
-      : (openTotalCostIdr + allTimeProfit);
+    // Sisa Kas Bebas = Total Modal (180 Juta) - Modal Terikat di Sisa Stok + Total Keuntungan
+    // Total Ekuitas = Total Modal + Total Keuntungan
+    const freeCashIdr = Math.max(0, initialCapitalIdr - openTotalCostIdr + allTimeProfit);
+    const totalEquityIdr = initialCapitalIdr + allTimeProfit;
     const capitalUtilizationPct = initialCapitalIdr > 0
       ? Math.min(100, Math.round((openTotalCostIdr / initialCapitalIdr) * 10000) / 100)
       : 0;
