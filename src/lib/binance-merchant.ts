@@ -689,9 +689,14 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
     // Kapasitas fiat penuh dari target stok pada harga baru:
     const fiatCap = Math.floor(targetStock * newPrice);
 
+    // Total init amount yang harus dialokasikan ke Binance:
+    // Jika iklan sudah memiliki riwayat order yang dieksekusi (executedAmount > 0),
+    // Binance menghitung surplus baru = initAmount - executedAmount.
+    // Oleh karena itu, initAmount = executedAmount + targetStock agar sisa tradable kuota persis sesuai targetStock!
+    const totalInitAmount =
+      executedAmount > 0 ? Math.floor((executedAmount + targetStock) * 100) / 100 : targetStock;
+
     // Hitung maxLimit IDR:
-    // Khusus iklan BELI (BUY): tetapkan 500 Juta IDR (tidak dibatasi fiatCap karena Binance otomatis
-    // melimit pesanan via dynamicMaxSingleTransAmount sesuai sisa stok yang ingin dibeli).
     let maxLimit = data.maxSingleTransAmount && data.maxSingleTransAmount > 0
       ? Math.round(data.maxSingleTransAmount)
       : isBuy
@@ -700,15 +705,16 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
       ? Math.round(Number(existingAd["maxSingleTransAmount"]))
       : fiatCap;
 
-    if (!isBuy && maxLimit > fiatCap) {
+    // Di Binance C2C: maxSingleTransAmount TIDAK BOLEH melebihi total kapasitas fiat iklan (fiatCap)
+    // jika kuota stok iklan lebih kecil daripada nominal limit yang diminta.
+    if (fiatCap > 0 && maxLimit > fiatCap) {
       maxLimit = fiatCap;
     }
-    if (isBuy && (!maxLimit || maxLimit <= 0)) {
-      maxLimit = 500_000_000;
+    if (maxLimit <= 0) {
+      maxLimit = fiatCap > 0 ? fiatCap : 500_000_000;
     }
 
     // Hitung minLimit IDR:
-    // Khusus iklan BELI (BUY): tetapkan minimal transaksi 50 Juta IDR (50_000_000).
     let minLimit = data.minSingleTransAmount && data.minSingleTransAmount > 0
       ? Math.round(data.minSingleTransAmount)
       : isBuy
@@ -718,16 +724,15 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
       : 50000;
 
     // ATURAN MUTLAK BINANCE C2C:
-    // minSingleTransAmount HARUS selalu lebih kecil (<) dari maxSingleTransAmount!
-    // Jika minLimit >= maxLimit, Binance menolak pembaruan iklan (data: false).
+    // 1. minSingleTransAmount HARUS selalu lebih kecil (<) dari maxSingleTransAmount!
+    // 2. minSingleTransAmount TIDAK BOLEH lebih besar dari total kapasitas fiat iklan (fiatCap)!
+    if (fiatCap > 0 && minLimit >= fiatCap) {
+      minLimit = Math.max(10_000, Math.floor(fiatCap * 0.2));
+    }
     if (minLimit >= maxLimit) {
-      if (isBuy) {
-        maxLimit = Math.max(500_000_000, minLimit + 10_000_000);
-      } else {
-        minLimit = Math.max(10000, Math.floor(maxLimit * 0.2));
-        if (minLimit >= maxLimit) {
-          minLimit = Math.max(10000, maxLimit - 10000);
-        }
+      minLimit = Math.max(10_000, Math.floor(maxLimit * 0.2));
+      if (minLimit >= maxLimit) {
+        minLimit = Math.max(10_000, maxLimit - 10_000);
       }
     }
 
@@ -788,13 +793,16 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
 
     // ─────────────────────────────────────────────────────────────────────────
     // PERCOBAAN 1: STANDARD SAPI /sapi/v1/c2c/ads/update (Official Form-Urlencoded HMAC)
-    // Sesuai standar resmi Binance C2C Merchant API.
+    // Sesuai standar resmi Binance C2C Merchant API: kirim harga, stok, & batas limit
     // ─────────────────────────────────────────────────────────────────────────
     const stdParams: Record<string, any> = {
       advNo: targetAdvNo,
+      adNo: targetAdvNo,
       price: newPrice,
+      priceType: 1,
     };
-    if (isStockUpdateRequested && targetStock > 0 && fiatCap >= minLimit) {
+    if (isStockUpdateRequested && targetStock > 0) {
+      stdParams.initAmount = totalInitAmount;
       stdParams.amount = targetStock;
       stdParams.minSingleTransAmount = minLimit;
       stdParams.maxSingleTransAmount = maxLimit;
@@ -812,71 +820,32 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PERCOBAAN 2: SAPI /sapi/v1/c2c/ads/update - HARGA SAJA (Form-Urlencoded HMAC)
-    // Jika modifikasi stok/limit ditolak Binance (misal ada order aktif yang mengunci kuota stok),
-    // kita update HANYA harga agar posisi bot langsung kompetitif tanpa terkendala stok!
+    // PERCOBAAN 2: SAPI /sapi/v1/c2c/ad/update (Singular Route, Form-Urlencoded HMAC) dengan Stok
     // ─────────────────────────────────────────────────────────────────────────
-    if (!updateSucceeded) {
+    if (!updateSucceeded && isStockUpdateRequested) {
       const res2 = await binanceMerchantRequest({
-        endpoint: "/sapi/v1/c2c/ads/update",
+        endpoint: "/sapi/v1/c2c/ad/update",
         method: "POST",
         params: {
           advNo: targetAdvNo,
+          adNo: targetAdvNo,
           price: newPrice,
+          priceType: 1,
+          initAmount: totalInitAmount,
+          amount: targetStock,
+          minSingleTransAmount: minLimit,
+          maxSingleTransAmount: maxLimit,
         },
       });
       if (res2.ok && res2.data !== false) {
         updateSucceeded = true;
-        usedStockPreservedFallback = true;
       } else {
         lastError = res2;
       }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PERCOBAAN 3: SAPI /sapi/v1/c2c/ad/update (Singular Route, Form-Urlencoded HMAC)
-    // ─────────────────────────────────────────────────────────────────────────
-    if (!updateSucceeded) {
-      const res3 = await binanceMerchantRequest({
-        endpoint: "/sapi/v1/c2c/ad/update",
-        method: "POST",
-        params: {
-          adNo: targetAdvNo,
-          advNo: targetAdvNo,
-          price: newPrice,
-        },
-      });
-      if (res3.ok && res3.data !== false) {
-        updateSucceeded = true;
-        usedStockPreservedFallback = true;
-      } else {
-        lastError = res3;
-      }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // PERCOBAAN 4: AGENT SAPI /sapi/v1/c2c/agent/ads/update (Clean JSON Body - Price Only)
-    // ─────────────────────────────────────────────────────────────────────────
-    if (!updateSucceeded) {
-      const res4 = await binanceAgentRequest({
-        endpoint: "/sapi/v1/c2c/agent/ads/update",
-        method: "POST",
-        body: {
-          advNo: targetAdvNo,
-          price: newPrice,
-          priceType: 1,
-        },
-      });
-      if (res4.ok && res4.data !== false) {
-        updateSucceeded = true;
-        usedStockPreservedFallback = true;
-      } else {
-        lastError = res4;
-      }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // PERCOBAAN 5: AGENT SAPI /sapi/v1/c2c/agent/ads/update (Clean JSON Body dengan Stok & Limits)
+    // PERCOBAAN 3: AGENT SAPI /sapi/v1/c2c/agent/ads/update (Clean JSON Body dengan Stok & Limits)
     // ─────────────────────────────────────────────────────────────────────────
     if (!updateSucceeded && isStockUpdateRequested) {
       const agentCleanPayload: Record<string, any> = {
@@ -884,61 +853,114 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
         price: newPrice,
         priceType: 1,
         amount: targetStock,
-        initAmount: executedAmount > 0 ? Math.floor((executedAmount + targetStock) * 100) / 100 : targetStock,
+        initAmount: totalInitAmount,
         minSingleTransAmount: minLimit,
         maxSingleTransAmount: maxLimit,
       };
-      if (effectiveTradeMethods) {
+      if (effectiveTradeMethods && effectiveTradeMethods.length > 0) {
         agentCleanPayload.tradeMethods = effectiveTradeMethods;
       }
 
-      const res5 = await binanceAgentRequest({
+      const res3 = await binanceAgentRequest({
         endpoint: "/sapi/v1/c2c/agent/ads/update",
         method: "POST",
         body: agentCleanPayload,
       });
-      if (res5.ok && res5.data !== false) {
+      if (res3.ok && res3.data !== false) {
         updateSucceeded = true;
       } else {
-        lastError = res5;
+        lastError = res3;
       }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PERCOBAAN 6: AGENT SAPI /sapi/v1/c2c/agent/ads/update via Query Params (HMAC URL)
+    // PERCOBAAN 4: Full-DTO Agent SAPI (buildCleanPayload)
     // ─────────────────────────────────────────────────────────────────────────
     if (!updateSucceeded) {
-      const res6 = await binanceAgentRequest({
+      const payload4 = buildCleanPayload(totalInitAmount, isBuy ? "0" : "1");
+      const res4 = await binanceAgentRequest({
         endpoint: "/sapi/v1/c2c/agent/ads/update",
         method: "POST",
-        queryParams: {
+        body: payload4,
+      });
+      if (res4.ok && res4.data !== false) {
+        updateSucceeded = true;
+      } else {
+        lastError = res4;
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PERCOBAAN 5: FALLBACK HARGA SAJA (HANYA JIKA SEMUA PERCOBAAN STOK DI ATAS GAGAL)
+    // Jika modifikasi stok/limit ditolak Binance (misal ada order aktif yang sedang mengunci kuota stok),
+    // kita update HANYA harga agar bot tetap kompetitif di pasar.
+    // ─────────────────────────────────────────────────────────────────────────
+    if (!updateSucceeded) {
+      // 5a. Standard SAPI /sapi/v1/c2c/ads/update (Price Only)
+      const res5a = await binanceMerchantRequest({
+        endpoint: "/sapi/v1/c2c/ads/update",
+        method: "POST",
+        params: {
           advNo: targetAdvNo,
+          adNo: targetAdvNo,
           price: newPrice,
         },
       });
-      if (res6.ok && res6.data !== false) {
+      if (res5a.ok && res5a.data !== false) {
         updateSucceeded = true;
-        usedStockPreservedFallback = true;
+        if (isStockUpdateRequested) usedStockPreservedFallback = true;
       } else {
-        lastError = res6;
-      }
-    }
+        lastError = res5a;
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PERCOBAAN 7: Full-DTO Agent SAPI (buildCleanPayload)
-    // ─────────────────────────────────────────────────────────────────────────
-    if (!updateSucceeded) {
-      const totalStock = executedAmount > 0 ? Math.floor((executedAmount + targetStock) * 100) / 100 : targetStock;
-      const payload7 = buildCleanPayload(totalStock, isBuy ? "0" : "1");
-      const res7 = await binanceAgentRequest({
-        endpoint: "/sapi/v1/c2c/agent/ads/update",
-        method: "POST",
-        body: payload7,
-      });
-      if (res7.ok && res7.data !== false) {
-        updateSucceeded = true;
-      } else {
-        lastError = res7;
+        // 5b. SAPI Singular /sapi/v1/c2c/ad/update (Price Only)
+        const res5b = await binanceMerchantRequest({
+          endpoint: "/sapi/v1/c2c/ad/update",
+          method: "POST",
+          params: {
+            advNo: targetAdvNo,
+            adNo: targetAdvNo,
+            price: newPrice,
+          },
+        });
+        if (res5b.ok && res5b.data !== false) {
+          updateSucceeded = true;
+          if (isStockUpdateRequested) usedStockPreservedFallback = true;
+        } else {
+          lastError = res5b;
+
+          // 5c. Agent SAPI JSON Body (Price Only)
+          const res5c = await binanceAgentRequest({
+            endpoint: "/sapi/v1/c2c/agent/ads/update",
+            method: "POST",
+            body: {
+              advNo: targetAdvNo,
+              price: newPrice,
+              priceType: 1,
+            },
+          });
+          if (res5c.ok && res5c.data !== false) {
+            updateSucceeded = true;
+            if (isStockUpdateRequested) usedStockPreservedFallback = true;
+          } else {
+            lastError = res5c;
+
+            // 5d. Agent SAPI via Query Params (Price Only)
+            const res5d = await binanceAgentRequest({
+              endpoint: "/sapi/v1/c2c/agent/ads/update",
+              method: "POST",
+              queryParams: {
+                advNo: targetAdvNo,
+                price: newPrice,
+              },
+            });
+            if (res5d.ok && res5d.data !== false) {
+              updateSucceeded = true;
+              if (isStockUpdateRequested) usedStockPreservedFallback = true;
+            } else {
+              lastError = res5d;
+            }
+          }
+        }
       }
     }
 
@@ -990,12 +1012,20 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
             data: { livePrice: newPrice, targetPrice: newPrice, liveStock: liveStockAfter, targetStock },
             timestamp: Date.now(),
           };
-        } else if (usedStockPreservedFallback || (isStockUpdateRequested && !isLiveStockVerified)) {
+        } else if (usedStockPreservedFallback) {
           return {
             ok: true,
             code: "000000",
-            message: `Harga iklan #${targetAdvNo} BERHASIL terupdate ke Rp ${newPrice.toLocaleString("id-ID")}! (Stok di Binance dipertahankan: ${liveStockAfter !== null ? `${liveStockAfter} USDT` : "asli"} karena pesanan aktif).`,
+            message: `Harga iklan #${targetAdvNo} BERHASIL terupdate ke Rp ${newPrice.toLocaleString("id-ID")}! (Stok di Binance dipertahankan: ${liveStockAfter !== null ? `${liveStockAfter} USDT` : "asli"} karena pesanan aktif mengunci kuota stok).`,
             data: { livePrice: newPrice, targetPrice: newPrice, liveStock: liveStockAfter, targetStock },
+            timestamp: Date.now(),
+          };
+        } else {
+          return {
+            ok: true,
+            code: "000000",
+            message: `Iklan #${targetAdvNo} BERHASIL terupdate di Binance ke Rp ${newPrice.toLocaleString("id-ID")}${isStockUpdateRequested ? ` | Stok: ${targetStock} USDT` : ""}!`,
+            data: { livePrice: newPrice, targetPrice: newPrice, liveStock: liveStockAfter ?? targetStock, targetStock },
             timestamp: Date.now(),
           };
         }

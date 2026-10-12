@@ -29,7 +29,7 @@ export type BackgroundBotTickResult = {
 
 // ── In-Memory Cache Terakhir untuk Akselerasi & Fallback jika DB Offline ──────
 let inMemoryLastCronRun: Record<string, unknown> | null = null;
-let inMemoryLastPushed: { buy?: number; sell?: number; buyStock?: number } = {};
+let inMemoryLastPushed: { buy?: number; sell?: number; buyStock?: number; sellStock?: number } = {};
 
 /**
  * Mengambil konfigurasi bot P2P dari Supabase user_settings atau fallback default/env.
@@ -234,9 +234,7 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
             : pricing.bankAllocation.autoBuyStockUsdt;
 
         const priceChanged = lastPushedPrices.buy !== roundedBuyPrice;
-        const stockChanged =
-          lastPushedPrices.buyStock !== undefined &&
-          lastPushedPrices.buyStock !== currentBuyStock;
+        const stockChanged = lastPushedPrices.buyStock !== currentBuyStock;
 
         if (priceChanged || stockChanged) {
           const buyRes = await updateMerchantAdInternal({
@@ -261,18 +259,19 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
     // ── Eksekusi Push Iklan Jual (SELL) ──────────────────────────────────────
     const roundedSellPrice = Math.round(pricing.recommendedSellPrice);
     if (config.merchantSellAdvNo && roundedSellPrice > 0) {
+      const maxAvailableSellStockUsdt =
+        liveStockUsdt > 0 ? Math.max(0, Math.floor((liveStockUsdt / 1.0005) * 100) / 100) : 0;
+      const effectiveSellStock =
+        config.manualSellStockUsdt && config.manualSellStockUsdt > 0
+          ? config.manualSellStockUsdt
+          : maxAvailableSellStockUsdt > 0
+          ? maxAvailableSellStockUsdt
+          : undefined;
+
       const priceChanged = lastPushedPrices.sell !== roundedSellPrice;
+      const stockChanged = lastPushedPrices.sellStock !== effectiveSellStock;
 
-      if (priceChanged) {
-        const maxAvailableSellStockUsdt =
-          liveStockUsdt > 0 ? Math.max(0, Math.floor((liveStockUsdt / 1.0005) * 100) / 100) : 0;
-        const effectiveSellStock =
-          config.manualSellStockUsdt && config.manualSellStockUsdt > 0
-            ? config.manualSellStockUsdt
-            : maxAvailableSellStockUsdt > 0
-            ? maxAvailableSellStockUsdt
-            : undefined;
-
+      if (priceChanged || stockChanged) {
         const sellRes = await updateMerchantAdInternal({
           advNo: config.merchantSellAdvNo.trim(),
           side: "sell",
@@ -290,6 +289,7 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
         if (sellRes.ok) {
           sellPushed = true;
           lastPushedPrices.sell = roundedSellPrice;
+          lastPushedPrices.sellStock = effectiveSellStock;
         }
       }
     }

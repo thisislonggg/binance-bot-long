@@ -657,9 +657,7 @@ export function AutoPricingBotPanel({
               : bankAllocation.autoBuyStockUsdt;
 
           const priceChanged = lastPushedPricesRef.current.buy !== roundedPrice;
-          const stockChanged =
-            lastPushedStockRef.current.buy !== undefined &&
-            lastPushedStockRef.current.buy !== currentBuyStock;
+          const stockChanged = lastPushedStockRef.current.buy !== currentBuyStock;
 
           if (priceChanged || stockChanged) {
             lastPushedPricesRef.current.buy = roundedPrice;
@@ -670,14 +668,24 @@ export function AutoPricingBotPanel({
         }
       }
 
-      if (
-        config.merchantSellAdvNo &&
-        recommendedSellPrice > 0 &&
-        lastPushedPricesRef.current.sell !== Math.round(recommendedSellPrice)
-      ) {
-        lastPushedPricesRef.current.sell = Math.round(recommendedSellPrice);
-        lastPushTimeRef.current = now;
-        handlePushPrice("sell");
+      if (config.merchantSellAdvNo && recommendedSellPrice > 0) {
+        const roundedSellPrice = Math.round(recommendedSellPrice);
+        const currentSellStock =
+          config.manualSellStockUsdt && config.manualSellStockUsdt > 0
+            ? config.manualSellStockUsdt
+            : maxAvailableSellStockUsdt > 0
+            ? maxAvailableSellStockUsdt
+            : undefined;
+
+        const sellPriceChanged = lastPushedPricesRef.current.sell !== roundedSellPrice;
+        const sellStockChanged = lastPushedStockRef.current.sell !== currentSellStock;
+
+        if (sellPriceChanged || sellStockChanged) {
+          lastPushedPricesRef.current.sell = roundedSellPrice;
+          lastPushedStockRef.current.sell = currentSellStock;
+          lastPushTimeRef.current = now;
+          handlePushPrice("sell");
+        }
       }
     };
 
@@ -692,6 +700,8 @@ export function AutoPricingBotPanel({
     config.merchantBuyAdvNo,
     config.merchantSellAdvNo,
     config.manualBuyStockUsdt,
+    config.manualSellStockUsdt,
+    maxAvailableSellStockUsdt,
     bankAllocation.isBelowMinLimit,
     bankAllocation.autoBuyStockUsdt,
   ]);
