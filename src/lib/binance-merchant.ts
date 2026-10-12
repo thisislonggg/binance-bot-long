@@ -629,6 +629,38 @@ export type UpdateAdInternalParams = {
   payMethods?: string[];
 };
 
+export async function toggleMerchantAdStatusInternal(
+  advNo: string,
+  advStatus: "ONLINE" | "OFFLINE"
+): Promise<MerchantApiResponse> {
+  const cleanAdvNo = advNo.trim().replace(/^#/, "");
+
+  // 1. Coba Agent SAPI updateStatus (1=Online, 3=Offline)
+  const agentRes = await binanceAgentRequest({
+    endpoint: "/sapi/v1/c2c/agent/ads/updateStatus",
+    method: "POST",
+    body: {
+      advNos: [cleanAdvNo],
+      advStatus: advStatus === "ONLINE" ? 1 : 3,
+    },
+  });
+
+  if (agentRes.ok) {
+    return agentRes;
+  }
+
+  // 2. Fallback ke legacy
+  return binanceMerchantRequest({
+    endpoint: "/sapi/v1/c2c/ads/updateStatus",
+    method: "POST",
+    params: {
+      advNo: cleanAdvNo,
+      advStatus: advStatus === "ONLINE" ? 1 : 2,
+      status: advStatus,
+    },
+  });
+}
+
 export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Promise<MerchantApiResponse> {
   const cleanAdvNo = data.advNo.trim().replace(/^#/, "");
   const newPrice = Math.round(data.price);
@@ -667,14 +699,52 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
 
     // Hitung status jumlah/stok:
     const origInit = Number(existingAd["initAmount"] ?? existingAd["amount"] ?? 0);
-    const origSurplus = Number(existingAd["surplusAmount"] ?? existingAd["tradableQuantity"] ?? origInit);
+    const origSurplus = Number(existingAd["surplusAmount"] ?? existingAd["tradableQuantity"] ?? 0);
     const executedAmount = Math.max(0, origInit - origSurplus);
 
-    // Target stock yang ingin dipasang
+    // 1. Jika data.amount secara eksplisit bernilai <= 0 (kas habis atau stok 0):
+    // JANGAN PERNAH pasang di Binance atau fallback ke origInit (modal awal).
+    // Otomatis OFFLINE-kan iklan di Binance untuk mencegah over-budget!
+    if (typeof data.amount === "number" && data.amount <= 0) {
+      await toggleMerchantAdStatusInternal(cleanAdvNo, "OFFLINE");
+      return {
+        ok: true,
+        code: "AUTO_OFFLINED_ZERO_STOCK",
+        message: `Saldo kas/stok bernilai 0. Iklan #${cleanAdvNo} (${isBuy ? "Beli" : "Jual"}) otomatis di-OFFLINE-kan di Binance untuk proteksi modal.`,
+        timestamp: Date.now(),
+      };
+    }
+
+    // 2. Jika data.amount tidak diberikan (undefined):
+    // Cek sisa kuota live di Binance (origSurplus).
+    // Jika sisa kuota sudah 0 (misal terisi habis oleh order), JANGAN fallback ke origInit!
+    if (typeof data.amount === "undefined" && origSurplus <= 0) {
+      await toggleMerchantAdStatusInternal(cleanAdvNo, "OFFLINE");
+      return {
+        ok: true,
+        code: "AUTO_OFFLINED_DEPLETED",
+        message: `Sisa kuota iklan #${cleanAdvNo} di Binance telah habis (0 USDT). Iklan otomatis di-OFFLINE-kan agar tidak terjadi order di luar kapasitas modal.`,
+        timestamp: Date.now(),
+      };
+    }
+
+    // Target stock yang ingin dipasang:
+    // HANYA gunakan data.amount jika valid > 0, atau pertahankan sisa kuota berjalan (origSurplus).
+    // TIDAK BOLEH PERNAH menggunakan origInit (modal awal saat iklan pertama kali dibuat)!
     const isStockUpdateRequested = typeof data.amount === "number" && data.amount > 0;
     let targetStock = isStockUpdateRequested
       ? Math.floor(data.amount! * 100) / 100
-      : Math.floor((origSurplus > 0 ? origSurplus : (origInit > 0 ? origInit : 100)) * 100) / 100;
+      : Math.floor(Math.max(0, origSurplus) * 100) / 100;
+
+    if (targetStock <= 0) {
+      await toggleMerchantAdStatusInternal(cleanAdvNo, "OFFLINE");
+      return {
+        ok: true,
+        code: "AUTO_OFFLINED_NO_STOCK",
+        message: `Target stok iklan #${cleanAdvNo} bernilai 0 USDT. Iklan otomatis di-OFFLINE-kan di Binance.`,
+        timestamp: Date.now(),
+      };
+    }
 
     // Untuk iklan JUAL (SELL):
     // Binance memotong maker reserved fee (~0.05%) saat memasang stok.
@@ -1113,32 +1183,7 @@ export const toggleMerchantAdStatus = createServerFn({ method: "POST" })
       };
     }
 
-    const advNo = data.advNo.trim();
-
-    // 1. Coba Agent SAPI updateStatus (1=Online, 3=Offline)
-    const agentRes = await binanceAgentRequest({
-      endpoint: "/sapi/v1/c2c/agent/ads/updateStatus",
-      method: "POST",
-      body: {
-        advNos: [advNo],
-        advStatus: data.advStatus === "ONLINE" ? 1 : 3,
-      },
-    });
-
-    if (agentRes.ok) {
-      return agentRes;
-    }
-
-    // 2. Fallback ke legacy
-    return binanceMerchantRequest({
-      endpoint: "/sapi/v1/c2c/ads/updateStatus",
-      method: "POST",
-      params: {
-        advNo,
-        advStatus: data.advStatus === "ONLINE" ? 1 : 2,
-        status: data.advStatus,
-      },
-    });
+    return toggleMerchantAdStatusInternal(data.advNo, data.advStatus);
   });
 
 // ── 4. Buat Iklan Baru (POST /sapi/v1/c2c/ads/post) ──────────────────────────

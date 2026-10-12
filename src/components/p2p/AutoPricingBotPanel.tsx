@@ -71,6 +71,7 @@ import {
 } from "@/lib/background-bot-engine";
 import {
   pushPriceToBinanceAd,
+  toggleMerchantAdStatus,
   type PushPriceResult,
 } from "@/lib/binance-merchant";
 import { getActiveP2pOrdersSummary } from "@/lib/payment-verifier";
@@ -510,6 +511,8 @@ export function AutoPricingBotPanel({
 
   // ── Integrasi Eksekusi C2C Merchant API ─────────────────────────────────────
   const pushPriceFn = useServerFn(pushPriceToBinanceAd);
+  const toggleStatusFn = useServerFn(toggleMerchantAdStatus);
+  const buyAdOfflinedRef = useRef(false);
   const [isPushingBuy, setIsPushingBuy] = useState(false);
   const [isPushingSell, setIsPushingSell] = useState(false);
   const [lastPushLog, setLastPushLog] = useState<PushPriceResult | null>(null);
@@ -531,9 +534,16 @@ export function AutoPricingBotPanel({
             bankAllocation.lockedActiveBuyIdr > 0
               ? ` karena Rp ${bankAllocation.lockedActiveBuyIdr.toLocaleString("id-ID")} (${bankAllocation.activeBuyOrdersUsdt} USDT) sedang berjalan di pesanan beli aktif`
               : ""
-          }. Iklan beli ditahan agar tidak over-budget.`,
+          }. Iklan beli ditahan & otomatis di-OFFLINE-kan di Binance agar tidak over-budget.`,
           { duration: 7000 }
         );
+        toggleStatusFn({
+          data: {
+            sessionToken: effectiveToken,
+            advNo: advNo.trim(),
+            advStatus: "OFFLINE",
+          },
+        }).catch(() => {});
         return;
       }
     }
@@ -659,7 +669,40 @@ export function AutoPricingBotPanel({
           (!config.manualBuyStockUsdt || config.manualBuyStockUsdt <= 0) &&
           (bankAllocation.isBelowMinLimit || bankAllocation.autoBuyStockUsdt <= 0);
 
-        if (!isBuyBlocked) {
+        if (isBuyBlocked) {
+          // Kas tidak cukup / 0: Otomatis matikan (OFFLINE) iklan di Binance agar tidak mengambil order di luar modal!
+          if (!buyAdOfflinedRef.current) {
+            buyAdOfflinedRef.current = true;
+            toggleStatusFn({
+              data: {
+                sessionToken: effectiveToken,
+                advNo: config.merchantBuyAdvNo.trim(),
+                advStatus: "OFFLINE",
+              },
+            })
+              .then((res) => {
+                if (res.ok) {
+                  toast.warning(
+                    `Saldo kas beli Rp ${bankAllocation.usableBankIdr.toLocaleString("id-ID")} di bawah batas minimal Rp ${bankAllocation.minBuyLimitIdr.toLocaleString("id-ID")}. Iklan beli #${config.merchantBuyAdvNo} otomatis di-OFFLINE-kan di Binance!`,
+                    { duration: 8000 }
+                  );
+                }
+              })
+              .catch(() => {});
+          }
+        } else {
+          // Kas tersedia: jika sebelumnya pernah di-offline-kan, pulihkan izin online
+          if (buyAdOfflinedRef.current) {
+            buyAdOfflinedRef.current = false;
+            toggleStatusFn({
+              data: {
+                sessionToken: effectiveToken,
+                advNo: config.merchantBuyAdvNo.trim(),
+                advStatus: "ONLINE",
+              },
+            }).catch(() => {});
+          }
+
           const roundedPrice = Math.round(recommendedBuyPrice);
           const currentBuyStock =
             config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0

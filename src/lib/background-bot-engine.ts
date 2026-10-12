@@ -10,7 +10,7 @@ import {
 import { fetchP2pAds } from "./p2p.functions";
 import { fetchFundingBalanceInternal } from "./binance-sync";
 import { fetchActiveP2pSellOrdersInternal } from "./payment-verifier";
-import { updateMerchantAdInternal } from "./binance-merchant";
+import { updateMerchantAdInternal, toggleMerchantAdStatusInternal } from "./binance-merchant";
 
 export type BackgroundBotTickResult = {
   ok: boolean;
@@ -29,7 +29,14 @@ export type BackgroundBotTickResult = {
 
 // ── In-Memory Cache Terakhir untuk Akselerasi & Fallback jika DB Offline ──────
 let inMemoryLastCronRun: Record<string, unknown> | null = null;
-let inMemoryLastPushed: { buy?: number; sell?: number; buyStock?: number; sellStock?: number } = {};
+let inMemoryLastPushed: {
+  buy?: number;
+  sell?: number;
+  buyStock?: number;
+  sellStock?: number;
+  buyStatus?: string;
+  sellStatus?: string;
+} = {};
 
 /**
  * Mengambil konfigurasi bot P2P dari Supabase user_settings atau fallback default/env.
@@ -176,6 +183,16 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
       }
     }
 
+    // Hitung valuasi modal live stok dan sisa kas bank bebas (Free Cash IDR)
+    const effectiveStockValuationIdr = Math.round(
+      liveStockUsdt * (stockHpp > 0 ? stockHpp : 17_850)
+    );
+    const computedFreeCashIdr = Math.max(0, initialCapitalIdr - effectiveStockValuationIdr);
+    bankBalanceIdr =
+      config.bankBalanceSource === "manual" && config.manualBankBalanceIdr > 0
+        ? config.manualBankBalanceIdr
+        : computedFreeCashIdr;
+
     // 4. Ambil orderan P2P aktif untuk segregasi modal kas
     const activeOrders = await fetchActiveP2pSellOrdersInternal();
     const activeBuyOrders = activeOrders.filter((o) => o.tradeType === "BUY");
@@ -194,6 +211,7 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
       bankBalanceIdr,
       initialCapitalIdr,
       liveStockUsdt,
+      stockCapitalIdr: effectiveStockValuationIdr,
       activeBuyOrdersUsdt,
       activeBuyOrdersIdr,
     });
@@ -227,7 +245,25 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
         (!config.manualBuyStockUsdt || config.manualBuyStockUsdt <= 0) &&
         (pricing.bankAllocation.isBelowMinLimit || pricing.bankAllocation.autoBuyStockUsdt <= 0);
 
-      if (!isBuyBlocked) {
+      if (isBuyBlocked) {
+        // Proteksi Kas Beli: kas habis / 0 atau di bawah batas minimal limit!
+        // Segera OFFLINE-kan iklan di Binance agar tidak mengambil order di luar modal!
+        if (lastPushedPrices.buyStatus !== "OFFLINE") {
+          const offRes = await toggleMerchantAdStatusInternal(
+            config.merchantBuyAdvNo.trim(),
+            "OFFLINE"
+          );
+          buyResult = {
+            ok: offRes.ok,
+            status: "OFFLINE",
+            message: `Saldo kas beli Rp ${pricing.bankAllocation.usableBankIdr.toLocaleString("id-ID")} di bawah minimal limit Rp ${pricing.bankAllocation.minBuyLimitIdr.toLocaleString("id-ID")}. Iklan beli otomatis di-OFFLINE-kan di Binance.`,
+          };
+          if (offRes.ok) {
+            buyPushed = true;
+            lastPushedPrices.buyStatus = "OFFLINE";
+          }
+        }
+      } else {
         const currentBuyStock =
           config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0
             ? config.manualBuyStockUsdt
@@ -235,8 +271,9 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
 
         const priceChanged = lastPushedPrices.buy !== roundedBuyPrice;
         const stockChanged = lastPushedPrices.buyStock !== currentBuyStock;
+        const statusNeedsOnline = lastPushedPrices.buyStatus === "OFFLINE";
 
-        if (priceChanged || stockChanged) {
+        if (priceChanged || stockChanged || statusNeedsOnline) {
           const buyRes = await updateMerchantAdInternal({
             advNo: config.merchantBuyAdvNo.trim(),
             side: "buy",
@@ -251,6 +288,7 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
             buyPushed = true;
             lastPushedPrices.buy = roundedBuyPrice;
             lastPushedPrices.buyStock = currentBuyStock;
+            lastPushedPrices.buyStatus = "ONLINE";
           }
         }
       }

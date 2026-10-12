@@ -1036,24 +1036,28 @@ export function computeCompetitorPricing(input: {
       : Math.round(liveStock * effectiveValuationPerUsdt);
 
   // Tentukan Total Modal Awal / Budget
-  let baseBudgetIdr = 0;
-  if (config.bankBalanceSource === "manual" && config.manualBankBalanceIdr > 0) {
-    baseBudgetIdr = config.manualBankBalanceIdr;
-  } else if (initialCapitalIdr > 0) {
-    baseBudgetIdr = initialCapitalIdr;
-  } else if (bankBalanceIdr > 0) {
-    baseBudgetIdr = bankBalanceIdr;
-  } else if (config.manualBankBalanceIdr > 0) {
-    baseBudgetIdr = config.manualBankBalanceIdr;
-  }
+  const totalModalAwalIdr = initialCapitalIdr > 0 ? initialCapitalIdr : 180_000_000;
+  let baseBudgetIdr = totalModalAwalIdr;
 
-  // Jika deductLiveStockFromBudget aktif (default true):
-  // Modal Siap Beli = Base Budget - Nilai Modal yang sudah terikat di live stok USDT!
-  let remainingBudgetBeforeAllocation = baseBudgetIdr;
-  if (config.deductLiveStockFromBudget !== false && stockCapitalValuationIdr > 0) {
-    remainingBudgetBeforeAllocation = Math.max(0, baseBudgetIdr - stockCapitalValuationIdr);
-  } else if (config.bankBalanceSource === "auto" && bankBalanceIdr > 0) {
-    remainingBudgetBeforeAllocation = bankBalanceIdr;
+  // Hitung Sisa Modal Kas Siap Beli (Remaining Budget)
+  let remainingBudgetBeforeAllocation = 0;
+
+  if (config.bankBalanceSource === "manual") {
+    // Mode Manual: murni pakai input manual user
+    remainingBudgetBeforeAllocation = Math.max(0, config.manualBankBalanceIdr || 0);
+    baseBudgetIdr = config.manualBankBalanceIdr > 0 ? config.manualBankBalanceIdr : totalModalAwalIdr;
+  } else {
+    // Mode Auto:
+    // 1. Jika bankBalanceIdr diteruskan secara numerik (baik 0 maupun positif):
+    if (typeof bankBalanceIdr === "number") {
+      remainingBudgetBeforeAllocation = Math.max(0, bankBalanceIdr);
+      baseBudgetIdr = totalModalAwalIdr;
+    } else {
+      // 2. Jika bankBalanceIdr tidak diteruskan, hitung dari modal awal dikurangi valuasi stok live
+      const deductedStock = config.deductLiveStockFromBudget !== false ? stockCapitalValuationIdr : 0;
+      remainingBudgetBeforeAllocation = Math.max(0, totalModalAwalIdr - deductedStock);
+      baseBudgetIdr = totalModalAwalIdr;
+    }
   }
 
   // OTOMATISASI ORDER BUY MASUK:
@@ -1087,7 +1091,7 @@ export function computeCompetitorPricing(input: {
       ? Math.floor((usableBankIdr / recommendedBuyPrice) * 100) / 100
       : 0;
 
-  const autoBuyMaxLimitIdr = Math.round(usableBankIdr);
+  const autoBuyMaxLimitIdr = isBelowMinLimit || usableBankIdr <= 0 ? 0 : Math.round(usableBankIdr);
 
   const bankAllocation = {
     totalBudgetIdr: baseBudgetIdr,
