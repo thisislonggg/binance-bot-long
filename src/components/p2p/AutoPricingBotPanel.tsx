@@ -539,6 +539,15 @@ export function AutoPricingBotPanel({
     }
 
     const price = side === "buy" ? recommendedBuyPrice : recommendedSellPrice;
+
+    // Proteksi Batas Bawah Jual (Floor HPP): Bot TIDAK BOLEH PERNAH pasang harga jual di bawah Floor!
+    if (side === "sell" && pricingResult.sellGuard.floorPrice > 0 && price < pricingResult.sellGuard.floorPrice) {
+      toast.error(
+        `Ditolak Sistem: Harga jual (Rp ${price.toLocaleString("id-ID")}) berada di bawah Batas Bawah Floor HPP (Rp ${pricingResult.sellGuard.floorPrice.toLocaleString("id-ID")}). Bot dicegah memasang harga rugi di Binance!`
+      );
+      return;
+    }
+
     if (side === "buy") setIsPushingBuy(true);
     else setIsPushingSell(true);
 

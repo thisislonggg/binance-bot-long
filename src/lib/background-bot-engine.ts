@@ -154,22 +154,22 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
 
     if (db) {
       try {
-        const { data: capData } = await db
+        const { data: capRows } = await db
           .from("user_settings")
-          .select("value")
-          .eq("key", "pnl_initial_capital")
-          .maybeSingle();
-        if (capData?.value) {
-          initialCapitalIdr = Number(capData.value) || 180_000_000;
+          .select("key, value")
+          .in("key", ["initial_capital_idr", "pnl_initial_capital"]);
+        if (Array.isArray(capRows) && capRows.length > 0) {
+          const matched = capRows.find((r: any) => r.key === "initial_capital_idr") || capRows[0];
+          initialCapitalIdr = Number(matched.value) || 180_000_000;
         }
 
-        const { data: hppData } = await db
+        const { data: hppRows } = await db
           .from("user_settings")
-          .select("value")
-          .eq("key", "pnl_custom_stock_cost")
-          .maybeSingle();
-        if (hppData?.value) {
-          stockHpp = Number(hppData.value) || 0;
+          .select("key, value")
+          .in("key", ["custom_stock_cost_idr", "pnl_custom_stock_cost"]);
+        if (Array.isArray(hppRows) && hppRows.length > 0) {
+          const matched = hppRows.find((r: any) => r.key === "custom_stock_cost_idr") || hppRows[0];
+          stockHpp = Number(matched.value) || 0;
         }
       } catch {
         // Abaikan
@@ -257,7 +257,8 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
     }
 
     // ── Eksekusi Push Iklan Jual (SELL) ──────────────────────────────────────
-    const roundedSellPrice = Math.round(pricing.recommendedSellPrice);
+    const minSellFloor = pricing.sellGuard.floorPrice > 0 ? pricing.sellGuard.floorPrice : 0;
+    const roundedSellPrice = Math.round(Math.max(minSellFloor, pricing.recommendedSellPrice));
     if (config.merchantSellAdvNo && roundedSellPrice > 0) {
       const maxAvailableSellStockUsdt =
         liveStockUsdt > 0 ? Math.max(0, Math.floor((liveStockUsdt / 1.0005) * 100) / 100) : 0;

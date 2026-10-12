@@ -700,32 +700,93 @@ export function computeCompetitorPricing(input: {
     return false;
   };
 
+  // ── Hitung Batas Pengaman JUAL (Sell Floor Guard) & BELI (Buy Ceiling Guard) di Awal ──
+  const MAKER_FEE_RATE = 0.0005;
+  const effectiveHpp = stockHpp > 0
+    ? stockHpp
+    : (fairPrice > 0 ? fairPrice : liveMarketAnchor);
+
+  // Floor Jual: HPP + Fee Jual + Target Minimal Laba Bersih
+  const autoSellFloor = Math.round(
+    (effectiveHpp + (config.minProfitMarginRp || 10)) / (1 - MAKER_FEE_RATE)
+  );
+
+  const calculatedSellFloor = Math.round(
+    config.sellFloorMode === "manual" && config.manualSellFloorRp > 0
+      ? config.manualSellFloorRp
+      : autoSellFloor
+  );
+
+  const calculatedBuyCeiling = Math.round(
+    config.buyCeilingMode === "auto_fair"
+      ? (fairPrice > 0 ? fairPrice - config.minSpreadRp : liveMarketAnchor - config.minSpreadRp)
+      : (config.manualBuyCeilingRp > 0 ? config.manualBuyCeilingRp : 999_999)
+  );
+
+  const calculatedBuyFloor = Math.round(
+    config.manualBuyFloorRp && config.manualBuyFloorRp > 0 ? config.manualBuyFloorRp : 0
+  );
+
   // Helper kalkulasi harga acuan dasar berdasarkan targetMode
   const computeBasePrice = (
+    side: "sell" | "buy",
     qualifiedAds: Ad[],
     allRawAds: Ad[],
     singleTarget: Ad | null,
     fallback: number,
   ): { basePrice: number; desc: string; isFallback: boolean } => {
     if (qualifiedAds.length === 0) {
-      // Relaksasi filter: jika tidak ada merchant lolos filter ketat,
-      // cari merchant non-milik sendiri yang ada di orderbook agar harga tetap presisi dengan market
-      const nonOwnAds = (allRawAds || []).filter((a) => !isOwnAd(a));
-      if (nonOwnAds.length > 0) {
-        const relaxedTarget = nonOwnAds[0];
-        const rawIndex = allRawAds.indexOf(relaxedTarget) + 1;
+      if (side === "sell") {
+        // Pada sisi JUAL: Jika TIDAK ADA kompetitor yang lolos filter:
+        // JANGAN PERNAH mengambil iklan paling bawah/murah di pasar (nonOwnAds[0]) yang memicu dump harga ke bawah!
+        // Cari apakah ada iklan kompetitor non-milik sendiri di orderbook yang harganya >= Batas Bawah (Floor HPP):
+        const nonOwnSafeAds = (allRawAds || []).filter(
+          (a) => !isOwnAd(a) && a.price >= calculatedSellFloor
+        );
+
+        if (nonOwnSafeAds.length > 0) {
+          const safeTarget = nonOwnSafeAds[0];
+          const rawIndex = allRawAds.indexOf(safeTarget) + 1;
+          return {
+            basePrice: safeTarget.price,
+            desc: `Relaksasi Aman (≥ Floor): #${rawIndex} (${safeTarget.merchant_name} @ Rp ${safeTarget.price.toLocaleString("id-ID")})`,
+            isFallback: false,
+          };
+        }
+
+        // Jika semua kompetitor di pasar berada di bawah batas modal Floor atau tidak ada iklan:
+        // KUNCI LANGSUNG di batas aman Batas Bawah Floor HPP:
+        const safeFloorPrice = Math.max(calculatedSellFloor, fallback);
         return {
-          basePrice: relaxedTarget.price,
-          desc: `Relaksasi: #${rawIndex} (${relaxedTarget.merchant_name} @ Rp ${relaxedTarget.price.toLocaleString("id-ID")})`,
-          isFallback: false,
+          basePrice: safeFloorPrice,
+          desc: `Terkunci Aman di Batas Bawah Floor HPP (Rp ${safeFloorPrice.toLocaleString("id-ID")}) [Tidak ada kompetitor lolos filter]`,
+          isFallback: true,
+        };
+      } else {
+        // Pada sisi BELI: Jika tidak ada yang lolos filter:
+        // JANGAN PERNAH mengambil iklan paling mahal di pucuk!
+        // Cari iklan non-milik sendiri yang harganya <= Batas Atas Ceiling beli:
+        const nonOwnSafeAds = (allRawAds || []).filter(
+          (a) => !isOwnAd(a) && (calculatedBuyCeiling <= 0 || a.price <= calculatedBuyCeiling)
+        );
+
+        if (nonOwnSafeAds.length > 0) {
+          const safeTarget = nonOwnSafeAds[0];
+          const rawIndex = allRawAds.indexOf(safeTarget) + 1;
+          return {
+            basePrice: safeTarget.price,
+            desc: `Relaksasi Aman (≤ Ceiling): #${rawIndex} (${safeTarget.merchant_name} @ Rp ${safeTarget.price.toLocaleString("id-ID")})`,
+            isFallback: false,
+          };
+        }
+
+        const safeCeilingPrice = calculatedBuyCeiling > 0 ? Math.min(calculatedBuyCeiling, fallback) : fallback;
+        return {
+          basePrice: safeCeilingPrice,
+          desc: `Terkunci Aman di Batas Atas Ceiling (Rp ${safeCeilingPrice.toLocaleString("id-ID")}) [Tidak ada kompetitor lolos filter]`,
+          isFallback: true,
         };
       }
-
-      return {
-        basePrice: fallback,
-        desc: `Fallback Pasar Dinamis (Rp ${fallback.toLocaleString("id-ID")})`,
-        isFallback: true,
-      };
     }
 
     if (config.targetMode === "average_top") {
@@ -761,27 +822,17 @@ export function computeCompetitorPricing(input: {
     };
   };
 
-  const sellBase = computeBasePrice(qualifiedSell, sellRefAds, sellTargetMerchant, resolvedFallbackSell);
-  const buyBase = computeBasePrice(qualifiedBuy, buyRefAds, buyTargetMerchant, resolvedFallbackBuy);
+  const sellBase = computeBasePrice("sell", qualifiedSell, sellRefAds, sellTargetMerchant, resolvedFallbackSell);
+  const buyBase = computeBasePrice("buy", qualifiedBuy, buyRefAds, buyTargetMerchant, resolvedFallbackBuy);
 
   // 3. Hitung Harga Mentah (Raw Price) dengan Offset
-  // Untuk JUAL: base price + sellOffsetRp (misal -1 undercut)
-  let rawSellPrice = sellBase.basePrice + config.sellOffsetRp;
+  // Untuk JUAL: jangan biarkan rawSellPrice tembus ke bawah calculatedSellFloor
+  let rawSellPrice = sellBase.isFallback
+    ? Math.max(calculatedSellFloor, sellBase.basePrice)
+    : Math.max(calculatedSellFloor, sellBase.basePrice + config.sellOffsetRp);
 
   // Untuk BELI: base price + buyOffsetRp (misal +1 overcut)
   let rawBuyPrice = buyBase.basePrice + config.buyOffsetRp;
-
-  // 4. Hitung dan Terapkan Batas Pengaman JUAL (Sell Floor Guard)
-  // Biaya Maker Jual Binance P2P ~ 0.05%
-  const MAKER_FEE_RATE = 0.0005;
-  const effectiveHpp = stockHpp > 0 ? stockHpp : (fairPrice > 0 ? fairPrice - 30 : liveMarketAnchor - 50);
-
-  // Floor Jual: HPP + Fee Jual + Target Minimal Laba Bersih
-  const calculatedSellFloor = Math.round(
-    config.sellFloorMode === "auto_hpp"
-      ? (effectiveHpp + config.minProfitMarginRp) / (1 - MAKER_FEE_RATE)
-      : config.manualSellFloorRp,
-  );
 
   const autoFollow = config.autoFollowNextWhenLimitReached !== false;
 
@@ -798,7 +849,7 @@ export function computeCompetitorPricing(input: {
 
   // Cek jika pengguna menetapkan override harga jual tetap manual
   if (config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0) {
-    recommendedSellPrice = Math.round(config.manualSellPriceOverrideRp);
+    recommendedSellPrice = Math.max(calculatedSellFloor, Math.round(config.manualSellPriceOverrideRp));
   }
 
   if (recommendedSellPrice < calculatedSellFloor) {
@@ -953,6 +1004,13 @@ export function computeCompetitorPricing(input: {
         recommendedBuyPrice = adjustedBuyPrice;
       }
     }
+  }
+
+  // ── FINAL SAFEGUARD: HARGA JUAL MUTLAK TIDAK BOLEH DI BAWAH BATAS BAWAH (FLOOR HPP) ──
+  if (calculatedSellFloor > 0 && recommendedSellPrice < calculatedSellFloor) {
+    recommendedSellPrice = calculatedSellFloor;
+    sellGuard.triggered = true;
+    sellGuard.reason = `Proteksi Mutlak Batas Bawah: Harga terkunci di Batas Bawah Floor HPP (Rp ${calculatedSellFloor.toLocaleString("id-ID")}) agar bot tidak menjual di bawah modal.`;
   }
 
   // 7. Kalkulasi Fee & Estimasi Laba Bersih
