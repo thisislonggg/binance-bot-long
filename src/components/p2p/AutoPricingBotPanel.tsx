@@ -1397,7 +1397,7 @@ export function AutoPricingBotPanel({
               <div className="flex items-center gap-2 flex-wrap">
                 <Radio className="size-4 text-primary animate-pulse" />
                 <h4 className="text-xs font-bold text-foreground uppercase tracking-wider">
-                  Radar Pasar: Analisis Kelayakan Kompetitor
+                  Radar Pasar: Analisis Kelayakan Kompetitor ({currentRadarAds.length} User Teratas)
                 </h4>
                 <Badge variant="outline" className="h-5 px-1.5 text-[0.62rem] border-emerald-500/30 text-emerald-400 bg-emerald-500/10 gap-1 font-semibold">
                   <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
@@ -1519,6 +1519,29 @@ export function AutoPricingBotPanel({
                       }`}
                     >
                       {tier.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-1 border-l border-border/60 pl-2">
+                  <span className="text-muted-foreground text-[0.7rem]">Scan:</span>
+                  {[
+                    { val: 20, label: "20 User" },
+                    { val: 50, label: "50 User" },
+                    { val: 100, label: "100 User" },
+                  ].map((opt) => (
+                    <button
+                      key={opt.val}
+                      type="button"
+                      onClick={() => updateConfig({ scanAdLimit: opt.val })}
+                      className={`rounded px-1.5 py-0.5 text-[0.65rem] font-semibold transition-colors ${
+                        (config.scanAdLimit ?? 100) === opt.val
+                          ? "bg-primary text-primary-foreground font-bold shadow-xs"
+                          : "bg-surface-2 text-muted-foreground hover:bg-surface-3 hover:text-foreground"
+                      }`}
+                      title={`Ambil hingga ${opt.val} user/iklan dari Binance orderbook`}
+                    >
+                      {opt.label}
                     </button>
                   ))}
                 </div>
@@ -2271,6 +2294,46 @@ export function AutoPricingBotPanel({
                       </button>
                     );
                   })}
+                </div>
+              </div>
+
+              {/* Kedalaman Scan Orderbook / Limit Jumlah User */}
+              <div className="rounded-lg border border-border/70 bg-surface-2/40 p-3 space-y-2">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <Label className="text-xs font-semibold text-foreground">
+                        Kedalaman Scan Orderbook (Batas User/Iklan yang Dianalisis)
+                      </Label>
+                      <Badge variant="outline" className="h-4.5 px-1.5 text-[0.62rem] border-primary/40 text-primary bg-primary/10 font-bold">
+                        {config.scanAdLimit ?? 100} User / Iklan
+                      </Badge>
+                    </div>
+                    <p className="text-[0.68rem] text-muted-foreground">
+                      Tentukan berapa banyak iklan/user teratas dari pasar Binance P2P yang ditarik untuk difilter (20, 50, atau hingga 100 user).
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    {[
+                      { val: 20, label: "20 User" },
+                      { val: 50, label: "50 User" },
+                      { val: 100, label: "100 User (Maksimal)" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.val}
+                        type="button"
+                        onClick={() => updateConfig({ scanAdLimit: opt.val })}
+                        className={`rounded border px-2 py-1 text-[0.65rem] font-semibold transition-colors ${
+                          (config.scanAdLimit ?? 100) === opt.val
+                            ? "border-primary bg-primary text-primary-foreground shadow-xs font-bold"
+                            : "border-border/60 bg-surface-2 text-muted-foreground hover:bg-surface-3 hover:text-foreground"
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             </TabsContent>

@@ -49,13 +49,14 @@ async function doFetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: numb
 
   for (const url of urls) {
     try {
-      const resp = await fetch(url, {
+      // 1. Ambil page 1 terlebih dahulu (20 iklan per page standar Binance)
+      const resp1 = await fetch(url, {
         method: "POST",
         headers: HEADERS,
         signal: AbortSignal.timeout(4500),
         body: JSON.stringify({
           page: 1,
-          rows: CFG.ROWS_PER_SIDE,
+          rows: 20,
           payTypes: [],
           asset: CFG.ASSET,
           tradeType,
@@ -64,9 +65,60 @@ async function doFetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: numb
           merchantCheck: false,
         }),
       });
-      if (!resp.ok) continue;
-      const data: any = await resp.json();
-      const parsed = parseAds(data?.data ?? []);
+      if (!resp1.ok) continue;
+      const data1: any = await resp1.json();
+      const rawPage1 = data1?.data;
+      if (!Array.isArray(rawPage1) || rawPage1.length === 0) continue;
+
+      const combinedRaw: any[] = [...rawPage1];
+
+      // 2. Ambil page 2 sampai 5 secara paralel untuk mengumpulkan hingga 100 iklan/user kompetitor
+      const remainingPages = [2, 3, 4, 5];
+      const pageFetches = remainingPages.map(async (pageNum) => {
+        try {
+          const r = await fetch(url, {
+            method: "POST",
+            headers: HEADERS,
+            signal: AbortSignal.timeout(4000),
+            body: JSON.stringify({
+              page: pageNum,
+              rows: 20,
+              payTypes: [],
+              asset: CFG.ASSET,
+              tradeType,
+              fiat: CFG.FIAT,
+              publisherType: null,
+              merchantCheck: false,
+            }),
+          });
+          if (!r.ok) return [];
+          const d: any = await r.json();
+          return Array.isArray(d?.data) ? d.data : [];
+        } catch {
+          return [];
+        }
+      });
+
+      const pagesResults = await Promise.all(pageFetches);
+      for (const list of pagesResults) {
+        if (Array.isArray(list)) {
+          combinedRaw.push(...list);
+        }
+      }
+
+      // Deduplikasi iklan berdasarkan advNo / adv.advNo
+      const seenNos = new Set<string>();
+      const dedupedRaw: any[] = [];
+      for (const item of combinedRaw) {
+        const advNo = item?.adv?.advNo ?? item?.advNo;
+        if (advNo) {
+          if (seenNos.has(String(advNo))) continue;
+          seenNos.add(String(advNo));
+        }
+        dedupedRaw.push(item);
+      }
+
+      const parsed = parseAds(dedupedRaw);
       if (parsed.length > 0) {
         if (tradeType === "BUY") {
           lastLiveSellAds = parsed;
@@ -93,26 +145,73 @@ async function doFetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: numb
 }
 
 function generateFallbackAds(tradeType: "BUY" | "SELL", basePrice: number = 17650): Ad[] {
-  // Acuan harga USDT/IDR wajar pasar dinamis dengan level merchant realistik
+  // Acuan harga USDT/IDR wajar pasar dinamis dengan 50 merchant realistik (Gold, Silver, Bronze, Regular)
   const merchants = [
+    // 🥇 Gold Tier (14 Merchants)
     { name: "ProTrader_ID", verified: true, level: "gold" as const, rate: 99.8, orders: 3420, banks: ["BCA", "Mandiri", "Bank Transfer"] },
-    { name: "FastPay_Crypto", verified: true, level: "silver" as const, rate: 99.4, orders: 2180, banks: ["BRI", "BCA", "SeaBank"] },
-    { name: "NusantaraEx", verified: true, level: "bronze" as const, rate: 98.9, orders: 1850, banks: ["Bank Transfer", "Mandiri", "Permata"] },
-    { name: "Garuda_P2P", verified: true, level: "silver" as const, rate: 99.1, orders: 4120, banks: ["BCA", "CIMB", "DANA"] },
-    { name: "IndoExchange", verified: false, level: "regular" as const, rate: 98.5, orders: 940, banks: ["Bank Transfer", "BRI"] },
     { name: "MasterCrypto_JKT", verified: true, level: "gold" as const, rate: 99.7, orders: 5600, banks: ["BCA", "Mandiri", "BNI"] },
+    { name: "IndoWhale_P2P", verified: true, level: "gold" as const, rate: 99.9, orders: 6800, banks: ["BCA", "Bank Transfer"] },
+    { name: "RajaTether_ID", verified: true, level: "gold" as const, rate: 99.5, orders: 4200, banks: ["Mandiri", "BCA", "BRI"] },
+    { name: "CentralExchange_ID", verified: true, level: "gold" as const, rate: 99.6, orders: 4900, banks: ["BCA", "CIMB Niaga", "Mandiri"] },
+    { name: "GarudaGold_USDT", verified: true, level: "gold" as const, rate: 99.4, orders: 3800, banks: ["BCA", "SeaBank", "Bank Transfer"] },
+    { name: "SentosaCrypto", verified: true, level: "gold" as const, rate: 99.8, orders: 5100, banks: ["BCA", "Permata", "Mandiri"] },
+    { name: "BataviaVIP", verified: true, level: "gold" as const, rate: 99.3, orders: 3600, banks: ["Bank Transfer", "BCA"] },
+    { name: "SuryaMakmur_P2P", verified: true, level: "gold" as const, rate: 99.7, orders: 4400, banks: ["BCA", "Mandiri", "BNI"] },
+    { name: "PrimaCrypto_ID", verified: true, level: "gold" as const, rate: 99.5, orders: 3900, banks: ["SeaBank", "BCA"] },
+    { name: "DeltaTrader_JKT", verified: true, level: "gold" as const, rate: 99.6, orders: 4700, banks: ["BCA", "BRI", "Mandiri"] },
+    { name: "MegaExchange_ID", verified: true, level: "gold" as const, rate: 99.8, orders: 6200, banks: ["BCA", "Bank Transfer"] },
+    { name: "BorneoCrypto_VIP", verified: true, level: "gold" as const, rate: 99.2, orders: 3100, banks: ["Mandiri", "BCA"] },
+    { name: "NirwanaExchange", verified: true, level: "gold" as const, rate: 99.7, orders: 5300, banks: ["BCA", "SeaBank", "BNI"] },
+
+    // 🥈 Silver Tier (14 Merchants)
+    { name: "FastPay_Crypto", verified: true, level: "silver" as const, rate: 99.4, orders: 2180, banks: ["BRI", "BCA", "SeaBank"] },
+    { name: "Garuda_P2P", verified: true, level: "silver" as const, rate: 99.1, orders: 2420, banks: ["BCA", "CIMB Niaga", "DANA"] },
+    { name: "CryptoKilat_ID", verified: true, level: "silver" as const, rate: 98.8, orders: 1950, banks: ["BCA", "Mandiri"] },
+    { name: "MetroP2P_ID", verified: true, level: "silver" as const, rate: 98.6, orders: 1720, banks: ["Bank Transfer", "BRI", "BCA"] },
+    { name: "NusantaraVip", verified: true, level: "silver" as const, rate: 99.0, orders: 2300, banks: ["BCA", "BNI", "SeaBank"] },
+    { name: "BataviaExchange", verified: true, level: "silver" as const, rate: 98.7, orders: 1840, banks: ["Mandiri", "BCA"] },
+    { name: "CuanExpress", verified: true, level: "silver" as const, rate: 98.9, orders: 2100, banks: ["BCA", "GoPay", "SeaBank"] },
+    { name: "KilatUSDT_ID", verified: true, level: "silver" as const, rate: 98.5, orders: 1650, banks: ["BCA", "Bank Transfer"] },
+    { name: "BintangExchange", verified: true, level: "silver" as const, rate: 99.2, orders: 2500, banks: ["BCA", "Mandiri", "Permata"] },
+    { name: "JayaCrypto_ID", verified: true, level: "silver" as const, rate: 98.4, orders: 1580, banks: ["BRI", "BCA"] },
+    { name: "SamudraTether", verified: true, level: "silver" as const, rate: 98.9, orders: 2050, banks: ["BCA", "SeaBank"] },
+    { name: "MajuBersama_P2P", verified: true, level: "silver" as const, rate: 98.6, orders: 1780, banks: ["Bank Transfer", "Mandiri"] },
+    { name: "KencanaTrader", verified: true, level: "silver" as const, rate: 99.1, orders: 2240, banks: ["BCA", "BNI"] },
+    { name: "LancarJaya_USDT", verified: true, level: "silver" as const, rate: 98.7, orders: 1900, banks: ["BCA", "Mandiri", "SeaBank"] },
+
+    // 🥉 Bronze Tier (12 Merchants)
+    { name: "NusantaraEx", verified: true, level: "bronze" as const, rate: 98.9, orders: 1850, banks: ["Bank Transfer", "Mandiri", "Permata"] },
     { name: "Sultan_USDT", verified: true, level: "bronze" as const, rate: 99.0, orders: 1430, banks: ["SeaBank", "BCA"] },
-    { name: "KriptoBerkah", verified: false, level: "regular" as const, rate: 97.8, orders: 670, banks: ["Bank Transfer", "DANA", "Gopay"] },
+    { name: "TokoKripto_JKT", verified: true, level: "bronze" as const, rate: 97.9, orders: 850, banks: ["BCA", "BRI"] },
+    { name: "BerkahMandiri_P2P", verified: true, level: "bronze" as const, rate: 98.2, orders: 1100, banks: ["Mandiri", "BCA"] },
+    { name: "BintangTether", verified: true, level: "bronze" as const, rate: 98.0, orders: 960, banks: ["BCA", "SeaBank"] },
+    { name: "CuanMaksimal", verified: true, level: "bronze" as const, rate: 97.6, orders: 780, banks: ["Bank Transfer", "DANA"] },
+    { name: "JayaAbadi_P2P", verified: true, level: "bronze" as const, rate: 98.3, orders: 1200, banks: ["BCA", "Mandiri"] },
+    { name: "PintuKripto_ID", verified: true, level: "bronze" as const, rate: 98.5, orders: 1320, banks: ["BCA", "BNI", "OVO"] },
+    { name: "MitraCrypto_JKT", verified: true, level: "bronze" as const, rate: 97.8, orders: 890, banks: ["BCA", "BRI"] },
+    { name: "BerkahCrypto", verified: true, level: "bronze" as const, rate: 98.1, orders: 1040, banks: ["Mandiri", "SeaBank"] },
+    { name: "SahabatTether", verified: true, level: "bronze" as const, rate: 97.7, orders: 820, banks: ["Bank Transfer", "BCA"] },
+    { name: "ArthaP2P_ID", verified: true, level: "bronze" as const, rate: 98.4, orders: 1180, banks: ["BCA", "CIMB Niaga"] },
+
+    // 👤 Regular User (10 Users)
+    { name: "IndoExchange", verified: false, level: "regular" as const, rate: 98.5, orders: 940, banks: ["Bank Transfer", "BRI"] },
+    { name: "KriptoBerkah", verified: false, level: "regular" as const, rate: 97.8, orders: 670, banks: ["Bank Transfer", "DANA", "GoPay"] },
+    { name: "User_8921_P2P", verified: false, level: "regular" as const, rate: 96.5, orders: 340, banks: ["BCA", "SeaBank"] },
+    { name: "User_4102_USDT", verified: false, level: "regular" as const, rate: 95.8, orders: 210, banks: ["Mandiri", "OVO"] },
+    { name: "RizkyCrypto", verified: false, level: "regular" as const, rate: 98.0, orders: 580, banks: ["BCA", "BRI"] },
+    { name: "Hendra_P2P", verified: false, level: "regular" as const, rate: 97.2, orders: 450, banks: ["Bank Transfer", "DANA"] },
+    { name: "Budi_USDT", verified: false, level: "regular" as const, rate: 96.9, orders: 390, banks: ["SeaBank", "BCA"] },
+    { name: "AhmadCrypto_ID", verified: false, level: "regular" as const, rate: 97.5, orders: 510, banks: ["Mandiri", "BCA"] },
+    { name: "TraderSantai", verified: false, level: "regular" as const, rate: 95.0, orders: 180, banks: ["Bank Transfer", "GoPay"] },
+    { name: "CuanHarian_P2P", verified: false, level: "regular" as const, rate: 96.2, orders: 290, banks: ["BCA", "DANA"] },
   ];
 
   return merchants.map((m, idx) => {
-    // Jika tradeType BUY (kompetitor JUAL USDT ke user): harga sedikit di atas base (+10, +13, ...)
-    // Jika tradeType SELL (kompetitor BELI USDT dari user): harga sedikit di bawah base (-10, -13, ...)
-    const offset = tradeType === "BUY" ? (idx * 3 + 10) : -(idx * 3 + 10);
+    const offset = tradeType === "BUY" ? (idx * 2 + 5) : -(idx * 2 + 5);
     const price = Math.round(basePrice + offset);
-    const available = (5000 + (idx * 1750)) * price;
-    const minLimit = 500_000 + (idx * 200_000);
-    const maxLimit = Math.min(available, 150_000_000);
+    const available = (2000 + (idx * 1200)) * price;
+    const minLimit = 250_000 + ((idx % 8) * 250_000);
+    const maxLimit = Math.min(available, 200_000_000);
 
     return {
       adv_no: `mock_${tradeType}_${idx}_${Date.now()}`,
@@ -120,7 +219,7 @@ function generateFallbackAds(tradeType: "BUY" | "SELL", basePrice: number = 1765
       min_limit_idr: minLimit,
       max_limit_idr: maxLimit,
       available_idr: available,
-      available_usdt: Math.round(5000 + (idx * 1750)),
+      available_usdt: Math.round(2000 + (idx * 1200)),
       pay_methods: m.banks,
       merchant_name: m.name,
       user_type: m.verified ? "merchant" : "user",

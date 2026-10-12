@@ -15,6 +15,7 @@ export type CompetitorFilterConfig = {
   verifiedOnly: boolean;          // Hanya ikuti Verified Merchant (centang kuning)
   userTypeFilter: "all" | "merchant_only" | "user_only"; // Filter tipe user Binance
   allowedMerchantLevels: ("gold" | "silver" | "bronze" | "regular")[]; // Filter level merchant: Gold, Silver, Bronze, Regular
+  scanAdLimit: number;            // Batas kedalaman scan iklan/user dari orderbook (20, 50, 100, default: 100)
   minCompletionRate: number;      // Minimal % penyelesaian 30 hari (misal: 95%)
   minMonthOrders: number;         // Minimal total order 30 hari (misal: 50)
 
@@ -90,6 +91,7 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   verifiedOnly: true,
   userTypeFilter: "all",
   allowedMerchantLevels: ["gold", "silver", "bronze", "regular"],
+  scanAdLimit: 100,
   minCompletionRate: 95,
   minMonthOrders: 50,
 
@@ -353,9 +355,12 @@ export function evaluateCompetitorAds(
     side === "sell_ref" ? a.price - b.price : b.price - a.price,
   );
 
+  const scanLimit = config.scanAdLimit && config.scanAdLimit > 0 ? config.scanAdLimit : 100;
+  const adsToScan = sortedAds.slice(0, scanLimit);
+
   let currentRank = 1;
 
-  for (const ad of sortedAds) {
+  for (const ad of adsToScan) {
     const reasons: DisqualificationReason[] = [];
 
     // 0. Filter Iklan Milik Sendiri (Own Ad - agar bot tidak bersaing dengan diri sendiri)
@@ -1088,6 +1093,9 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (typeof merged.excludeEwallets !== "boolean") merged.excludeEwallets = false;
     if (!Array.isArray(merged.allowedMerchantLevels) || merged.allowedMerchantLevels.length === 0) {
       merged.allowedMerchantLevels = ["gold", "silver", "bronze", "regular"];
+    }
+    if (typeof merged.scanAdLimit !== "number" || merged.scanAdLimit <= 0) {
+      merged.scanAdLimit = 100;
     }
     // Perbaikan: minOrderLimitIdr adalah batas toleransi filter kompetitor (0 = Bebas).
     // Jika sebelumnya terkena migrasi 50 Juta keliru, reset kembali ke 0 agar tidak mendiskualifikasi kompetitor

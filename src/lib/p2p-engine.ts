@@ -6,7 +6,7 @@
 export const CFG = {
   ASSET: "USDT",
   FIAT: "IDR",
-  ROWS_PER_SIDE: 20,
+  ROWS_PER_SIDE: 100,
   MIN_AD_LIQUIDITY_IDR: 1_000_000,
   OUTLIER_MAD_Z: 3.5,
   CLUSTER_GAP_PCT: 0.0015,
@@ -315,8 +315,8 @@ export function confidenceScore(
   spreadPct: number,
 ) {
   let score = 0;
-  score += 10 * Math.min(sellRaw.length / CFG.ROWS_PER_SIDE, 1);
-  score += 10 * Math.min(buyRaw.length / CFG.ROWS_PER_SIDE, 1);
+  score += 10 * Math.min(sellRaw.length / 20, 1);
+  score += 10 * Math.min(buyRaw.length / 20, 1);
   score += 10 * (sellRaw.length ? sellClean.length / sellRaw.length : 0);
   score += 10 * (buyRaw.length ? buyClean.length / buyRaw.length : 0);
   for (const side of [sellClean, buyClean]) {
