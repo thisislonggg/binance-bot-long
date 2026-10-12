@@ -685,19 +685,29 @@ export const updateMerchantAd = createServerFn({ method: "POST" })
     const fiatCap = Math.floor(targetStock * newPrice);
 
     // Hitung maxLimit IDR:
+    // Khusus iklan BELI (BUY): tetapkan 500 Juta IDR (tidak dibatasi fiatCap karena Binance otomatis
+    // melimit pesanan via dynamicMaxSingleTransAmount sesuai sisa stok yang ingin dibeli).
     let maxLimit = data.maxSingleTransAmount && data.maxSingleTransAmount > 0
       ? Math.round(data.maxSingleTransAmount)
+      : isBuy
+      ? 500_000_000
       : existingAd["maxSingleTransAmount"]
       ? Math.round(Number(existingAd["maxSingleTransAmount"]))
       : fiatCap;
 
-    if (maxLimit > fiatCap) {
+    if (!isBuy && maxLimit > fiatCap) {
       maxLimit = fiatCap;
+    }
+    if (isBuy && (!maxLimit || maxLimit <= 0)) {
+      maxLimit = 500_000_000;
     }
 
     // Hitung minLimit IDR:
+    // Khusus iklan BELI (BUY): tetapkan minimal transaksi 50 Juta IDR (50_000_000).
     let minLimit = data.minSingleTransAmount && data.minSingleTransAmount > 0
       ? Math.round(data.minSingleTransAmount)
+      : isBuy
+      ? 50_000_000
       : existingAd["minSingleTransAmount"]
       ? Math.round(Number(existingAd["minSingleTransAmount"]))
       : 50000;
@@ -706,9 +716,13 @@ export const updateMerchantAd = createServerFn({ method: "POST" })
     // minSingleTransAmount HARUS selalu lebih kecil (<) dari maxSingleTransAmount!
     // Jika minLimit >= maxLimit, Binance menolak pembaruan iklan (data: false).
     if (minLimit >= maxLimit) {
-      minLimit = Math.max(10000, Math.floor(maxLimit * 0.2));
-      if (minLimit >= maxLimit) {
-        minLimit = Math.max(10000, maxLimit - 10000);
+      if (isBuy) {
+        maxLimit = Math.max(500_000_000, minLimit + 10_000_000);
+      } else {
+        minLimit = Math.max(10000, Math.floor(maxLimit * 0.2));
+        if (minLimit >= maxLimit) {
+          minLimit = Math.max(10000, maxLimit - 10000);
+        }
       }
     }
 
@@ -892,15 +906,19 @@ export const updateMerchantAd = createServerFn({ method: "POST" })
     // ─────────────────────────────────────────────────────────────────────────
     if (!updateSucceeded) {
       const origAmountToPreserve = Number(existingAd["initAmount"] ?? existingAd["amount"] ?? origSurplus ?? 100);
-      const origMinLimit = existingAd["minSingleTransAmount"] ? Number(existingAd["minSingleTransAmount"]) : 50000;
-      const origMaxLimit = existingAd["maxSingleTransAmount"] ? Number(existingAd["maxSingleTransAmount"]) : Math.floor(origAmountToPreserve * newPrice);
+      const origMinLimit = isBuy
+        ? (data.minSingleTransAmount && data.minSingleTransAmount > 0 ? Math.round(data.minSingleTransAmount) : 50_000_000)
+        : (existingAd["minSingleTransAmount"] ? Number(existingAd["minSingleTransAmount"]) : 50000);
+      const origMaxLimit = isBuy
+        ? 500_000_000
+        : (existingAd["maxSingleTransAmount"] ? Number(existingAd["maxSingleTransAmount"]) : Math.floor(origAmountToPreserve * newPrice));
 
       const pricePreservedPayload = {
         ...payload1,
         initAmount: origAmountToPreserve,
         amount: origAmountToPreserve,
         minSingleTransAmount: origMinLimit,
-        maxSingleTransAmount: Math.min(origMaxLimit, Math.floor(origAmountToPreserve * newPrice)),
+        maxSingleTransAmount: isBuy ? Math.max(origMaxLimit, 500_000_000) : Math.min(origMaxLimit, Math.floor(origAmountToPreserve * newPrice)),
       };
 
       const res7 = await binanceAgentRequest({

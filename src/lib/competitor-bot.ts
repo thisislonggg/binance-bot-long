@@ -68,8 +68,8 @@ export type CompetitorFilterConfig = {
   merchantBuyAdvNo: string;               // Nomor iklan beli di Binance (advNo)
   merchantSellAdvNo: string;              // Nomor iklan jual di Binance (advNo)
   manualBuyStockUsdt?: number;            // Target stok USDT beli manual/override (0 = auto dari kas bank)
-  manualBuyMinLimitIdr?: number;          // Limit bawah pesanan IDR iklan beli di Binance (0 = default 50.000)
-  manualBuyMaxLimitIdr?: number;          // Plafon limit IDR beli manual/override (0 = auto dari stok * harga)
+  manualBuyMinLimitIdr?: number;          // Limit bawah pesanan IDR iklan beli di Binance (default 50 Juta)
+  manualBuyMaxLimitIdr?: number;          // Plafon limit IDR beli di Binance (tetap 500 Juta, otomatis terlimit oleh Binance sesuai stok)
   manualSellStockUsdt?: number;           // Target stok USDT jual manual (0 = otomatis all saldo live)
   manualSellMinLimitIdr?: number;         // Limit bawah pesanan IDR iklan jual di Binance (0 = default 50.000)
   manualSellMaxLimitIdr?: number;         // Plafon limit IDR jual manual (0 = auto dari stok * harga)
@@ -132,8 +132,8 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   merchantBuyAdvNo: "",
   merchantSellAdvNo: "",
   manualBuyStockUsdt: 0,
-  manualBuyMinLimitIdr: 0,
-  manualBuyMaxLimitIdr: 0,
+  manualBuyMinLimitIdr: 50_000_000,
+  manualBuyMaxLimitIdr: 500_000_000,
   manualSellStockUsdt: 0,
   manualSellMinLimitIdr: 0,
   manualSellMaxLimitIdr: 0,
@@ -854,8 +854,8 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (typeof merged.merchantBuyAdvNo !== "string") merged.merchantBuyAdvNo = "";
     if (typeof merged.merchantSellAdvNo !== "string") merged.merchantSellAdvNo = "";
     if (typeof merged.manualBuyStockUsdt !== "number") merged.manualBuyStockUsdt = 0;
-    if (typeof merged.manualBuyMinLimitIdr !== "number") merged.manualBuyMinLimitIdr = 0;
-    if (typeof merged.manualBuyMaxLimitIdr !== "number") merged.manualBuyMaxLimitIdr = 0;
+    if (typeof merged.manualBuyMinLimitIdr !== "number" || merged.manualBuyMinLimitIdr <= 0) merged.manualBuyMinLimitIdr = 50_000_000;
+    if (typeof merged.manualBuyMaxLimitIdr !== "number" || merged.manualBuyMaxLimitIdr <= 0) merged.manualBuyMaxLimitIdr = 500_000_000;
     if (typeof merged.manualSellStockUsdt !== "number") merged.manualSellStockUsdt = 0;
     if (typeof merged.manualSellMinLimitIdr !== "number") merged.manualSellMinLimitIdr = 0;
     if (typeof merged.manualSellMaxLimitIdr !== "number") merged.manualSellMaxLimitIdr = 0;

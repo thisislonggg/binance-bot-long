@@ -387,10 +387,12 @@ export function AutoPricingBotPanel({
   };
 
   const handleCopyBuyDetails = () => {
+    const minLimit = config.manualBuyMinLimitIdr || 50_000_000;
+    const maxLimit = config.manualBuyMaxLimitIdr || 500_000_000;
     const text =
       bankAllocation.autoBuyStockUsdt > 0
-        ? `Harga Beli: Rp ${Math.round(recommendedBuyPrice).toLocaleString("id-ID")}\nStok USDT: ${bankAllocation.autoBuyStockUsdt.toLocaleString("id-ID")} USDT\nMax Limit: Rp ${Math.round(bankAllocation.autoBuyMaxLimitIdr).toLocaleString("id-ID")}`
-        : `Harga Beli: Rp ${Math.round(recommendedBuyPrice).toLocaleString("id-ID")}`;
+        ? `Harga Beli: Rp ${Math.round(recommendedBuyPrice).toLocaleString("id-ID")}\nStok USDT: ${bankAllocation.autoBuyStockUsdt.toLocaleString("id-ID")} USDT\nMin Limit: Rp ${minLimit.toLocaleString("id-ID")}\nMax Limit: Rp ${maxLimit.toLocaleString("id-ID")}`
+        : `Harga Beli: Rp ${Math.round(recommendedBuyPrice).toLocaleString("id-ID")}\nMin Limit: Rp ${minLimit.toLocaleString("id-ID")}\nMax Limit: Rp ${maxLimit.toLocaleString("id-ID")}`;
     navigator.clipboard.writeText(text);
     toast.success("Rincian iklan beli disalin ke clipboard!");
   };
@@ -443,11 +445,7 @@ export function AutoPricingBotPanel({
       side === "buy"
         ? config.manualBuyMaxLimitIdr && config.manualBuyMaxLimitIdr > 0
           ? config.manualBuyMaxLimitIdr
-          : bankAllocation.autoBuyMaxLimitIdr > 0
-          ? bankAllocation.autoBuyMaxLimitIdr
-          : effectiveBuyStock && price > 0
-          ? Math.floor(effectiveBuyStock * price)
-          : undefined
+          : 500_000_000
         : undefined;
 
     const effectiveSellMaxLimit =
@@ -462,8 +460,10 @@ export function AutoPricingBotPanel({
     const effectiveMaxLimit = side === "buy" ? effectiveBuyMaxLimit : effectiveSellMaxLimit;
 
     const effectiveBuyMinLimit =
-      side === "buy" && config.manualBuyMinLimitIdr && config.manualBuyMinLimitIdr > 0
-        ? config.manualBuyMinLimitIdr
+      side === "buy"
+        ? config.manualBuyMinLimitIdr && config.manualBuyMinLimitIdr > 0
+          ? config.manualBuyMinLimitIdr
+          : 50_000_000
         : undefined;
 
     const effectiveSellMinLimit =
@@ -3318,52 +3318,59 @@ export function AutoPricingBotPanel({
 
                     <div className="grid grid-cols-2 gap-2">
                       <div className="space-y-1">
-                        <span className="text-[0.65rem] text-muted-foreground font-semibold">
-                          Limit Bawah (Min IDR):
-                        </span>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[0.65rem] text-muted-foreground font-semibold">
+                            Limit Bawah (Min IDR):
+                          </span>
+                          <span className="text-[0.58rem] font-bold text-bid bg-bid/10 border border-bid/25 px-1 rounded">
+                            Min 50 Juta
+                          </span>
+                        </div>
                         <Input
                           type="number"
-                          min={0}
-                          value={config.manualBuyMinLimitIdr && config.manualBuyMinLimitIdr > 0 ? config.manualBuyMinLimitIdr : ""}
+                          min={10000}
+                          value={config.manualBuyMinLimitIdr && config.manualBuyMinLimitIdr > 0 ? config.manualBuyMinLimitIdr : 50_000_000}
                           onChange={(e) => {
                             const val = Number(e.target.value);
-                            updateConfig({ manualBuyMinLimitIdr: Number.isFinite(val) && val > 0 ? val : 0 });
+                            updateConfig({ manualBuyMinLimitIdr: Number.isFinite(val) && val > 0 ? val : 50_000_000 });
                           }}
-                          placeholder="Default: 50.000"
+                          placeholder="50.000.000"
                           className="h-7 text-xs bg-surface font-mono text-right"
                         />
-                        <p className="text-[0.6rem] text-muted-foreground">
-                          {config.manualBuyMinLimitIdr && config.manualBuyMinLimitIdr > 0
-                            ? `Min Rp ${config.manualBuyMinLimitIdr.toLocaleString("id-ID")}`
-                            : "Default Rp 50.000"}
-                        </p>
+                        <div className="flex items-center justify-between text-[0.6rem] text-muted-foreground">
+                          <span>Min Rp {(config.manualBuyMinLimitIdr || 50_000_000).toLocaleString("id-ID")}</span>
+                          <button
+                            type="button"
+                            onClick={() => updateConfig({ manualBuyMinLimitIdr: 50_000_000 })}
+                            className="text-primary hover:underline font-semibold"
+                          >
+                            Reset 50 Juta
+                          </button>
+                        </div>
                       </div>
 
                       <div className="space-y-1">
-                        <span className="text-[0.65rem] text-muted-foreground font-semibold">
-                          Limit Atas (Max IDR):
-                        </span>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[0.65rem] text-muted-foreground font-semibold">
+                            Limit Atas (Max IDR):
+                          </span>
+                          <span className="text-[0.58rem] font-bold text-bid bg-bid/10 border border-bid/25 px-1 rounded">
+                            Tetap 500 Juta
+                          </span>
+                        </div>
                         <Input
                           type="number"
-                          min={0}
-                          value={config.manualBuyMaxLimitIdr && config.manualBuyMaxLimitIdr > 0 ? config.manualBuyMaxLimitIdr : ""}
+                          min={50_000_000}
+                          value={config.manualBuyMaxLimitIdr && config.manualBuyMaxLimitIdr > 0 ? config.manualBuyMaxLimitIdr : 500_000_000}
                           onChange={(e) => {
                             const val = Number(e.target.value);
-                            updateConfig({ manualBuyMaxLimitIdr: Number.isFinite(val) && val > 0 ? val : 0 });
+                            updateConfig({ manualBuyMaxLimitIdr: Number.isFinite(val) && val > 0 ? val : 500_000_000 });
                           }}
-                          placeholder={
-                            config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0 && recommendedBuyPrice > 0
-                              ? String(Math.floor(config.manualBuyStockUsdt * recommendedBuyPrice))
-                              : bankAllocation.autoBuyMaxLimitIdr > 0
-                              ? String(bankAllocation.autoBuyMaxLimitIdr)
-                              : "Auto Stok"
-                          }
+                          placeholder="500.000.000"
                           className="h-7 text-xs bg-surface font-mono text-right"
                         />
                         <p className="text-[0.6rem] text-muted-foreground">
-                          {config.manualBuyMaxLimitIdr && config.manualBuyMaxLimitIdr > 0
-                            ? `Max Rp ${config.manualBuyMaxLimitIdr.toLocaleString("id-ID")}`
-                            : "Auto dari kapasitas stok"}
+                          Tetap Rp 500.000.000 (Binance otomatis melimit pesanan sesuai kapasitas sisa stok yang ingin dibeli).
                         </p>
                       </div>
                     </div>
@@ -3399,15 +3406,9 @@ export function AutoPricingBotPanel({
                     <div className="flex justify-between text-muted-foreground text-[0.68rem]">
                       <span>Rentang Limit Transaksi:</span>
                       <strong className="num text-foreground">
-                        {`Rp ${(config.manualBuyMinLimitIdr || 50_000).toLocaleString("id-ID")} - ${
-                          config.manualBuyMaxLimitIdr && config.manualBuyMaxLimitIdr > 0
-                            ? fmtRp(config.manualBuyMaxLimitIdr)
-                            : config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0 && recommendedBuyPrice > 0
-                            ? fmtRp(Math.floor(config.manualBuyStockUsdt * recommendedBuyPrice))
-                            : bankAllocation.autoBuyMaxLimitIdr > 0
-                            ? fmtRp(bankAllocation.autoBuyMaxLimitIdr)
-                            : "Auto"
-                        }`}
+                        {`Rp ${(config.manualBuyMinLimitIdr || 50_000_000).toLocaleString("id-ID")} - ${fmtRp(
+                          config.manualBuyMaxLimitIdr || 500_000_000
+                        )}`}
                       </strong>
                     </div>
                   </div>
