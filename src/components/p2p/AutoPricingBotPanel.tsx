@@ -412,6 +412,11 @@ export function AutoPricingBotPanel({
           : undefined
         : undefined;
 
+    const effectiveBuyMinLimit =
+      side === "buy" && config.manualBuyMinLimitIdr && config.manualBuyMinLimitIdr > 0
+        ? config.manualBuyMinLimitIdr
+        : undefined;
+
     try {
       const res = await pushPriceFn({
         data: {
@@ -421,6 +426,7 @@ export function AutoPricingBotPanel({
           price,
           amountUsdt: effectiveBuyStock,
           maxLimitIdr: effectiveBuyMaxLimit,
+          minLimitIdr: effectiveBuyMinLimit,
         },
       });
 
@@ -620,8 +626,13 @@ export function AutoPricingBotPanel({
 
             <div className="mt-2 flex items-baseline justify-between">
               <div>
-                <div className="text-[0.68rem] text-muted-foreground font-medium uppercase tracking-wider">
-                  Harga Iklan Beli Anda
+                <div className="text-[0.68rem] text-muted-foreground font-medium uppercase tracking-wider flex items-center gap-1.5">
+                  <span>Harga Iklan Beli Anda</span>
+                  {config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0 ? (
+                    <Badge variant="outline" className="text-[0.58rem] py-0 px-1 border-bid/40 text-bid font-bold">
+                      Override Manual
+                    </Badge>
+                  ) : null}
                 </div>
                 <div className="num text-2xl sm:text-3xl font-extrabold text-foreground">
                   {fmtRp2(recommendedBuyPrice)}
@@ -631,8 +642,11 @@ export function AutoPricingBotPanel({
               <div className="text-right">
                 <div className="text-[0.68rem] text-muted-foreground">Offset Strategi</div>
                 <div className="text-xs font-bold text-bid num">
-                  {config.buyOffsetRp >= 0 ? `+Rp ${config.buyOffsetRp}` : `-Rp ${Math.abs(config.buyOffsetRp)}`}
-                  {config.buyOffsetRp === 0 ? " (Match)" : " (Overcut)"}
+                  {config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0
+                    ? "Harga Tetap"
+                    : config.buyOffsetRp >= 0
+                    ? `+Rp ${config.buyOffsetRp} ${config.buyOffsetRp === 0 ? "(Match)" : "(Overcut)"}`
+                    : `-Rp ${Math.abs(config.buyOffsetRp)} (Undercut)`}
                 </div>
               </div>
             </div>
@@ -642,14 +656,16 @@ export function AutoPricingBotPanel({
               <div className="flex items-center justify-between text-muted-foreground">
                 <span className="font-medium text-[0.72rem]">Dasar Acuan:</span>
                 <span className="font-bold text-foreground inline-flex items-center gap-1">
-                  {targetMethodDescription.buy}
+                  {config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0
+                    ? `Manual Override (Rp ${config.manualBuyPriceOverrideRp.toLocaleString("id-ID")})`
+                    : targetMethodDescription.buy}
                   {buyTargetMerchant?.is_verified && (
                     <span className="size-1.5 rounded-full bg-amber-400" title="Verified Merchant" />
                   )}
                 </span>
               </div>
 
-              {buyTargetMerchant && (
+              {buyTargetMerchant && !config.manualBuyPriceOverrideRp && (
                 <div className="flex items-center justify-between text-[0.72rem] text-muted-foreground pt-0.5 border-t border-border/40">
                   <span>
                     Stok: <strong className="text-foreground">{Math.round(buyTargetMerchant.available_usdt || (buyTargetMerchant.price > 0 ? buyTargetMerchant.available_idr / buyTargetMerchant.price : 0))} USDT</strong>
@@ -664,18 +680,34 @@ export function AutoPricingBotPanel({
               )}
             </div>
 
-            {/* Status Guardrail Beli */}
-            <div className="mt-2.5 flex items-center justify-between text-[0.7rem]">
-              <span className="text-muted-foreground">Batas Atas (Ceiling):</span>
-              {buyGuard.triggered ? (
-                <span className="inline-flex items-center gap-1 font-semibold text-amber-500">
-                  <ShieldAlert className="size-3" /> Terkunci Ceiling {fmtRp2(buyGuard.ceilingPrice)}
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 text-muted-foreground">
-                  <ShieldCheck className="size-3 text-bid" /> Max {fmtRp2(buyGuard.ceilingPrice)} (Aman)
-                </span>
-              )}
+            {/* Status Guardrail Beli (Ceiling & Floor) */}
+            <div className="mt-2.5 space-y-1 text-[0.7rem]">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Batas Atas (Ceiling):</span>
+                {buyGuard.triggered && buyGuard.ceilingPrice === recommendedBuyPrice ? (
+                  <span className="inline-flex items-center gap-1 font-semibold text-amber-500">
+                    <ShieldAlert className="size-3" /> Terkunci Ceiling {fmtRp2(buyGuard.ceilingPrice)}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-muted-foreground">
+                    <ShieldCheck className="size-3 text-bid" /> Max {fmtRp2(buyGuard.ceilingPrice)} (Aman)
+                  </span>
+                )}
+              </div>
+              {buyGuard.floorPrice && buyGuard.floorPrice > 0 ? (
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Batas Bawah (Floor):</span>
+                  {buyGuard.triggered && buyGuard.floorPrice === recommendedBuyPrice ? (
+                    <span className="inline-flex items-center gap-1 font-semibold text-amber-500">
+                      <ShieldAlert className="size-3" /> Terkunci Floor {fmtRp2(buyGuard.floorPrice)}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-muted-foreground">
+                      <ShieldCheck className="size-3 text-bid" /> Min {fmtRp2(buyGuard.floorPrice)} (Aman)
+                    </span>
+                  )}
+                </div>
+              ) : null}
             </div>
 
             {/* Fitur Otomatis Pasang Stok Sesuai Sisa Saldo Bank */}
@@ -2722,6 +2754,58 @@ export function AutoPricingBotPanel({
                     </div>
                   </div>
                 </div>
+
+                {/* Batas Bawah Beli (Buy Floor Guard) */}
+                <div className="rounded-lg border border-bid/30 bg-surface-2/60 p-3 space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-bid uppercase tracking-wider flex items-center gap-1.5">
+                      <ShieldCheck className="size-3.5" /> Proteksi Batas Bawah Beli (Buy Floor)
+                    </span>
+                    <span className="num font-bold text-bid">
+                      {config.manualBuyFloorRp && config.manualBuyFloorRp > 0
+                        ? fmtRp2(config.manualBuyFloorRp)
+                        : "Bebas (Tanpa Floor)"}
+                    </span>
+                  </div>
+
+                  <p className="text-[0.72rem] text-muted-foreground">
+                    Mencegah bot memasang harga beli di bawah ambang batas ini (misal mencegah tawar terlalu murah jika kompetitor dump harga).
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <Button
+                      type="button"
+                      variant={!config.manualBuyFloorRp ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => updateConfig({ buyFloorMode: "disabled", manualBuyFloorRp: 0 })}
+                      className="h-7 text-xs font-semibold"
+                    >
+                      Bebas (Tanpa Floor)
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={config.manualBuyFloorRp && config.manualBuyFloorRp > 0 ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => updateConfig({ buyFloorMode: "manual", manualBuyFloorRp: config.manualBuyFloorRp || 16_100 })}
+                      className="h-7 text-xs font-semibold"
+                    >
+                      Nominal Manual (Floor)
+                    </Button>
+                  </div>
+
+                  {Boolean(config.manualBuyFloorRp && config.manualBuyFloorRp > 0) && (
+                    <div className="flex items-center justify-between pt-1">
+                      <span className="text-muted-foreground">Nominal Floor Beli Tetap:</span>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={config.manualBuyFloorRp}
+                        onChange={(e) => updateConfig({ manualBuyFloorRp: Math.max(0, Number(e.target.value)) })}
+                        className="h-6.5 w-28 text-xs bg-surface text-right font-bold"
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
             </TabsContent>
 
@@ -2954,6 +3038,7 @@ export function AutoPricingBotPanel({
                     </Badge>
                   </div>
 
+                  {/* 1. Nomor Iklan advNo */}
                   <div className="space-y-1">
                     <Label className="text-xs font-semibold text-foreground">
                       Nomor Iklan Beli Binance (advNo)
@@ -2970,6 +3055,125 @@ export function AutoPricingBotPanel({
                     </p>
                   </div>
 
+                  {/* 2. Pengaturan Harga Beli & Limit Atas/Bawah (Ceiling/Floor) */}
+                  <div className="space-y-2 rounded-lg border border-bid/25 bg-surface/70 p-2.5">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs font-bold text-bid flex items-center gap-1">
+                        <Sliders className="size-3.5" /> Setting Harga Beli & Batas Aman
+                      </Label>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateConfig({
+                              manualBuyPriceOverrideRp:
+                                config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0
+                                  ? 0
+                                  : Math.round(recommendedBuyPrice || 16_850),
+                            })
+                          }
+                          className={`text-[0.62rem] px-1.5 py-0.5 rounded font-bold transition-colors ${
+                            config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0
+                              ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                              : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          {config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0
+                            ? "Mode: Harga Tetap"
+                            : "Mode: Auto Bot"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Jika Mode Harga Tetap (Override) */}
+                    {config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0 ? (
+                      <div className="space-y-1 pt-1">
+                        <div className="flex items-center justify-between text-[0.68rem]">
+                          <span className="text-muted-foreground font-semibold">Harga Beli Tetap (Rp):</span>
+                          <button
+                            type="button"
+                            onClick={() => updateConfig({ manualBuyPriceOverrideRp: 0 })}
+                            className="text-bid hover:underline text-[0.62rem]"
+                          >
+                            Kembali ke Auto Bot
+                          </button>
+                        </div>
+                        <div className="relative">
+                          <Input
+                            type="number"
+                            min={0}
+                            value={config.manualBuyPriceOverrideRp}
+                            onChange={(e) =>
+                              updateConfig({ manualBuyPriceOverrideRp: Math.max(0, Number(e.target.value)) })
+                            }
+                            className="h-8 text-xs font-bold bg-surface text-foreground font-mono pr-12"
+                            placeholder="Contoh: 16850"
+                          />
+                          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[0.68rem] text-muted-foreground font-semibold">
+                            IDR
+                          </span>
+                        </div>
+                        <p className="text-[0.62rem] text-amber-500">
+                          Iklan beli akan selalu dikirim dengan harga tetap Rp {config.manualBuyPriceOverrideRp.toLocaleString("id-ID")} tanpa mengikuti kompetitor.
+                        </p>
+                      </div>
+                    ) : (
+                      /* Jika Mode Auto Bot: Tampilkan Batas Bawah & Batas Atas */
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between text-[0.65rem]">
+                            <span className="text-muted-foreground font-semibold">Limit Bawah (Min Rp):</span>
+                          </div>
+                          <Input
+                            type="number"
+                            min={0}
+                            value={config.manualBuyFloorRp && config.manualBuyFloorRp > 0 ? config.manualBuyFloorRp : ""}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              updateConfig({
+                                manualBuyFloorRp: Number.isFinite(val) && val > 0 ? val : 0,
+                                buyFloorMode: val > 0 ? "manual" : "disabled",
+                              });
+                            }}
+                            placeholder="0 (Bebas)"
+                            className="h-7 text-xs bg-surface font-mono text-right"
+                          />
+                          <p className="text-[0.6rem] text-muted-foreground">
+                            {config.manualBuyFloorRp && config.manualBuyFloorRp > 0
+                              ? `Min: Rp ${config.manualBuyFloorRp.toLocaleString("id-ID")}`
+                              : "Tanpa batas bawah"}
+                          </p>
+                        </div>
+
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between text-[0.65rem]">
+                            <span className="text-muted-foreground font-semibold">Limit Atas (Max Rp):</span>
+                          </div>
+                          <Input
+                            type="number"
+                            min={0}
+                            value={config.manualBuyCeilingRp && config.manualBuyCeilingRp > 0 ? config.manualBuyCeilingRp : ""}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              updateConfig({
+                                manualBuyCeilingRp: Number.isFinite(val) && val > 0 ? val : 0,
+                                buyCeilingMode: "manual",
+                              });
+                            }}
+                            placeholder={buyGuard.ceilingPrice > 0 ? String(buyGuard.ceilingPrice) : "Auto"}
+                            className="h-7 text-xs bg-surface font-mono text-right"
+                          />
+                          <p className="text-[0.6rem] text-muted-foreground">
+                            {config.manualBuyCeilingRp && config.manualBuyCeilingRp > 0
+                              ? `Max: Rp ${config.manualBuyCeilingRp.toLocaleString("id-ID")}`
+                              : `Auto: ${fmtRp2(buyGuard.ceilingPrice)}`}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 3. Target Pasang Stok Beli (USDT) */}
                   <div className="space-y-1">
                     <div className="flex items-center justify-between">
                       <Label className="text-xs font-semibold text-foreground">
@@ -3014,9 +3218,82 @@ export function AutoPricingBotPanel({
                     </p>
                   </div>
 
+                  {/* 4. Limit Transaksi Pesanan di Binance (Min & Max Limit IDR) */}
+                  <div className="space-y-1.5 rounded-lg border border-border/70 bg-surface/60 p-2.5">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
+                        <Coins className="size-3.5 text-primary" /> Batas Limit Transaksi Iklan (IDR)
+                      </Label>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <span className="text-[0.65rem] text-muted-foreground font-semibold">
+                          Limit Bawah (Min IDR):
+                        </span>
+                        <Input
+                          type="number"
+                          min={0}
+                          value={config.manualBuyMinLimitIdr && config.manualBuyMinLimitIdr > 0 ? config.manualBuyMinLimitIdr : ""}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            updateConfig({ manualBuyMinLimitIdr: Number.isFinite(val) && val > 0 ? val : 0 });
+                          }}
+                          placeholder="Default: 50.000"
+                          className="h-7 text-xs bg-surface font-mono text-right"
+                        />
+                        <p className="text-[0.6rem] text-muted-foreground">
+                          {config.manualBuyMinLimitIdr && config.manualBuyMinLimitIdr > 0
+                            ? `Min Rp ${config.manualBuyMinLimitIdr.toLocaleString("id-ID")}`
+                            : "Default Rp 50.000"}
+                        </p>
+                      </div>
+
+                      <div className="space-y-1">
+                        <span className="text-[0.65rem] text-muted-foreground font-semibold">
+                          Limit Atas (Max IDR):
+                        </span>
+                        <Input
+                          type="number"
+                          min={0}
+                          value={config.manualBuyMaxLimitIdr && config.manualBuyMaxLimitIdr > 0 ? config.manualBuyMaxLimitIdr : ""}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            updateConfig({ manualBuyMaxLimitIdr: Number.isFinite(val) && val > 0 ? val : 0 });
+                          }}
+                          placeholder={
+                            config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0 && recommendedBuyPrice > 0
+                              ? String(Math.floor(config.manualBuyStockUsdt * recommendedBuyPrice))
+                              : bankAllocation.autoBuyMaxLimitIdr > 0
+                              ? String(bankAllocation.autoBuyMaxLimitIdr)
+                              : "Auto Stok"
+                          }
+                          className="h-7 text-xs bg-surface font-mono text-right"
+                        />
+                        <p className="text-[0.6rem] text-muted-foreground">
+                          {config.manualBuyMaxLimitIdr && config.manualBuyMaxLimitIdr > 0
+                            ? `Max Rp ${config.manualBuyMaxLimitIdr.toLocaleString("id-ID")}`
+                            : "Auto dari kapasitas stok"}
+                        </p>
+                      </div>
+                    </div>
+
+                    {Boolean(
+                      config.manualBuyMinLimitIdr &&
+                      config.manualBuyMaxLimitIdr &&
+                      config.manualBuyMinLimitIdr >= config.manualBuyMaxLimitIdr
+                    ) && (
+                      <div className="text-[0.62rem] text-destructive flex items-center gap-1 font-semibold pt-0.5">
+                        <AlertTriangle className="size-3 shrink-0" />
+                        <span>Perhatian: Limit Bawah harus lebih kecil dari Limit Atas!</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 5. Live Summary Data Terkirim ke Binance */}
                   <div className="rounded bg-surface/80 p-2.5 border border-border/60 space-y-1 text-xs">
                     <div className="flex justify-between text-muted-foreground text-[0.68rem]">
-                      <span>Harga Rekomendasi:</span>
+                      <span>Harga Kirim Binance:</span>
                       <strong className="num text-foreground">{fmtRp2(recommendedBuyPrice)}</strong>
                     </div>
                     <div className="flex justify-between text-muted-foreground text-[0.68rem]">
@@ -3030,13 +3307,17 @@ export function AutoPricingBotPanel({
                       </strong>
                     </div>
                     <div className="flex justify-between text-muted-foreground text-[0.68rem]">
-                      <span>Plafon Limit Transaksi:</span>
+                      <span>Rentang Limit Transaksi:</span>
                       <strong className="num text-foreground">
-                        {config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0 && recommendedBuyPrice > 0
-                          ? fmtRp(Math.floor(config.manualBuyStockUsdt * recommendedBuyPrice))
-                          : bankAllocation.autoBuyMaxLimitIdr > 0
-                          ? fmtRp(bankAllocation.autoBuyMaxLimitIdr)
-                          : "—"}
+                        {`Rp ${(config.manualBuyMinLimitIdr || 50_000).toLocaleString("id-ID")} - ${
+                          config.manualBuyMaxLimitIdr && config.manualBuyMaxLimitIdr > 0
+                            ? fmtRp(config.manualBuyMaxLimitIdr)
+                            : config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0 && recommendedBuyPrice > 0
+                            ? fmtRp(Math.floor(config.manualBuyStockUsdt * recommendedBuyPrice))
+                            : bankAllocation.autoBuyMaxLimitIdr > 0
+                            ? fmtRp(bankAllocation.autoBuyMaxLimitIdr)
+                            : "Auto"
+                        }`}
                       </strong>
                     </div>
                   </div>
@@ -3048,7 +3329,7 @@ export function AutoPricingBotPanel({
                     className="w-full h-8 text-xs font-semibold bg-bid text-bid-foreground hover:bg-bid/90 gap-1.5 shadow-sm"
                   >
                     <Send className={`size-3.5 ${isPushingBuy ? "animate-pulse" : ""}`} />
-                    <span>{isPushingBuy ? "Mengirim ke Binance..." : "Push Harga & Stok Beli ke Binance"}</span>
+                    <span>{isPushingBuy ? "Mengirim ke Binance..." : "Push Harga, Stok, & Limit Beli ke Binance"}</span>
                   </Button>
                 </div>
 

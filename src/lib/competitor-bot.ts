@@ -49,6 +49,9 @@ export type CompetitorFilterConfig = {
 
   buyCeilingMode: "auto_fair" | "manual"; // Batas atas beli: Auto dari Fair Price atau nominal tetap
   manualBuyCeilingRp: number;             // Nominal batas atas beli manual (jika mode manual)
+  buyFloorMode?: "disabled" | "manual";   // Batas bawah beli: Disabled (bebas) atau nominal tetap
+  manualBuyFloorRp?: number;              // Nominal batas bawah beli manual (0 = bebas / tanpa floor)
+  manualBuyPriceOverrideRp?: number;      // Override pasang harga beli manual tetap (0 = auto bot)
 
   minSpreadRp: number;            // Selisih minimal (Jual - Beli) agar tetap profit
   maxPriceStepRp: number;         // Pembatas lonjakan harga per siklus (anti-spoofing)
@@ -65,6 +68,7 @@ export type CompetitorFilterConfig = {
   merchantBuyAdvNo: string;               // Nomor iklan beli di Binance (advNo)
   merchantSellAdvNo: string;              // Nomor iklan jual di Binance (advNo)
   manualBuyStockUsdt?: number;            // Target stok USDT beli manual/override (0 = auto dari kas bank)
+  manualBuyMinLimitIdr?: number;          // Limit bawah pesanan IDR iklan beli di Binance (0 = default 50.000)
   manualBuyMaxLimitIdr?: number;          // Plafon limit IDR beli manual/override (0 = auto dari stok * harga)
   autoPushToBinance: boolean;             // Otomatis push perubahan harga ke Binance P2P
   autoPushMinIntervalSec: number;         // Interval minimal push (detik, default 30)
@@ -107,6 +111,9 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
 
   buyCeilingMode: "auto_fair",
   manualBuyCeilingRp: 16_350,
+  buyFloorMode: "disabled",
+  manualBuyFloorRp: 0,
+  manualBuyPriceOverrideRp: 0,
 
   minSpreadRp: 25,
   maxPriceStepRp: 50,
@@ -121,6 +128,7 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   merchantBuyAdvNo: "",
   merchantSellAdvNo: "",
   manualBuyStockUsdt: 0,
+  manualBuyMinLimitIdr: 0,
   manualBuyMaxLimitIdr: 0,
   autoPushToBinance: false,
   autoPushMinIntervalSec: 30,
@@ -270,6 +278,7 @@ export type CompetitorPricingResult = {
     triggered: boolean;
     reason?: string;
     ceilingPrice: number;
+    floorPrice?: number;
   };
   spreadAbs: number;
   spreadPct: number;
@@ -650,30 +659,54 @@ export function computeCompetitorPricing(input: {
     recommendedSellPrice = calculatedSellFloor;
   }
 
-  // 5. Hitung dan Terapkan Batas Pengaman BELI (Buy Ceiling Guard)
-  // Ceiling Beli: Mencegah beli kemahalan di pucuk yang mengikis spread minimal terhadap harga jual
+  // 5. Hitung dan Terapkan Batas Pengaman BELI (Buy Ceiling & Floor Guard)
+  // Ceiling Beli (Batas Atas): Mencegah beli kemahalan di pucuk yang mengikis spread minimal terhadap harga jual
   const calculatedBuyCeiling = Math.round(
     config.buyCeilingMode === "auto_fair"
       ? (rawSellPrice > 0 ? rawSellPrice - config.minSpreadRp : (fairPrice > 0 ? fairPrice : 16_300))
-      : config.manualBuyCeilingRp,
+      : (config.manualBuyCeilingRp > 0 ? config.manualBuyCeilingRp : 999_999),
+  );
+
+  const calculatedBuyFloor = Math.round(
+    config.manualBuyFloorRp && config.manualBuyFloorRp > 0 ? config.manualBuyFloorRp : 0
   );
 
   const buyGuard: CompetitorPricingResult["buyGuard"] = {
     triggered: false,
     ceilingPrice: calculatedBuyCeiling,
+    floorPrice: calculatedBuyFloor,
   };
 
   let recommendedBuyPrice = rawBuyPrice;
-  if (recommendedBuyPrice > calculatedBuyCeiling) {
+
+  // Cek jika pengguna menetapkan override harga beli tetap manual
+  if (config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0) {
+    recommendedBuyPrice = Math.round(config.manualBuyPriceOverrideRp);
+  }
+
+  // Cek Batas Atas (Ceiling Guard)
+  if (calculatedBuyCeiling > 0 && recommendedBuyPrice > calculatedBuyCeiling) {
     buyGuard.triggered = true;
-    buyGuard.reason = `Harga pasar (Rp ${rawBuyPrice.toLocaleString("id-ID")}) di atas batas atas wajar (Ceiling Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}, sisa spread < Rp ${config.minSpreadRp}). Harga dikunci di batas Ceiling.`;
+    buyGuard.reason = `Harga pasar (Rp ${rawBuyPrice.toLocaleString("id-ID")}) di atas batas atas wajar (Ceiling Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}). Harga dikunci di batas Ceiling.`;
     recommendedBuyPrice = calculatedBuyCeiling;
+  }
+
+  // Cek Batas Bawah (Floor Guard)
+  if (calculatedBuyFloor > 0 && recommendedBuyPrice < calculatedBuyFloor) {
+    buyGuard.triggered = true;
+    buyGuard.reason = `Harga pasar (Rp ${rawBuyPrice.toLocaleString("id-ID")}) di bawah batas minimal beli yang ditentukan (Floor Rp ${calculatedBuyFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor.`;
+    recommendedBuyPrice = calculatedBuyFloor;
   }
 
   // 6. Validasi Minimum Spread Guard (Pastikan Jual - Beli >= Min Spread)
   if (recommendedSellPrice - recommendedBuyPrice < config.minSpreadRp) {
-    // Jika spread terlalu tipis karena kompetitor, sesuaikan harga beli ke bawah
-    recommendedBuyPrice = Math.round(recommendedSellPrice - config.minSpreadRp);
+    // Jika spread terlalu tipis karena kompetitor, sesuaikan harga beli ke bawah (selama tidak di bawah floor)
+    const adjustedBuyPrice = Math.round(recommendedSellPrice - config.minSpreadRp);
+    if (calculatedBuyFloor > 0 && adjustedBuyPrice < calculatedBuyFloor) {
+      recommendedBuyPrice = calculatedBuyFloor;
+    } else {
+      recommendedBuyPrice = adjustedBuyPrice;
+    }
   }
 
   // 7. Kalkulasi Fee & Estimasi Laba Bersih
@@ -807,7 +840,11 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (typeof merged.merchantBuyAdvNo !== "string") merged.merchantBuyAdvNo = "";
     if (typeof merged.merchantSellAdvNo !== "string") merged.merchantSellAdvNo = "";
     if (typeof merged.manualBuyStockUsdt !== "number") merged.manualBuyStockUsdt = 0;
+    if (typeof merged.manualBuyMinLimitIdr !== "number") merged.manualBuyMinLimitIdr = 0;
     if (typeof merged.manualBuyMaxLimitIdr !== "number") merged.manualBuyMaxLimitIdr = 0;
+    if (!merged.buyFloorMode) merged.buyFloorMode = "disabled";
+    if (typeof merged.manualBuyFloorRp !== "number") merged.manualBuyFloorRp = 0;
+    if (typeof merged.manualBuyPriceOverrideRp !== "number") merged.manualBuyPriceOverrideRp = 0;
     if (typeof merged.autoPushToBinance !== "boolean") merged.autoPushToBinance = false;
     if (typeof merged.autoPushMinIntervalSec !== "number") merged.autoPushMinIntervalSec = 30;
     return merged;
