@@ -65,6 +65,7 @@ export const DEFAULT_VERIFIER_SETTINGS: VerifierSettings = {
 
 export type ActiveP2pOrder = {
   orderNumber: string;
+  advNo?: string;
   tradeType: "BUY" | "SELL" | string;
   asset: string;
   fiat: string;
@@ -387,6 +388,12 @@ export async function fetchActiveP2pSellOrdersInternal(): Promise<ActiveP2pOrder
       fetchForType("BUY"),
     ]);
 
+    const buySet = new Set<string>();
+    for (const b of buyList) {
+      const num = String(b.orderNumber || b.advNo || "");
+      if (num) buySet.add(num);
+    }
+
     const map = new Map<string, any>();
     for (const o of [...sellList, ...buyList]) {
       const num = String(o.orderNumber || o.advNo || "");
@@ -423,9 +430,18 @@ export async function fetchActiveP2pSellOrdersInternal(): Promise<ActiveP2pOrder
         unitPriceIdr = totalPriceIdr / amountUsdt;
       }
 
+      const orderNo = String(o.orderNumber || o.advNo || "");
+      const isBuyOrder =
+        String(o.tradeType || "").toUpperCase() === "BUY" ||
+        buySet.has(orderNo) ||
+        (o.advNo && buySet.has(String(o.advNo)));
+
+      const tradeType: "BUY" | "SELL" = isBuyOrder ? "BUY" : "SELL";
+
       activeOrders.push({
-        orderNumber: String(o.orderNumber || o.advNo || ""),
-        tradeType: "SELL",
+        orderNumber: orderNo,
+        advNo: o.advNo ? String(o.advNo) : undefined,
+        tradeType,
         asset: String(o.asset || "USDT"),
         fiat: String(o.fiat || "IDR"),
         amountUsdt,
@@ -433,7 +449,7 @@ export async function fetchActiveP2pSellOrdersInternal(): Promise<ActiveP2pOrder
         unitPriceIdr,
         orderStatus: statusStr,
         createTime: Number(o.createTime) || Date.now(),
-        counterPartNickName: String(o.counterPartNickName || "Pembeli"),
+        counterPartNickName: String(o.counterPartNickName || (isBuyOrder ? "Penjual" : "Pembeli")),
         payMethodName: o.payMethodName,
       });
     }
@@ -1115,4 +1131,50 @@ export async function handleIncomingBankNotificationWebhook(input: {
     waError,
   };
 }
+
+// ── Server Function: Ringkasan Order P2P Aktif Real-Time (Buy & Sell) ────────
+export const getActiveP2pOrdersSummary = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => z.object({ sessionToken: z.string().optional() }).parse(data))
+  .handler(async ({ data }) => {
+    try {
+      await requireSession(data.sessionToken);
+    } catch {
+      return {
+        ok: false,
+        activeOrders: [] as ActiveP2pOrder[],
+        activeBuyOrders: [] as ActiveP2pOrder[],
+        activeSellOrders: [] as ActiveP2pOrder[],
+        totalActiveBuyUsdt: 0,
+        totalActiveBuyIdr: 0,
+        totalActiveSellUsdt: 0,
+        totalActiveSellIdr: 0,
+      };
+    }
+
+    const allActive = await fetchActiveP2pSellOrdersInternal();
+    const activeBuyOrders = allActive.filter((o) => o.tradeType === "BUY");
+    const activeSellOrders = allActive.filter((o) => o.tradeType === "SELL");
+
+    const totalActiveBuyUsdt =
+      Math.round(activeBuyOrders.reduce((s, o) => s + (o.amountUsdt || 0), 0) * 100) / 100;
+    const totalActiveBuyIdr =
+      Math.round(activeBuyOrders.reduce((s, o) => s + (o.totalPriceIdr || 0), 0));
+
+    const totalActiveSellUsdt =
+      Math.round(activeSellOrders.reduce((s, o) => s + (o.amountUsdt || 0), 0) * 100) / 100;
+    const totalActiveSellIdr =
+      Math.round(activeSellOrders.reduce((s, o) => s + (o.totalPriceIdr || 0), 0));
+
+    return {
+      ok: true,
+      activeOrders: allActive,
+      activeBuyOrders,
+      activeSellOrders,
+      totalActiveBuyUsdt,
+      totalActiveBuyIdr,
+      totalActiveSellUsdt,
+      totalActiveSellIdr,
+    };
+  });
+
 

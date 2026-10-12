@@ -777,7 +777,7 @@ function Dashboard() {
 
 
   const fairDomain = useMemo(() => {
-    if (chartData.length === 0) return [16000, 16500];
+    if (chartData.length === 0) return [17500, 18000];
     const vals = chartData.map((d) => d.fair);
     const min = Math.min(...vals);
     const max = Math.max(...vals);
@@ -858,7 +858,7 @@ function Dashboard() {
   const effectiveCost =
     pnl && pnl.open_position_avg_cost_idr > 0
       ? pnl.open_position_avg_cost_idr
-      : (s?.fair_price && s.fair_price > 0 ? s.fair_price : 16_850);
+      : (s?.fair_price && s.fair_price > 0 ? s.fair_price : 17_850);
   const stockCapitalIdr = stockUsdt > 0 ? Math.round(stockUsdt * effectiveCost) : 0;
   const allTimeProfit = pnl?.all_time_profit_idr ?? 0;
   const freeCashIdr = initialCapital > 0
@@ -1000,6 +1000,8 @@ function Dashboard() {
             onRefresh={() => {
               snapshotQuery.refetch();
               pnlQuery.refetch();
+              fundingBalanceQuery.refetch();
+              syncMutation.mutate({ isSilent: true });
             }}
             isRefreshing={snapshotQuery.isFetching}
           />
@@ -1181,7 +1183,7 @@ function Dashboard() {
                 const isFundingLive = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
                 const stockUsdt = isFundingLive ? (fb!.usdt ?? 0) : (pnl?.open_position_usdt ?? 0);
                 const avgCost = pnl && pnl.open_position_avg_cost_idr > 0 ? pnl.open_position_avg_cost_idr : 0;
-                const effectiveCost = avgCost > 0 ? avgCost : (s?.fair_price && s.fair_price > 0 ? s.fair_price : 16_850);
+                const effectiveCost = avgCost > 0 ? avgCost : (s?.fair_price && s.fair_price > 0 ? s.fair_price : 17_850);
 
                 // Modal terikat di stok = saldo funding live (atau akumulasi) * HPP modal rata-rata / taksiran pasar
                 const stockCapitalIdr = stockUsdt > 0 ? Math.round(stockUsdt * effectiveCost) : 0;

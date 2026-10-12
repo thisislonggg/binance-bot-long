@@ -46,7 +46,9 @@ import {
   Wallet,
   PiggyBank,
   Coins,
+  Clock,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -62,6 +64,7 @@ import {
   pushPriceToBinanceAd,
   type PushPriceResult,
 } from "@/lib/binance-merchant";
+import { getActiveP2pOrdersSummary } from "@/lib/payment-verifier";
 import {
   computeCompetitorPricing,
   DEFAULT_BOT_CONFIG,
@@ -251,6 +254,35 @@ export function AutoPricingBotPanel({
     toast.info("Daftar whitelist dikosongkan.");
   };
 
+  // ── Query Order P2P Aktif Real-Time (BUY & SELL) ───────────────────────────
+  const getActiveOrdersFn = useServerFn(getActiveP2pOrdersSummary);
+  const effectiveSessionToken =
+    sessionToken ||
+    (typeof window !== "undefined" ? sessionStorage.getItem("p2p_session_token") : null) ||
+    undefined;
+
+  const activeOrdersQuery = useQuery({
+    queryKey: ["active-p2p-orders-summary", effectiveSessionToken],
+    queryFn: () => getActiveOrdersFn({ data: { sessionToken: effectiveSessionToken } }),
+    enabled: Boolean(effectiveSessionToken),
+    refetchInterval: 2_500,
+  });
+
+  const activeBuyOrdersUsdt = activeOrdersQuery.data?.totalActiveBuyUsdt || 0;
+  const activeBuyOrdersIdr = activeOrdersQuery.data?.totalActiveBuyIdr || 0;
+  const activeBuyOrdersList = activeOrdersQuery.data?.activeBuyOrders || [];
+
+  // Jika pesanan beli aktif selesai/berubah, picu sinkronisasi data saldo dan PnL
+  const prevActiveBuyCountRef = useRef<number | null>(null);
+  useEffect(() => {
+    const curCount = activeBuyOrdersList.length;
+    if (prevActiveBuyCountRef.current !== null && curCount < prevActiveBuyCountRef.current) {
+      toast.info("Pesanan beli P2P selesai/di-release! Memperbarui data saldo...", { duration: 4000 });
+      onRefresh?.();
+    }
+    prevActiveBuyCountRef.current = curCount;
+  }, [activeBuyOrdersList.length, onRefresh]);
+
   // ── Eksekusi Kalkulasi Bot ──────────────────────────────────────────────────
   const pricingResult = useMemo(() => {
     return computeCompetitorPricing({
@@ -263,6 +295,8 @@ export function AutoPricingBotPanel({
       initialCapitalIdr,
       liveStockUsdt,
       stockCapitalIdr,
+      activeBuyOrdersUsdt,
+      activeBuyOrdersIdr,
     });
   }, [
     sellRefAds,
@@ -274,6 +308,8 @@ export function AutoPricingBotPanel({
     initialCapitalIdr,
     liveStockUsdt,
     stockCapitalIdr,
+    activeBuyOrdersUsdt,
+    activeBuyOrdersIdr,
   ]);
 
   const {
@@ -345,12 +381,25 @@ export function AutoPricingBotPanel({
     }
   };
 
+  // Kalkulasi Max Available Stok Jual persis sesuai kalkulator "Max. available: ... USDT All" di Binance P2P
+  // Binance memotong maker reserved fee (0.05%) saat posting iklan sell dari Funding Wallet
+  const maxAvailableSellStockUsdt = useMemo(() => {
+    if (!liveStockUsdt || liveStockUsdt <= 0) return 0;
+    const safeAvailable = Math.floor((liveStockUsdt / 1.0005) * 100) / 100;
+    return Math.max(0, safeAvailable);
+  }, [liveStockUsdt]);
+
+  const reservedFeeSellUsdt = useMemo(() => {
+    if (!liveStockUsdt || liveStockUsdt <= 0) return 0;
+    return Math.max(0, Math.round((liveStockUsdt - maxAvailableSellStockUsdt) * 100) / 100);
+  }, [liveStockUsdt, maxAvailableSellStockUsdt]);
+
   const handleApplySellOnly = () => {
     const effectiveStock =
       config.manualSellStockUsdt && config.manualSellStockUsdt > 0
         ? config.manualSellStockUsdt
-        : liveStockUsdt > 0
-        ? Math.floor(liveStockUsdt * 100) / 100
+        : maxAvailableSellStockUsdt > 0
+        ? maxAvailableSellStockUsdt
         : undefined;
 
     if (onApplyPrice) {
@@ -362,7 +411,7 @@ export function AutoPricingBotPanel({
       });
       toast.success(
         effectiveStock
-          ? `Iklan Jual: Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")} & All Stok ${effectiveStock.toLocaleString("id-ID")} USDT diterapkan ke form!`
+          ? `Iklan Jual: Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")} & Max Available ${effectiveStock.toLocaleString("id-ID")} USDT diterapkan ke form!`
           : `Harga Jual Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")} diterapkan ke form!`
       );
     } else {
@@ -374,13 +423,13 @@ export function AutoPricingBotPanel({
     const effectiveStock =
       config.manualSellStockUsdt && config.manualSellStockUsdt > 0
         ? config.manualSellStockUsdt
-        : liveStockUsdt > 0
-        ? Math.floor(liveStockUsdt * 100) / 100
+        : maxAvailableSellStockUsdt > 0
+        ? maxAvailableSellStockUsdt
         : undefined;
 
     const text =
       effectiveStock && recommendedSellPrice > 0
-        ? `Harga Jual: Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")}\nAll Stok USDT: ${effectiveStock.toLocaleString("id-ID")} USDT\nPlafon Max Limit: Rp ${Math.round(effectiveStock * recommendedSellPrice).toLocaleString("id-ID")}`
+        ? `Harga Jual: Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")}\nMax Available Stok: ${effectiveStock.toLocaleString("id-ID")} USDT (All)\nPlafon Max Limit: Rp ${Math.round(effectiveStock * recommendedSellPrice).toLocaleString("id-ID")}`
         : `Harga Jual: Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")}`;
     navigator.clipboard.writeText(text);
     toast.success("Rincian iklan jual disalin ke clipboard!");
@@ -412,6 +461,21 @@ export function AutoPricingBotPanel({
       return;
     }
 
+    // Proteksi Kas Beli: jika sisi Beli dan menggunakan hitungan kas otomatis (bukan override manual)
+    if (side === "buy" && (!config.manualBuyStockUsdt || config.manualBuyStockUsdt <= 0)) {
+      if (bankAllocation.isBelowMinLimit || bankAllocation.autoBuyStockUsdt <= 0) {
+        toast.warning(
+          `Kas bank tersisa (Rp ${bankAllocation.usableBankIdr.toLocaleString("id-ID")}) di bawah batas minimal transaksi Rp ${bankAllocation.minBuyLimitIdr.toLocaleString("id-ID")}${
+            bankAllocation.lockedActiveBuyIdr > 0
+              ? ` karena Rp ${bankAllocation.lockedActiveBuyIdr.toLocaleString("id-ID")} (${bankAllocation.activeBuyOrdersUsdt} USDT) sedang berjalan di pesanan beli aktif`
+              : ""
+          }. Iklan beli ditahan agar tidak over-budget.`,
+          { duration: 7000 }
+        );
+        return;
+      }
+    }
+
     const price = side === "buy" ? recommendedBuyPrice : recommendedSellPrice;
     if (side === "buy") setIsPushingBuy(true);
     else setIsPushingSell(true);
@@ -434,8 +498,8 @@ export function AutoPricingBotPanel({
       side === "sell"
         ? config.manualSellStockUsdt && config.manualSellStockUsdt > 0
           ? config.manualSellStockUsdt
-          : liveStockUsdt > 0
-          ? Math.floor(liveStockUsdt * 100) / 100
+          : maxAvailableSellStockUsdt > 0
+          ? maxAvailableSellStockUsdt
           : undefined
         : undefined;
 
@@ -512,6 +576,7 @@ export function AutoPricingBotPanel({
 
   // Auto-Push ke Binance jika opsi autoPushToBinance aktif
   const lastPushedPricesRef = useRef<{ buy?: number; sell?: number }>({});
+  const lastPushedStockRef = useRef<{ buy?: number; sell?: number }>({});
   const lastPushTimeRef = useRef<number>(0);
 
   useEffect(() => {
@@ -522,14 +587,31 @@ export function AutoPricingBotPanel({
       const now = Date.now();
       if (now - lastPushTimeRef.current < minIntervalMs) return;
 
-      if (
-        config.merchantBuyAdvNo &&
-        recommendedBuyPrice > 0 &&
-        lastPushedPricesRef.current.buy !== Math.round(recommendedBuyPrice)
-      ) {
-        lastPushedPricesRef.current.buy = Math.round(recommendedBuyPrice);
-        lastPushTimeRef.current = now;
-        handlePushPrice("buy");
+      if (config.merchantBuyAdvNo && recommendedBuyPrice > 0) {
+        // Cek proteksi kas beli: jika kas tidak cukup atau di bawah minimal limit, JANGAN buat/push iklan beli!
+        const isBuyBlocked =
+          (!config.manualBuyStockUsdt || config.manualBuyStockUsdt <= 0) &&
+          (bankAllocation.isBelowMinLimit || bankAllocation.autoBuyStockUsdt <= 0);
+
+        if (!isBuyBlocked) {
+          const roundedPrice = Math.round(recommendedBuyPrice);
+          const currentBuyStock =
+            config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0
+              ? config.manualBuyStockUsdt
+              : bankAllocation.autoBuyStockUsdt;
+
+          const priceChanged = lastPushedPricesRef.current.buy !== roundedPrice;
+          const stockChanged =
+            lastPushedStockRef.current.buy !== undefined &&
+            lastPushedStockRef.current.buy !== currentBuyStock;
+
+          if (priceChanged || stockChanged) {
+            lastPushedPricesRef.current.buy = roundedPrice;
+            lastPushedStockRef.current.buy = currentBuyStock;
+            lastPushTimeRef.current = now;
+            handlePushPrice("buy");
+          }
+        }
       }
 
       if (
@@ -553,6 +635,9 @@ export function AutoPricingBotPanel({
     recommendedSellPrice,
     config.merchantBuyAdvNo,
     config.merchantSellAdvNo,
+    config.manualBuyStockUsdt,
+    bankAllocation.isBelowMinLimit,
+    bankAllocation.autoBuyStockUsdt,
   ]);
 
   // ── Filter Data untuk Tabel Radar Pasar ─────────────────────────────────────
@@ -754,10 +839,20 @@ export function AutoPricingBotPanel({
             <div className="mt-2.5 space-y-1 text-[0.7rem]">
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">Batas Atas (Ceiling):</span>
-                {buyGuard.triggered && buyGuard.ceilingPrice === recommendedBuyPrice ? (
-                  <span className="inline-flex items-center gap-1 font-semibold text-amber-500">
-                    <ShieldAlert className="size-3" /> Terkunci Ceiling {fmtRp2(buyGuard.ceilingPrice)}
-                  </span>
+                {buyGuard.triggered ? (
+                  buyGuard.autoSwitched ? (
+                    <span className="inline-flex items-center gap-1 font-semibold text-sky-400" title={buyGuard.reason}>
+                      <ArrowRight className="size-3" /> Mengikuti Iklan Lain (Rank #{buyRankUsed})
+                    </span>
+                  ) : buyGuard.ceilingPrice === recommendedBuyPrice ? (
+                    <span className="inline-flex items-center gap-1 font-semibold text-amber-500" title={buyGuard.reason}>
+                      <ShieldAlert className="size-3" /> Mentok Ceiling {fmtRp2(buyGuard.ceilingPrice)}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-muted-foreground">
+                      <ShieldCheck className="size-3 text-bid" /> Max {fmtRp2(buyGuard.ceilingPrice)} (Aman)
+                    </span>
+                  )
                 ) : (
                   <span className="inline-flex items-center gap-1 text-muted-foreground">
                     <ShieldCheck className="size-3 text-bid" /> Max {fmtRp2(buyGuard.ceilingPrice)} (Aman)
@@ -834,6 +929,19 @@ export function AutoPricingBotPanel({
                       {config.deductLiveStockFromBudget !== false ? "Nonaktifkan" : "Aktifkan"}
                     </button>
                   </div>
+                </div>
+              )}
+
+              {/* Alert jika modal terkunci di pesanan beli aktif */}
+              {bankAllocation.lockedActiveBuyIdr > 0 && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/15 p-2 space-y-1 text-[0.7rem]">
+                  <div className="flex items-center gap-1 text-amber-500 font-semibold">
+                    <Clock className="size-3 shrink-0 animate-spin" />
+                    <span>Pesanan Beli Aktif di Binance: -{bankAllocation.activeBuyOrdersUsdt} USDT (-{fmtRp(bankAllocation.lockedActiveBuyIdr)})</span>
+                  </div>
+                  <p className="text-[0.65rem] text-muted-foreground leading-relaxed">
+                    Kas modal otomatis dipotong sementara untuk orderan beli yang sedang berjalan di Binance P2P agar tidak membuat iklan beli berlebih.
+                  </p>
                 </div>
               )}
 
@@ -1078,9 +1186,15 @@ export function AutoPricingBotPanel({
             <div className="mt-2.5 flex items-center justify-between text-[0.7rem]">
               <span className="text-muted-foreground">Batas Bawah (Floor HPP):</span>
               {sellGuard.triggered ? (
-                <span className="inline-flex items-center gap-1 font-semibold text-amber-500">
-                  <ShieldAlert className="size-3" /> Terkunci Floor {fmtRp2(sellGuard.floorPrice)} (Anti-Rugi)
-                </span>
+                sellGuard.autoSwitched ? (
+                  <span className="inline-flex items-center gap-1 font-semibold text-sky-400" title={sellGuard.reason}>
+                    <ArrowRight className="size-3" /> Mengikuti Iklan Lain (Rank #{sellRankUsed})
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 font-semibold text-amber-500" title={sellGuard.reason}>
+                    <ShieldAlert className="size-3" /> Terkunci Floor {fmtRp2(sellGuard.floorPrice)} (Anti-Rugi)
+                  </span>
+                )
               ) : (
                 <span className="inline-flex items-center gap-1 text-muted-foreground">
                   <ShieldCheck className="size-3 text-ask" /> Min {fmtRp2(sellGuard.floorPrice)} (Aman)
@@ -1094,24 +1208,29 @@ export function AutoPricingBotPanel({
                 <div className="flex items-center gap-1.5">
                   <Wallet className="size-3.5 text-ask" />
                   <span className="text-[0.72rem] font-bold text-foreground">
-                    All Stok USDT Siap Jual
+                    Max Available Stok Siap Jual
                   </span>
                 </div>
                 <Badge
                   variant="outline"
                   className="h-4.5 px-1.5 text-[0.6rem] border-ask/30 text-ask bg-ask/10 font-bold"
                 >
-                  {liveStockUsdt > 0
-                    ? `${(Math.floor(liveStockUsdt * 100) / 100).toLocaleString("id-ID")} USDT (Live)`
+                  {maxAvailableSellStockUsdt > 0
+                    ? `${maxAvailableSellStockUsdt.toLocaleString("id-ID")} USDT (Max All)`
                     : "0 USDT"}
                 </Badge>
+              </div>
+
+              <div className="flex items-center justify-between text-[0.65rem] text-muted-foreground">
+                <span>Saldo Funding: {liveStockUsdt.toLocaleString("id-ID")} USDT</span>
+                <span>Reserved Fee Binance: ~{reservedFeeSellUsdt} USDT</span>
               </div>
 
               <div className="flex items-center justify-between text-[0.68rem] text-muted-foreground">
                 <span>Plafon Kapasitas Penjualan:</span>
                 <strong className="num text-foreground">
-                  {liveStockUsdt > 0 && recommendedSellPrice > 0
-                    ? fmtRp(Math.floor(liveStockUsdt * recommendedSellPrice))
+                  {maxAvailableSellStockUsdt > 0 && recommendedSellPrice > 0
+                    ? fmtRp(Math.floor(maxAvailableSellStockUsdt * recommendedSellPrice))
                     : "—"}
                 </strong>
               </div>
@@ -2319,6 +2438,16 @@ export function AutoPricingBotPanel({
                           <div className="num font-bold text-foreground">{fmtRp(bankAllocation.autoBuyMaxLimitIdr)}</div>
                         </div>
                       </div>
+                      {bankAllocation.lockedActiveBuyIdr > 0 && (
+                        <div className="flex items-center justify-between text-[0.68rem] bg-amber-500/15 border border-amber-500/30 text-amber-500 px-2.5 py-1 rounded">
+                          <span className="flex items-center gap-1 font-semibold">
+                            <Clock className="size-3 shrink-0 animate-spin" /> Terkunci Pesanan Beli Aktif:
+                          </span>
+                          <strong className="font-mono">
+                            -{bankAllocation.activeBuyOrdersUsdt} USDT (-{fmtRp(bankAllocation.lockedActiveBuyIdr)})
+                          </strong>
+                        </div>
+                      )}
                       <p className="text-[0.65rem] text-muted-foreground pt-0.5">
                         Formula: {fmtRp(bankAllocation.usableBankIdr)} &divide; {fmtRp2(recommendedBuyPrice)} = <strong className="text-foreground">{bankAllocation.autoBuyStockUsdt} USDT</strong>
                       </p>
@@ -2843,6 +2972,19 @@ export function AutoPricingBotPanel({
                       />
                     </div>
                   </div>
+
+                  <div className="flex items-center justify-between pt-1 border-t border-border/40">
+                    <div className="flex flex-col">
+                      <span className="text-xs font-semibold text-foreground">Auto-Follow Iklan Lain Saat Batas Tercapai:</span>
+                      <span className="text-[0.65rem] text-muted-foreground">
+                        Jika target melampaui limit atas/bawah, bot otomatis beralih mengikuti iklan lain di dalam batas aman.
+                      </span>
+                    </div>
+                    <Switch
+                      checked={config.autoFollowNextWhenLimitReached !== false}
+                      onCheckedChange={(v) => updateConfig({ autoFollowNextWhenLimitReached: v })}
+                    />
+                  </div>
                 </div>
 
                 {/* Batas Bawah Beli (Buy Floor Guard) */}
@@ -2876,7 +3018,7 @@ export function AutoPricingBotPanel({
                       type="button"
                       variant={config.manualBuyFloorRp && config.manualBuyFloorRp > 0 ? "default" : "outline"}
                       size="sm"
-                      onClick={() => updateConfig({ buyFloorMode: "manual", manualBuyFloorRp: config.manualBuyFloorRp || 16_100 })}
+                      onClick={() => updateConfig({ buyFloorMode: "manual", manualBuyFloorRp: config.manualBuyFloorRp || 17_500 })}
                       className="h-7 text-xs font-semibold"
                     >
                       Nominal Manual (Floor)
@@ -3159,7 +3301,7 @@ export function AutoPricingBotPanel({
                               manualBuyPriceOverrideRp:
                                 config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0
                                   ? 0
-                                  : Math.round(recommendedBuyPrice || 16_850),
+                                  : Math.round(recommendedBuyPrice || 17_800),
                             })
                           }
                           className={`text-[0.62rem] px-1.5 py-0.5 rounded font-bold transition-colors ${
@@ -3197,7 +3339,7 @@ export function AutoPricingBotPanel({
                               updateConfig({ manualBuyPriceOverrideRp: Math.max(0, Number(e.target.value)) })
                             }
                             className="h-8 text-xs font-bold bg-surface text-foreground font-mono pr-12"
-                            placeholder="Contoh: 16850"
+                            placeholder="Contoh: 17850"
                           />
                           <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[0.68rem] text-muted-foreground font-semibold">
                             IDR
@@ -3269,15 +3411,30 @@ export function AutoPricingBotPanel({
                       <Label className="text-xs font-semibold text-foreground">
                         Target Pasang Stok Beli (USDT)
                       </Label>
-                      {bankAllocation.autoBuyStockUsdt > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => updateConfig({ manualBuyStockUsdt: bankAllocation.autoBuyStockUsdt })}
-                          className="text-[0.62rem] text-bid hover:underline font-semibold"
-                        >
-                          Hitung Kas: {bankAllocation.autoBuyStockUsdt} USDT
-                        </button>
-                      )}
+                      <div className="flex items-center gap-1.5">
+                        {bankAllocation.activeBuyOrdersUsdt > 0 && (
+                          <span
+                            className="text-[0.6rem] font-semibold text-amber-500 bg-amber-500/15 border border-amber-500/30 px-1.5 py-0.5 rounded flex items-center gap-1"
+                            title={`Terkunci pesanan beli aktif: -${bankAllocation.activeBuyOrdersUsdt} USDT (-${fmtRp(bankAllocation.lockedActiveBuyIdr)})`}
+                          >
+                            <Clock className="size-2.5 animate-spin" />
+                            Order Aktif: -{bankAllocation.activeBuyOrdersUsdt} USDT
+                          </span>
+                        )}
+                        {bankAllocation.autoBuyStockUsdt > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => updateConfig({ manualBuyStockUsdt: bankAllocation.autoBuyStockUsdt })}
+                            className="text-[0.62rem] text-bid hover:underline font-semibold"
+                          >
+                            Hitung Kas: {bankAllocation.autoBuyStockUsdt} USDT
+                          </button>
+                        ) : bankAllocation.isBelowMinLimit ? (
+                          <span className="text-[0.62rem] text-amber-500 font-semibold">
+                            Kas &lt; Min Limit Rp 50 Jt
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
                     <div className="relative">
                       <Input
@@ -3291,6 +3448,8 @@ export function AutoPricingBotPanel({
                         placeholder={
                           bankAllocation.autoBuyStockUsdt > 0
                             ? `Otomatis: ${bankAllocation.autoBuyStockUsdt} USDT`
+                            : bankAllocation.isBelowMinLimit
+                            ? "0 USDT (Kas < Min Limit Rp 50 Jt)"
                             : "Contoh: 100 USDT"
                         }
                         className="h-8 text-xs font-mono bg-surface font-semibold pr-14"
@@ -3302,8 +3461,10 @@ export function AutoPricingBotPanel({
                     <p className="text-[0.65rem] text-muted-foreground">
                       {config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0
                         ? `Menggunakan stok manual: ${config.manualBuyStockUsdt} USDT. Hapus untuk pakai hitungan kas bank.`
+                        : bankAllocation.isBelowMinLimit
+                        ? `⚠️ Sisa kas bank (Rp ${bankAllocation.usableBankIdr.toLocaleString("id-ID")}) kurang dari batas minimum order Rp ${bankAllocation.minBuyLimitIdr.toLocaleString("id-ID")}${bankAllocation.lockedActiveBuyIdr > 0 ? ` karena ada pesanan aktif Rp ${bankAllocation.lockedActiveBuyIdr.toLocaleString("id-ID")}` : ""}. Iklan beli otomatis dihentikan.`
                         : bankAllocation.autoBuyStockUsdt > 0
-                        ? `Otomatis dari kas bank: ${bankAllocation.autoBuyStockUsdt} USDT.`
+                        ? `Otomatis dari kas bank: ${bankAllocation.autoBuyStockUsdt} USDT${bankAllocation.lockedActiveBuyIdr > 0 ? ` (Telah otomatis dikurangi pesanan beli aktif: ${bankAllocation.activeBuyOrdersUsdt} USDT / Rp ${bankAllocation.lockedActiveBuyIdr.toLocaleString("id-ID")})` : ""}.`
                         : "Jumlah USDT yang akan dipasang di iklan beli Anda."}
                     </p>
                   </div>
@@ -3400,9 +3561,19 @@ export function AutoPricingBotPanel({
                           ? `${config.manualBuyStockUsdt} USDT (Manual)`
                           : bankAllocation.autoBuyStockUsdt > 0
                           ? `${bankAllocation.autoBuyStockUsdt} USDT (Kas Bank)`
+                          : bankAllocation.isBelowMinLimit
+                          ? "0 USDT (Kas < Min Limit Rp 50 Jt)"
                           : "—"}
                       </strong>
                     </div>
+                    {bankAllocation.lockedActiveBuyIdr > 0 && (
+                      <div className="flex justify-between text-amber-500 text-[0.65rem] bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                        <span>Terkunci Pesanan Beli Aktif:</span>
+                        <strong className="font-mono">
+                          -{bankAllocation.activeBuyOrdersUsdt} USDT (-{fmtRp(bankAllocation.lockedActiveBuyIdr)})
+                        </strong>
+                      </div>
+                    )}
                     <div className="flex justify-between text-muted-foreground text-[0.68rem]">
                       <span>Rentang Limit Transaksi:</span>
                       <strong className="num text-foreground">
@@ -3413,14 +3584,43 @@ export function AutoPricingBotPanel({
                     </div>
                   </div>
 
+                  {bankAllocation.isBelowMinLimit && (!config.manualBuyStockUsdt || config.manualBuyStockUsdt <= 0) && (
+                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-xs text-amber-400 space-y-1">
+                      <div className="flex items-center gap-1.5 font-bold">
+                        <AlertTriangle className="size-3.5 shrink-0 text-amber-500" />
+                        <span>Iklan Beli Otomatis Ditahan (Batas Kas Minimal Terpenuhi)</span>
+                      </div>
+                      <p className="text-[0.68rem] text-amber-300/90 leading-relaxed">
+                        Sisa kas bank tersedia <strong>Rp {bankAllocation.usableBankIdr.toLocaleString("id-ID")}</strong> berada di bawah batas minimum order <strong>Rp {bankAllocation.minBuyLimitIdr.toLocaleString("id-ID")}</strong>{bankAllocation.lockedActiveBuyIdr > 0 ? ` karena ${bankAllocation.activeBuyOrdersUsdt} USDT (Rp ${bankAllocation.lockedActiveBuyIdr.toLocaleString("id-ID")}) sedang diproses di pesanan beli aktif.` : "."} Bot tidak akan memasang iklan beli sampai pesanan selesai atau kas bertambah.
+                      </p>
+                    </div>
+                  )}
+
                   <Button
                     type="button"
                     onClick={() => handlePushPrice("buy")}
-                    disabled={isPushingBuy || !config.merchantBuyAdvNo}
-                    className="w-full h-8 text-xs font-semibold bg-bid text-bid-foreground hover:bg-bid/90 gap-1.5 shadow-sm"
+                    disabled={
+                      isPushingBuy ||
+                      !config.merchantBuyAdvNo ||
+                      (bankAllocation.isBelowMinLimit && (!config.manualBuyStockUsdt || config.manualBuyStockUsdt <= 0))
+                    }
+                    className={`w-full h-8 text-xs font-semibold gap-1.5 shadow-sm ${
+                      bankAllocation.isBelowMinLimit && (!config.manualBuyStockUsdt || config.manualBuyStockUsdt <= 0)
+                        ? "bg-muted text-muted-foreground cursor-not-allowed hover:bg-muted"
+                        : "bg-bid text-bid-foreground hover:bg-bid/90"
+                    }`}
                   >
-                    <Send className={`size-3.5 ${isPushingBuy ? "animate-pulse" : ""}`} />
-                    <span>{isPushingBuy ? "Mengirim ke Binance..." : "Push Harga, Stok, & Limit Beli ke Binance"}</span>
+                    {bankAllocation.isBelowMinLimit && (!config.manualBuyStockUsdt || config.manualBuyStockUsdt <= 0) ? (
+                      <>
+                        <AlertTriangle className="size-3.5 text-amber-500" />
+                        <span>Kas &lt; Min Limit Rp 50 Jt (Iklan Ditahan)</span>
+                      </>
+                    ) : (
+                      <>
+                        <Send className={`size-3.5 ${isPushingBuy ? "animate-pulse" : ""}`} />
+                        <span>{isPushingBuy ? "Mengirim ke Binance..." : "Push Harga, Stok, & Limit Beli ke Binance"}</span>
+                      </>
+                    )}
                   </Button>
                 </div>
 
@@ -3469,7 +3669,7 @@ export function AutoPricingBotPanel({
                               manualSellPriceOverrideRp:
                                 config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0
                                   ? 0
-                                  : Math.round(recommendedSellPrice || 16_900),
+                                  : Math.round(recommendedSellPrice || 17_850),
                             })
                           }
                           className={`text-[0.62rem] px-1.5 py-0.5 rounded font-bold transition-colors ${
@@ -3507,7 +3707,7 @@ export function AutoPricingBotPanel({
                               updateConfig({ manualSellPriceOverrideRp: Math.max(0, Number(e.target.value)) })
                             }
                             className="h-8 text-xs font-bold bg-surface text-foreground font-mono pr-12"
-                            placeholder="Contoh: 16900"
+                            placeholder="Contoh: 17850"
                           />
                           <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[0.68rem] text-muted-foreground font-semibold">
                             IDR
@@ -3537,12 +3737,17 @@ export function AutoPricingBotPanel({
                     <div className="flex items-center justify-between">
                       <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
                         <Wallet className="size-3.5 text-ask" />
-                        <span>Stok USDT Jual (All Saldo)</span>
+                        <span>Stok USDT Jual (Max Available All)</span>
                       </Label>
-                      {liveStockUsdt > 0 && (
-                        <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[0.6rem] font-bold">
-                          All Saldo: {liveStockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT
-                        </Badge>
+                      {maxAvailableSellStockUsdt > 0 && (
+                        <div className="flex items-center gap-1.5">
+                          <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[0.6rem] font-bold">
+                            Max. available: {maxAvailableSellStockUsdt.toLocaleString("id-ID")} USDT All
+                          </Badge>
+                          <span className="text-[0.6rem] text-muted-foreground">
+                            (Fee: {reservedFeeSellUsdt} USDT)
+                          </span>
+                        </div>
                       )}
                     </div>
                     <div className="relative">
@@ -3555,8 +3760,8 @@ export function AutoPricingBotPanel({
                           updateConfig({ manualSellStockUsdt: Number.isFinite(val) && val > 0 ? val : 0 });
                         }}
                         placeholder={
-                          liveStockUsdt > 0
-                            ? `Otomatis All Saldo: ${Math.floor(liveStockUsdt * 100) / 100} USDT`
+                          maxAvailableSellStockUsdt > 0
+                            ? `Otomatis All: ${maxAvailableSellStockUsdt} USDT (Max Available)`
                             : "0 USDT (Tidak ada saldo)"
                         }
                         className="h-8 text-xs font-mono bg-surface font-semibold pr-14"
@@ -3565,11 +3770,11 @@ export function AutoPricingBotPanel({
                         USDT
                       </span>
                     </div>
-                    <p className="text-[0.65rem] text-muted-foreground">
+                    <p className="text-[0.65rem] text-muted-foreground leading-relaxed">
                       {config.manualSellStockUsdt && config.manualSellStockUsdt > 0
-                        ? `Menggunakan stok manual: ${config.manualSellStockUsdt} USDT. Kosongkan untuk otomatis pakai all saldo live.`
-                        : liveStockUsdt > 0
-                        ? `✓ Otomatis memasukkan seluruh saldo live Anda (${Math.floor(liveStockUsdt * 100) / 100} USDT) tanpa input manual!`
+                        ? `Menggunakan stok manual: ${config.manualSellStockUsdt} USDT. Kosongkan untuk otomatis pakai Max. available dari Binance.`
+                        : maxAvailableSellStockUsdt > 0
+                        ? `✓ Otomatis mengambil Max. available (${maxAvailableSellStockUsdt} USDT All) persis seperti di Binance setelah dipotong Reserved Fee (${reservedFeeSellUsdt} USDT) sehingga tidak pernah error insufficient balance!`
                         : "Saldo USDT saat ini 0. Bot akan otomatis memasukkan seluruh saldo jika stok masuk."}
                     </p>
                   </div>
@@ -3655,8 +3860,8 @@ export function AutoPricingBotPanel({
                       <strong className="num text-ask">
                         {config.manualSellStockUsdt && config.manualSellStockUsdt > 0
                           ? `${config.manualSellStockUsdt} USDT (Manual)`
-                          : liveStockUsdt > 0
-                          ? `${Math.floor(liveStockUsdt * 100) / 100} USDT (All Saldo Live)`
+                          : maxAvailableSellStockUsdt > 0
+                          ? `${maxAvailableSellStockUsdt} USDT (Max Available All)`
                           : "0 USDT"}
                       </strong>
                     </div>
@@ -3666,8 +3871,8 @@ export function AutoPricingBotPanel({
                         {`Rp ${(config.manualSellMinLimitIdr || 50_000).toLocaleString("id-ID")} - ${
                           config.manualSellMaxLimitIdr && config.manualSellMaxLimitIdr > 0
                             ? fmtRp(config.manualSellMaxLimitIdr)
-                            : liveStockUsdt > 0 && recommendedSellPrice > 0
-                            ? fmtRp(Math.floor(liveStockUsdt * recommendedSellPrice))
+                            : maxAvailableSellStockUsdt > 0 && recommendedSellPrice > 0
+                            ? fmtRp(Math.floor(maxAvailableSellStockUsdt * recommendedSellPrice))
                             : "Auto"
                         }`}
                       </strong>

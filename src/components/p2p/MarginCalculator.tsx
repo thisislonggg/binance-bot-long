@@ -11,8 +11,8 @@ export function MarginCalculator({
   defaultSellPrice: number;
 }) {
   const [usdtAmount, setUsdtAmount] = useState<number>(2500);
-  const [buyPrice, setBuyPrice] = useState<number>(defaultBuyPrice || 16200);
-  const [sellPrice, setSellPrice] = useState<number>(defaultSellPrice || 16350);
+  const [buyPrice, setBuyPrice] = useState<number>(defaultBuyPrice || 17800);
+  const [sellPrice, setSellPrice] = useState<number>(defaultSellPrice || 17850);
   const [dailyTurnover, setDailyTurnover] = useState<number>(2); // 2x putaran per hari
   const [buyMethod, setBuyMethod] = useState<"maker" | "taker">("taker");
 

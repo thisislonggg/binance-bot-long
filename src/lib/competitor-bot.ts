@@ -52,6 +52,8 @@ export type CompetitorFilterConfig = {
   buyFloorMode?: "disabled" | "manual";   // Batas bawah beli: Disabled (bebas) atau nominal tetap
   manualBuyFloorRp?: number;              // Nominal batas bawah beli manual (0 = bebas / tanpa floor)
   manualBuyPriceOverrideRp?: number;      // Override pasang harga beli manual tetap (0 = auto bot)
+  autoFollowNextWhenLimitReached?: boolean; // Otomatis ikuti iklan lain jika target mencapai limit atas (ceiling) atau batas bawah (floor)
+  ownMerchantNickname?: string;            // Nickname akun Binance sendiri (untuk abaikan iklan sendiri)
 
   minSpreadRp: number;            // Selisih minimal (Jual - Beli) agar tetap profit
   maxPriceStepRp: number;         // Pembatas lonjakan harga per siklus (anti-spoofing)
@@ -82,7 +84,7 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   enabled: true,
   minUsdtAmount: 500,
   maxUsdtAmount: 0,
-  minOrderLimitIdr: 50_000_000, // Otomatis filter order buy/jual yang mensyaratkan min transaksi >= 50 Juta
+  minOrderLimitIdr: 0, // 0 = Bebas (tidak memfilter syarat min order kompetitor)
   minMaxLimitIdr: 0,
   verifiedOnly: true,
   userTypeFilter: "all",
@@ -110,11 +112,11 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   buyOffsetRp: 1,   // Iklan beli pasang Rp 1 di atas kompetitor teratas
 
   sellFloorMode: "auto_hpp",
-  manualSellFloorRp: 16_100,
+  manualSellFloorRp: 0,
   minProfitMarginRp: 15,
 
   buyCeilingMode: "auto_fair",
-  manualBuyCeilingRp: 16_350,
+  manualBuyCeilingRp: 999_999,
   buyFloorMode: "disabled",
   manualBuyFloorRp: 0,
   manualBuyPriceOverrideRp: 0,
@@ -140,6 +142,8 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   manualSellPriceOverrideRp: 0,
   autoPushToBinance: false,
   autoPushMinIntervalSec: 1,
+  autoFollowNextWhenLimitReached: true,
+  ownMerchantNickname: "",
 };
 
 export type StrategyPreset = "balanced" | "conservative" | "aggressive" | "whale";
@@ -154,7 +158,7 @@ export const STRATEGY_PRESETS: Record<
     config: {
       minUsdtAmount: 500,
       maxUsdtAmount: 0,
-      minOrderLimitIdr: 50_000_000,
+      minOrderLimitIdr: 0,
       minMaxLimitIdr: 0,
       verifiedOnly: true,
       userTypeFilter: "all",
@@ -175,7 +179,7 @@ export const STRATEGY_PRESETS: Record<
     config: {
       minUsdtAmount: 1000,
       maxUsdtAmount: 0,
-      minOrderLimitIdr: 25_000_000,
+      minOrderLimitIdr: 0,
       minMaxLimitIdr: 0,
       verifiedOnly: true,
       userTypeFilter: "merchant_only",
@@ -196,7 +200,7 @@ export const STRATEGY_PRESETS: Record<
     config: {
       minUsdtAmount: 250,
       maxUsdtAmount: 0,
-      minOrderLimitIdr: 50_000_000,
+      minOrderLimitIdr: 0,
       minMaxLimitIdr: 0,
       verifiedOnly: false,
       userTypeFilter: "all",
@@ -236,6 +240,7 @@ export const STRATEGY_PRESETS: Record<
 
 export type DisqualificationReason = {
   code:
+    | "OWN_AD"
     | "USDT_TOO_LOW"
     | "USDT_TOO_HIGH"
     | "MIN_LIMIT_TOO_HIGH"
@@ -281,12 +286,16 @@ export type CompetitorPricingResult = {
     triggered: boolean;
     reason?: string;
     floorPrice: number;
+    autoSwitched?: boolean;
+    switchedToRank?: number;
   };
   buyGuard: {
     triggered: boolean;
     reason?: string;
     ceilingPrice: number;
     floorPrice?: number;
+    autoSwitched?: boolean;
+    switchedToRank?: number;
   };
   spreadAbs: number;
   spreadPct: number;
@@ -299,9 +308,13 @@ export type CompetitorPricingResult = {
     liveStockUsdt: number;
     stockCapitalValuationIdr: number;
     effectiveBankBalance: number;
+    lockedActiveBuyIdr: number;
+    activeBuyOrdersUsdt: number;
     usableBankIdr: number;
     autoBuyStockUsdt: number;
     autoBuyMaxLimitIdr: number;
+    isBelowMinLimit: boolean;
+    minBuyLimitIdr: number;
     isSynced: boolean;
   };
 };
@@ -342,7 +355,23 @@ export function evaluateCompetitorAds(
   for (const ad of sortedAds) {
     const reasons: DisqualificationReason[] = [];
 
-    // 0. Filter Whitelist / Blacklist Merchant
+    // 0. Filter Iklan Milik Sendiri (Own Ad - agar bot tidak bersaing dengan diri sendiri)
+    const cleanBuyAdvNo = config.merchantBuyAdvNo ? config.merchantBuyAdvNo.trim().replace(/^#/, "") : "";
+    const cleanSellAdvNo = config.merchantSellAdvNo ? config.merchantSellAdvNo.trim().replace(/^#/, "") : "";
+    const cleanAdAdvNo = ad.adv_no ? String(ad.adv_no).trim().replace(/^#/, "") : "";
+    const ownNickname = config.ownMerchantNickname ? config.ownMerchantNickname.trim().toLowerCase() : "";
+
+    if (
+      (cleanAdAdvNo && (cleanAdAdvNo === cleanBuyAdvNo || cleanAdAdvNo === cleanSellAdvNo)) ||
+      (ownNickname && ad.merchant_name && ad.merchant_name.trim().toLowerCase() === ownNickname)
+    ) {
+      reasons.push({
+        code: "OWN_AD",
+        message: "Iklan milik sendiri (diabaikan dari daftar kompetitor)",
+      });
+    }
+
+    // 0b. Filter Whitelist / Blacklist Merchant
     if (config.merchantFilterMode === "whitelist_only") {
       const isWhitelisted = (config.whitelistedMerchants || []).some(
         (w) => w && w.trim().toLowerCase() === ad.merchant_name.trim().toLowerCase(),
@@ -384,11 +413,11 @@ export function evaluateCompetitorAds(
     }
 
     // 2. Filter Batas Pesanan Minimal IDR (Toleransi Min Order Kompetitor)
-    // Otomatis diskualifikasi jika syarat transaksi minimal kompetitor >= nominal filter (misal: pasang buy >= Rp 50 Juta)
-    if (config.minOrderLimitIdr > 0 && ad.min_limit_idr >= config.minOrderLimitIdr) {
+    // Diskualifikasi hanya jika syarat transaksi minimal kompetitor melebihi batas toleransi
+    if (config.minOrderLimitIdr > 0 && ad.min_limit_idr > config.minOrderLimitIdr) {
       reasons.push({
         code: "MIN_LIMIT_TOO_HIGH",
-        message: `Min transaksi merchant Rp ${ad.min_limit_idr.toLocaleString("id-ID")} >= batas filter Rp ${config.minOrderLimitIdr.toLocaleString("id-ID")} (pesanan jumbo)`,
+        message: `Min transaksi merchant Rp ${ad.min_limit_idr.toLocaleString("id-ID")} > batas filter Rp ${config.minOrderLimitIdr.toLocaleString("id-ID")} (pesanan jumbo)`,
       });
     }
 
@@ -557,20 +586,56 @@ export function computeCompetitorPricing(input: {
   stockCapitalIdr?: number;   // Nilai modal yang sedang terikat di stok USDT
   fallbackSellPrice?: number;
   fallbackBuyPrice?: number;
+  activeBuyOrdersUsdt?: number; // Jumlah stok USDT yang sedang aktif/berjalan di orderan beli Binance P2P
+  activeBuyOrdersIdr?: number;  // Total nilai rupiah yang sedang terkunci oleh orderan beli aktif
 }): CompetitorPricingResult {
   const {
-    sellRefAds,
-    buyRefAds,
+    sellRefAds = [],
+    buyRefAds = [],
     config,
-    stockHpp,
-    fairPrice,
+    stockHpp = 0,
+    fairPrice = 0,
     bankBalanceIdr = 0,
     initialCapitalIdr = 0,
     liveStockUsdt = 0,
     stockCapitalIdr,
-    fallbackSellPrice = 16_250,
-    fallbackBuyPrice = 16_200,
+    fallbackSellPrice,
+    fallbackBuyPrice,
+    activeBuyOrdersUsdt = 0,
+    activeBuyOrdersIdr = 0,
   } = input;
+
+  // 0. Tentukan Live Market Anchor dinamis dari data pasar riil saat ini (~17.800+)
+  // Kumpulkan semua sampel harga pasar yang tersedia (fairPrice, harga iklan buy, harga iklan sell, HPP)
+  const candidatePrices: number[] = [];
+  if (fairPrice && fairPrice > 10_000) candidatePrices.push(fairPrice);
+
+  if (Array.isArray(buyRefAds) && buyRefAds.length > 0) {
+    const validBuy = buyRefAds.map((a) => a.price).filter((p) => p > 10_000);
+    if (validBuy.length > 0) candidatePrices.push(validBuy[0]);
+  }
+  if (Array.isArray(sellRefAds) && sellRefAds.length > 0) {
+    const validSell = sellRefAds.map((a) => a.price).filter((p) => p > 10_000);
+    if (validSell.length > 0) candidatePrices.push(validSell[0]);
+  }
+  if (stockHpp && stockHpp > 10_000) candidatePrices.push(stockHpp);
+
+  // Jika tidak ada data harga sama sekali, gunakan acuan pasar wajar saat ini (~17.800), bukan nilai usang 16.200
+  const liveMarketAnchor = candidatePrices.length > 0
+    ? Math.round(candidatePrices.reduce((a, b) => a + b, 0) / candidatePrices.length)
+    : 17_800;
+
+  const minSpread = Math.max(10, config.minSpreadRp || 25);
+  const halfSpread = Math.max(5, Math.round(minSpread / 2));
+
+  // Dynamic fallback: JANGAN PERNAH gunakan angka kuno (< 17.000)
+  const resolvedFallbackSell = (fallbackSellPrice && fallbackSellPrice >= 17_000)
+    ? fallbackSellPrice
+    : (liveMarketAnchor + halfSpread);
+
+  const resolvedFallbackBuy = (fallbackBuyPrice && fallbackBuyPrice >= 17_000)
+    ? fallbackBuyPrice
+    : (liveMarketAnchor - halfSpread);
 
   // 1. Evaluasi dan Filter Merchant Kompetitor Jual & Beli
   const { qualified: qualifiedSell, evaluated: evaluatedSell } = evaluateCompetitorAds(
@@ -593,14 +658,44 @@ export function computeCompetitorPricing(input: {
 
   const topNCount = Math.max(2, config.targetTopCount || 3);
 
+  // Helper cek apakah iklan milik sendiri
+  const cleanBuyAdvNo = config.merchantBuyAdvNo ? config.merchantBuyAdvNo.trim().replace(/^#/, "") : "";
+  const cleanSellAdvNo = config.merchantSellAdvNo ? config.merchantSellAdvNo.trim().replace(/^#/, "") : "";
+  const ownNickname = config.ownMerchantNickname ? config.ownMerchantNickname.trim().toLowerCase() : "";
+
+  const isOwnAd = (ad: Ad) => {
+    const cleanAdAdvNo = ad.adv_no ? String(ad.adv_no).trim().replace(/^#/, "") : "";
+    if (cleanAdAdvNo && (cleanAdAdvNo === cleanBuyAdvNo || cleanAdAdvNo === cleanSellAdvNo)) return true;
+    if (ownNickname && ad.merchant_name && ad.merchant_name.trim().toLowerCase() === ownNickname) return true;
+    return false;
+  };
+
   // Helper kalkulasi harga acuan dasar berdasarkan targetMode
   const computeBasePrice = (
     qualifiedAds: Ad[],
+    allRawAds: Ad[],
     singleTarget: Ad | null,
     fallback: number,
-  ): { basePrice: number; desc: string } => {
+  ): { basePrice: number; desc: string; isFallback: boolean } => {
     if (qualifiedAds.length === 0) {
-      return { basePrice: fallback, desc: "Fallback (tidak ada merchant lolos filter)" };
+      // Relaksasi filter: jika tidak ada merchant lolos filter ketat,
+      // cari merchant non-milik sendiri yang ada di orderbook agar harga tetap presisi dengan market
+      const nonOwnAds = (allRawAds || []).filter((a) => !isOwnAd(a));
+      if (nonOwnAds.length > 0) {
+        const relaxedTarget = nonOwnAds[0];
+        const rawIndex = allRawAds.indexOf(relaxedTarget) + 1;
+        return {
+          basePrice: relaxedTarget.price,
+          desc: `Relaksasi: #${rawIndex} (${relaxedTarget.merchant_name} @ Rp ${relaxedTarget.price.toLocaleString("id-ID")})`,
+          isFallback: false,
+        };
+      }
+
+      return {
+        basePrice: fallback,
+        desc: `Fallback Pasar Dinamis (Rp ${fallback.toLocaleString("id-ID")})`,
+        isFallback: true,
+      };
     }
 
     if (config.targetMode === "average_top") {
@@ -609,6 +704,7 @@ export function computeCompetitorPricing(input: {
       return {
         basePrice: avg,
         desc: `Rata-rata Top ${pool.length} Kompetitor (Rp ${avg.toLocaleString("id-ID")})`,
+        isFallback: false,
       };
     }
 
@@ -623,6 +719,7 @@ export function computeCompetitorPricing(input: {
       return {
         basePrice: median,
         desc: `Median Top ${pool.length} Kompetitor (Rp ${median.toLocaleString("id-ID")})`,
+        isFallback: false,
       };
     }
 
@@ -630,11 +727,12 @@ export function computeCompetitorPricing(input: {
     return {
       basePrice: singleTarget ? singleTarget.price : fallback,
       desc: `Rank #${config.targetRank} (${singleTarget?.merchant_name || "N/A"})`,
+      isFallback: !singleTarget,
     };
   };
 
-  const sellBase = computeBasePrice(qualifiedSell, sellTargetMerchant, fallbackSellPrice);
-  const buyBase = computeBasePrice(qualifiedBuy, buyTargetMerchant, fallbackBuyPrice);
+  const sellBase = computeBasePrice(qualifiedSell, sellRefAds, sellTargetMerchant, resolvedFallbackSell);
+  const buyBase = computeBasePrice(qualifiedBuy, buyRefAds, buyTargetMerchant, resolvedFallbackBuy);
 
   // 3. Hitung Harga Mentah (Raw Price) dengan Offset
   // Untuk JUAL: base price + sellOffsetRp (misal -1 undercut)
@@ -646,7 +744,7 @@ export function computeCompetitorPricing(input: {
   // 4. Hitung dan Terapkan Batas Pengaman JUAL (Sell Floor Guard)
   // Biaya Maker Jual Binance P2P ~ 0.05%
   const MAKER_FEE_RATE = 0.0005;
-  const effectiveHpp = stockHpp > 0 ? stockHpp : (fairPrice > 0 ? fairPrice - 30 : 16_150);
+  const effectiveHpp = stockHpp > 0 ? stockHpp : (fairPrice > 0 ? fairPrice - 30 : liveMarketAnchor - 50);
 
   // Floor Jual: HPP + Fee Jual + Target Minimal Laba Bersih
   const calculatedSellFloor = Math.round(
@@ -654,6 +752,12 @@ export function computeCompetitorPricing(input: {
       ? (effectiveHpp + config.minProfitMarginRp) / (1 - MAKER_FEE_RATE)
       : config.manualSellFloorRp,
   );
+
+  const autoFollow = config.autoFollowNextWhenLimitReached !== false;
+
+  let activeSellTargetMerchant = sellTargetMerchant;
+  let activeSellRankUsed = sellTargetMerchant ? sellRankIdx + 1 : 0;
+  let activeSellDesc = sellBase.desc;
 
   const sellGuard: CompetitorPricingResult["sellGuard"] = {
     triggered: false,
@@ -669,21 +773,55 @@ export function computeCompetitorPricing(input: {
 
   if (recommendedSellPrice < calculatedSellFloor) {
     sellGuard.triggered = true;
-    sellGuard.reason = `Harga pasar (Rp ${rawSellPrice.toLocaleString("id-ID")}) di bawah batas aman modal (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor.`;
-    recommendedSellPrice = calculatedSellFloor;
+
+    // FITUR: Auto-Follow Iklan Jual Lain di Atas Floor Modal
+    if (autoFollow && qualifiedSell.length > 0) {
+      let candidateSell: Ad | null = null;
+      let candidateRank = 0;
+
+      for (let i = 0; i < qualifiedSell.length; i++) {
+        const adCandidate = qualifiedSell[i];
+        if (!adCandidate) continue;
+        if (adCandidate.price + config.sellOffsetRp >= calculatedSellFloor) {
+          candidateSell = adCandidate;
+          candidateRank = i + 1;
+          break;
+        }
+      }
+
+      if (candidateSell) {
+        activeSellTargetMerchant = candidateSell;
+        activeSellRankUsed = candidateRank;
+        recommendedSellPrice = Math.max(calculatedSellFloor, candidateSell.price + config.sellOffsetRp);
+        activeSellDesc = `Rank #${candidateRank} (${candidateSell.merchant_name}) [Otomatis alih target: batas Floor modal Rp ${calculatedSellFloor.toLocaleString("id-ID")} tercapai]`;
+        sellGuard.autoSwitched = true;
+        sellGuard.switchedToRank = candidateRank;
+        sellGuard.reason = `Batas Bawah Modal Terpenuhi: Target Rank #${sellRankIdx + 1} di bawah batas modal (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Bot otomatis beralih mengikuti iklan lain: Rank #${candidateRank} (@${candidateSell.merchant_name} - Rp ${candidateSell.price.toLocaleString("id-ID")}). Rekomendasi: Rp ${recommendedSellPrice.toLocaleString("id-ID")}.`;
+      } else {
+        recommendedSellPrice = calculatedSellFloor;
+        sellGuard.reason = `Semua iklan kompetitor (${qualifiedSell.length} iklan) menjual di bawah modal Floor (Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor modal.`;
+      }
+    } else {
+      sellGuard.reason = `Harga pasar (Rp ${rawSellPrice.toLocaleString("id-ID")}) di bawah batas aman modal (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor.`;
+      recommendedSellPrice = calculatedSellFloor;
+    }
   }
 
   // 5. Hitung dan Terapkan Batas Pengaman BELI (Buy Ceiling & Floor Guard)
   // Ceiling Beli (Batas Atas): Mencegah beli kemahalan di pucuk yang mengikis spread minimal terhadap harga jual
   const calculatedBuyCeiling = Math.round(
     config.buyCeilingMode === "auto_fair"
-      ? (rawSellPrice > 0 ? rawSellPrice - config.minSpreadRp : (fairPrice > 0 ? fairPrice : 16_300))
+      ? (rawSellPrice > 0 ? rawSellPrice - config.minSpreadRp : (fairPrice > 0 ? fairPrice : liveMarketAnchor))
       : (config.manualBuyCeilingRp > 0 ? config.manualBuyCeilingRp : 999_999),
   );
 
   const calculatedBuyFloor = Math.round(
     config.manualBuyFloorRp && config.manualBuyFloorRp > 0 ? config.manualBuyFloorRp : 0
   );
+
+  let activeBuyTargetMerchant = buyTargetMerchant;
+  let activeBuyRankUsed = buyTargetMerchant ? buyRankIdx + 1 : 0;
+  let activeBuyDesc = buyBase.desc;
 
   const buyGuard: CompetitorPricingResult["buyGuard"] = {
     triggered: false,
@@ -693,16 +831,64 @@ export function computeCompetitorPricing(input: {
 
   let recommendedBuyPrice = rawBuyPrice;
 
+  // Cek Batas Atas (Ceiling Guard)
+  // FITUR: Auto-Follow Iklan Lain Saat Batas Atas Beli Tercapai
+  // Jika harga beli melampaui batas atas (ceiling), bot otomatis mencari dan mengikuti
+  // iklan kompetitor lain di bawah limit atas (bukan cuma diam terkunci di ceiling).
+  if (calculatedBuyCeiling > 0 && recommendedBuyPrice > calculatedBuyCeiling) {
+    buyGuard.triggered = true;
+
+    if (autoFollow && qualifiedBuy.length > 0) {
+      let candidateBuy: Ad | null = null;
+      let candidateRank = 0;
+
+      // Prioritas 1: Cari iklan kompetitor di mana (harga + offset) <= limit atas (ceiling)
+      for (let i = 0; i < qualifiedBuy.length; i++) {
+        const adCandidate = qualifiedBuy[i];
+        if (!adCandidate) continue;
+        if (adCandidate.price + config.buyOffsetRp <= calculatedBuyCeiling) {
+          candidateBuy = adCandidate;
+          candidateRank = i + 1;
+          break;
+        }
+      }
+
+      // Prioritas 2: Jika tidak ada yang + offset <= ceiling, cari iklan yang harga dasarnya <= ceiling
+      if (!candidateBuy) {
+        for (let i = 0; i < qualifiedBuy.length; i++) {
+          const adCandidate = qualifiedBuy[i];
+          if (!adCandidate) continue;
+          if (adCandidate.price <= calculatedBuyCeiling) {
+            candidateBuy = adCandidate;
+            candidateRank = i + 1;
+            break;
+          }
+        }
+      }
+
+      if (candidateBuy) {
+        activeBuyTargetMerchant = candidateBuy;
+        activeBuyRankUsed = candidateRank;
+        const targetPriceWithOffset = candidateBuy.price + config.buyOffsetRp;
+        recommendedBuyPrice = Math.min(calculatedBuyCeiling, targetPriceWithOffset);
+        activeBuyDesc = `Rank #${candidateRank} (${candidateBuy.merchant_name}) [Otomatis alih target: batas atas Rp ${calculatedBuyCeiling.toLocaleString("id-ID")} tercapai]`;
+        buyGuard.autoSwitched = true;
+        buyGuard.switchedToRank = candidateRank;
+        buyGuard.reason = `Batas Atas Terpenuhi: Target Rank #${buyRankIdx + 1} melampaui limit atas (Ceiling Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}). Bot otomatis beralih mengikuti iklan lain di bawah limit: Rank #${candidateRank} (@${candidateBuy.merchant_name} - Rp ${candidateBuy.price.toLocaleString("id-ID")}). Rekomendasi: Rp ${recommendedBuyPrice.toLocaleString("id-ID")}.`;
+      } else {
+        // Semua iklan kompetitor di pasar berada di atas limit atas
+        recommendedBuyPrice = calculatedBuyCeiling;
+        buyGuard.reason = `Semua iklan kompetitor (${qualifiedBuy.length} iklan) berada di atas limit atas (Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}). Harga dipatok di limit atas Rp ${calculatedBuyCeiling.toLocaleString("id-ID")} menunggu kompetitor lain muncul di bawah limit.`;
+      }
+    } else {
+      buyGuard.reason = `Harga pasar (Rp ${rawBuyPrice.toLocaleString("id-ID")}) di atas batas atas wajar (Ceiling Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}). Harga dikunci di batas Ceiling.`;
+      recommendedBuyPrice = calculatedBuyCeiling;
+    }
+  }
+
   // Cek jika pengguna menetapkan override harga beli tetap manual
   if (config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0) {
     recommendedBuyPrice = Math.round(config.manualBuyPriceOverrideRp);
-  }
-
-  // Cek Batas Atas (Ceiling Guard)
-  if (calculatedBuyCeiling > 0 && recommendedBuyPrice > calculatedBuyCeiling) {
-    buyGuard.triggered = true;
-    buyGuard.reason = `Harga pasar (Rp ${rawBuyPrice.toLocaleString("id-ID")}) di atas batas atas wajar (Ceiling Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}). Harga dikunci di batas Ceiling.`;
-    recommendedBuyPrice = calculatedBuyCeiling;
   }
 
   // Cek Batas Bawah (Floor Guard)
@@ -714,12 +900,28 @@ export function computeCompetitorPricing(input: {
 
   // 6. Validasi Minimum Spread Guard (Pastikan Jual - Beli >= Min Spread)
   if (recommendedSellPrice - recommendedBuyPrice < config.minSpreadRp) {
-    // Jika spread terlalu tipis karena kompetitor, sesuaikan harga beli ke bawah (selama tidak di bawah floor)
-    const adjustedBuyPrice = Math.round(recommendedSellPrice - config.minSpreadRp);
-    if (calculatedBuyFloor > 0 && adjustedBuyPrice < calculatedBuyFloor) {
-      recommendedBuyPrice = calculatedBuyFloor;
+    const sellIsFallback = sellBase.isFallback;
+    const buyIsFallback = buyBase.isFallback;
+
+    if (sellIsFallback && !buyIsFallback) {
+      // Sisi Jual tidak memiliki kompetitor riil (fallback), sedangkan sisi Beli riil ada kompetitor valid.
+      // JANGAN rusak harga beli riil! Sesuaikan harga jual ke atas agar spread terpenuhi:
+      recommendedSellPrice = Math.max(calculatedSellFloor, Math.round(recommendedBuyPrice + config.minSpreadRp));
+    } else if (!sellIsFallback && buyIsFallback) {
+      // Sisi Beli tidak memiliki kompetitor riil (fallback), sedangkan sisi Jual riil ada kompetitor valid.
+      // Sesuaikan harga beli ke bawah dari harga jual riil:
+      const adjustedBuyPrice = Math.round(recommendedSellPrice - config.minSpreadRp);
+      recommendedBuyPrice = calculatedBuyFloor > 0 ? Math.max(calculatedBuyFloor, adjustedBuyPrice) : adjustedBuyPrice;
     } else {
-      recommendedBuyPrice = adjustedBuyPrice;
+      // Keduanya kompetitor riil, atau keduanya fallback.
+      // Coba turunkan harga beli selama tidak menembus floor beli
+      const adjustedBuyPrice = Math.round(recommendedSellPrice - config.minSpreadRp);
+      if (calculatedBuyFloor > 0 && adjustedBuyPrice < calculatedBuyFloor) {
+        recommendedBuyPrice = calculatedBuyFloor;
+        recommendedSellPrice = Math.max(calculatedSellFloor, Math.round(recommendedBuyPrice + config.minSpreadRp));
+      } else {
+        recommendedBuyPrice = adjustedBuyPrice;
+      }
     }
   }
 
@@ -738,7 +940,7 @@ export function computeCompetitorPricing(input: {
   const effectiveValuationPerUsdt =
     stockHpp > 0
       ? stockHpp
-      : (fairPrice > 0 ? fairPrice : (recommendedBuyPrice > 0 ? recommendedBuyPrice : 16_850));
+      : (fairPrice > 0 ? fairPrice : (recommendedBuyPrice > 0 ? recommendedBuyPrice : liveMarketAnchor));
 
   const stockCapitalValuationIdr =
     stockCapitalIdr !== undefined && stockCapitalIdr > 0
@@ -766,14 +968,34 @@ export function computeCompetitorPricing(input: {
     remainingBudgetBeforeAllocation = bankBalanceIdr;
   }
 
+  // OTOMATISASI ORDER BUY MASUK:
+  // Potong kas modal yang siap dibelanjakan dengan total orderan beli aktif yang sedang berjalan di Binance!
+  const lockedActiveBuyIdr =
+    activeBuyOrdersIdr && activeBuyOrdersIdr > 0
+      ? activeBuyOrdersIdr
+      : (activeBuyOrdersUsdt && activeBuyOrdersUsdt > 0 && recommendedBuyPrice > 0
+        ? Math.round(activeBuyOrdersUsdt * recommendedBuyPrice)
+        : 0);
+
+  const remainingBudgetAfterActiveOrders = Math.max(0, remainingBudgetBeforeAllocation - lockedActiveBuyIdr);
+
   const bankAllocationFraction = Math.min(100, Math.max(1, config.bankAllocationPct || 100)) / 100;
   const usableBankIdr = Math.max(
     0,
-    (remainingBudgetBeforeAllocation - (config.bankReserveBufferIdr || 0)) * bankAllocationFraction,
+    (remainingBudgetAfterActiveOrders - (config.bankReserveBufferIdr || 0)) * bankAllocationFraction,
   );
 
+  // Batas minimal transaksi beli (default Rp 50 Juta)
+  const minBuyLimitIdr = config.manualBuyMinLimitIdr && config.manualBuyMinLimitIdr > 0
+    ? config.manualBuyMinLimitIdr
+    : 50_000_000;
+
+  // Proteksi: Jika sisa kas kurang dari batas minimal transaksi (misal kas tersisa < Rp 50 Juta),
+  // maka stok beli otomatis menjadi 0 agar bot TIDAK otomatis memasang iklan beli lagi!
+  const isBelowMinLimit = usableBankIdr < minBuyLimitIdr;
+
   const autoBuyStockUsdt =
-    recommendedBuyPrice > 0 && usableBankIdr > 0
+    !isBelowMinLimit && recommendedBuyPrice > 0 && usableBankIdr > 0
       ? Math.floor((usableBankIdr / recommendedBuyPrice) * 100) / 100
       : 0;
 
@@ -784,10 +1006,14 @@ export function computeCompetitorPricing(input: {
     liveStockUsdt: liveStock,
     stockCapitalValuationIdr,
     effectiveBankBalance: remainingBudgetBeforeAllocation,
+    lockedActiveBuyIdr,
+    activeBuyOrdersUsdt,
     usableBankIdr,
     autoBuyStockUsdt,
     autoBuyMaxLimitIdr,
-    isSynced: Boolean(config.autoSyncBuyStockWithBank && usableBankIdr > 0),
+    isBelowMinLimit,
+    minBuyLimitIdr,
+    isSynced: Boolean(config.autoSyncBuyStockWithBank && usableBankIdr > 0 && !isBelowMinLimit),
   };
 
   return {
@@ -795,13 +1021,13 @@ export function computeCompetitorPricing(input: {
     recommendedBuyPrice,
     rawSellPrice,
     rawBuyPrice,
-    sellTargetMerchant,
-    buyTargetMerchant,
-    sellRankUsed: sellRankIdx + 1,
-    buyRankUsed: buyRankIdx + 1,
+    sellTargetMerchant: activeSellTargetMerchant,
+    buyTargetMerchant: activeBuyTargetMerchant,
+    sellRankUsed: activeSellRankUsed,
+    buyRankUsed: activeBuyRankUsed,
     targetMethodDescription: {
-      sell: sellBase.desc,
-      buy: buyBase.desc,
+      sell: activeSellDesc,
+      buy: activeBuyDesc,
     },
     qualifiedSellAds: qualifiedSell,
     evaluatedSellAds: evaluatedSell,
@@ -835,14 +1061,14 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (!merged.merchantFilterMode) merged.merchantFilterMode = "all_except_blacklist";
     if (!merged.paymentMatchMode) merged.paymentMatchMode = "any";
     if (typeof merged.excludeEwallets !== "boolean") merged.excludeEwallets = false;
-    // Migrasi otomatis ke 50 Juta jika masih nilai lama (500rb atau 0)
-    const hasMigrated50m = localStorage.getItem("binance_bot_migrated_50m_limit");
-    if (!hasMigrated50m) {
-      merged.minOrderLimitIdr = 50_000_000;
-      localStorage.setItem("binance_bot_migrated_50m_limit", "true");
-      saveBotConfig(merged);
-    } else if (merged.minOrderLimitIdr === 500_000) {
-      merged.minOrderLimitIdr = 50_000_000;
+    // Perbaikan: minOrderLimitIdr adalah batas toleransi filter kompetitor (0 = Bebas).
+    // Jika sebelumnya terkena migrasi 50 Juta keliru, reset kembali ke 0 agar tidak mendiskualifikasi kompetitor
+    const hasFixedMinOrderFilter = localStorage.getItem("binance_bot_fixed_min_order_filter_v3");
+    if (!hasFixedMinOrderFilter) {
+      if (merged.minOrderLimitIdr === 50_000_000 || merged.minOrderLimitIdr === 500_000) {
+        merged.minOrderLimitIdr = 0;
+      }
+      localStorage.setItem("binance_bot_fixed_min_order_filter_v3", "true");
       saveBotConfig(merged);
     }
     if (typeof merged.autoSyncBuyStockWithBank !== "boolean") merged.autoSyncBuyStockWithBank = true;
@@ -865,6 +1091,8 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (typeof merged.manualBuyPriceOverrideRp !== "number") merged.manualBuyPriceOverrideRp = 0;
     if (typeof merged.autoPushToBinance !== "boolean") merged.autoPushToBinance = false;
     if (typeof merged.autoPushMinIntervalSec !== "number" || merged.autoPushMinIntervalSec < 1) merged.autoPushMinIntervalSec = 1;
+    if (typeof merged.autoFollowNextWhenLimitReached !== "boolean") merged.autoFollowNextWhenLimitReached = true;
+    if (typeof merged.ownMerchantNickname !== "string") merged.ownMerchantNickname = "";
     return merged;
   } catch {
     return DEFAULT_BOT_CONFIG;
