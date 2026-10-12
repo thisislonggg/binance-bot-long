@@ -59,6 +59,12 @@ export type CompetitorFilterConfig = {
   manualBankBalanceIdr: number;           // Saldo bank manual jika mode manual atau override (misal: 25.000.000)
   bankAllocationPct: number;              // Persentase alokasi saldo bank untuk beli (misal: 100%)
   bankReserveBufferIdr: number;           // Cadangan uang minimal di bank yang tidak boleh dibelanjakan (Rp)
+
+  // ── Integrasi C2C Merchant API Binance ─────────────────────────────────────
+  merchantBuyAdvNo: string;               // Nomor iklan beli di Binance (advNo)
+  merchantSellAdvNo: string;              // Nomor iklan jual di Binance (advNo)
+  autoPushToBinance: boolean;             // Otomatis push perubahan harga ke Binance P2P
+  autoPushMinIntervalSec: number;         // Interval minimal push (detik, default 30)
 };
 
 export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
@@ -107,6 +113,11 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   manualBankBalanceIdr: 0,
   bankAllocationPct: 100,
   bankReserveBufferIdr: 0,
+
+  merchantBuyAdvNo: "",
+  merchantSellAdvNo: "",
+  autoPushToBinance: false,
+  autoPushMinIntervalSec: 30,
 };
 
 export type StrategyPreset = "balanced" | "conservative" | "aggressive" | "whale";
@@ -749,6 +760,10 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (typeof merged.manualBankBalanceIdr !== "number") merged.manualBankBalanceIdr = 0;
     if (typeof merged.bankAllocationPct !== "number") merged.bankAllocationPct = 100;
     if (typeof merged.bankReserveBufferIdr !== "number") merged.bankReserveBufferIdr = 0;
+    if (typeof merged.merchantBuyAdvNo !== "string") merged.merchantBuyAdvNo = "";
+    if (typeof merged.merchantSellAdvNo !== "string") merged.merchantSellAdvNo = "";
+    if (typeof merged.autoPushToBinance !== "boolean") merged.autoPushToBinance = false;
+    if (typeof merged.autoPushMinIntervalSec !== "number") merged.autoPushMinIntervalSec = 30;
     return merged;
   } catch {
     return DEFAULT_BOT_CONFIG;

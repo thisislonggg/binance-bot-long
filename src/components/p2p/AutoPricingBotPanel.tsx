@@ -39,8 +39,13 @@ import {
   X,
   XCircle,
   Zap,
+  Globe,
+  Key,
+  Send,
+  Terminal,
 } from "lucide-react";
-import React, { useMemo, useState } from "react";
+import { useServerFn } from "@tanstack/react-start";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -50,6 +55,10 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  pushPriceToBinanceAd,
+  type PushPriceResult,
+} from "@/lib/binance-merchant";
 import {
   computeCompetitorPricing,
   DEFAULT_BOT_CONFIG,
@@ -319,6 +328,88 @@ export function AutoPricingBotPanel({
     navigator.clipboard.writeText(text);
     toast.success("Rincian iklan beli disalin ke clipboard!");
   };
+
+  // ── Integrasi Eksekusi C2C Merchant API ─────────────────────────────────────
+  const pushPriceFn = useServerFn(pushPriceToBinanceAd);
+  const [isPushingBuy, setIsPushingBuy] = useState(false);
+  const [isPushingSell, setIsPushingSell] = useState(false);
+  const [lastPushLog, setLastPushLog] = useState<PushPriceResult | null>(null);
+
+  const handlePushPrice = async (side: "buy" | "sell") => {
+    const advNo = side === "buy" ? config.merchantBuyAdvNo : config.merchantSellAdvNo;
+    if (!advNo || !advNo.trim()) {
+      toast.error(
+        `Nomor Iklan ${side === "buy" ? "Beli" : "Jual"} (advNo) belum diisi. Buka tab "🔌 C2C Merchant API" di bawah untuk mengisinya.`
+      );
+      return;
+    }
+
+    const price = side === "buy" ? recommendedBuyPrice : recommendedSellPrice;
+    if (side === "buy") setIsPushingBuy(true);
+    else setIsPushingSell(true);
+
+    try {
+      const res = await pushPriceFn({
+        data: {
+          advNo: advNo.trim(),
+          side,
+          price,
+          amountUsdt:
+            side === "buy" && bankAllocation.autoBuyStockUsdt > 0
+              ? bankAllocation.autoBuyStockUsdt
+              : undefined,
+          maxLimitIdr:
+            side === "buy" && bankAllocation.autoBuyMaxLimitIdr > 0
+              ? bankAllocation.autoBuyMaxLimitIdr
+              : undefined,
+        },
+      });
+
+      setLastPushLog(res);
+      if (res.ok) {
+        toast.success(res.message);
+      } else {
+        toast.error(`Binance C2C: ${res.message}`);
+      }
+    } catch (err: unknown) {
+      const errStr = err instanceof Error ? err.message : String(err);
+      toast.error(`Gagal mengirim update ke Binance: ${errStr}`);
+    } finally {
+      if (side === "buy") setIsPushingBuy(false);
+      else setIsPushingSell(false);
+    }
+  };
+
+  // Auto-Push ke Binance jika opsi autoPushToBinance aktif
+  const lastPushedPricesRef = useRef<{ buy?: number; sell?: number }>({});
+  const lastPushTimeRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!config.autoPushToBinance) return;
+    const now = Date.now();
+    const minIntervalMs = (config.autoPushMinIntervalSec || 30) * 1000;
+    if (now - lastPushTimeRef.current < minIntervalMs) return;
+
+    if (
+      config.merchantBuyAdvNo &&
+      recommendedBuyPrice > 0 &&
+      lastPushedPricesRef.current.buy !== Math.round(recommendedBuyPrice)
+    ) {
+      lastPushedPricesRef.current.buy = Math.round(recommendedBuyPrice);
+      lastPushTimeRef.current = now;
+      handlePushPrice("buy");
+    }
+
+    if (
+      config.merchantSellAdvNo &&
+      recommendedSellPrice > 0 &&
+      lastPushedPricesRef.current.sell !== Math.round(recommendedSellPrice)
+    ) {
+      lastPushedPricesRef.current.sell = Math.round(recommendedSellPrice);
+      lastPushTimeRef.current = now;
+      handlePushPrice("sell");
+    }
+  }, [config.autoPushToBinance, recommendedBuyPrice, recommendedSellPrice, config.merchantBuyAdvNo, config.merchantSellAdvNo]);
 
   // ── Filter Data untuk Tabel Radar Pasar ─────────────────────────────────────
   const currentRadarAds = radarTab === "sell" ? evaluatedSellAds : evaluatedBuyAds;
@@ -649,7 +740,7 @@ export function AutoPricingBotPanel({
                 </div>
               )}
 
-              {/* Action Buttons: Terapkan ke Form Beli & Salin Rincian Iklan Beli */}
+              {/* Action Buttons: Terapkan ke Form Beli, Salin Rincian Iklan Beli, & Push API */}
               <div className="flex items-center gap-1.5 pt-1">
                 <Button
                   size="sm"
@@ -664,12 +755,24 @@ export function AutoPricingBotPanel({
                   size="sm"
                   variant="outline"
                   type="button"
+                  onClick={() => handlePushPrice("buy")}
+                  disabled={isPushingBuy}
+                  className="h-7 text-xs px-2.5 border-bid/40 text-bid hover:bg-bid/10 gap-1 font-semibold"
+                  title="Update harga & stok iklan langsung ke Binance C2C via API"
+                >
+                  <Send className={`size-3 ${isPushingBuy ? "animate-pulse" : ""}`} />
+                  <span>{isPushingBuy ? "Kirim..." : "Push API"}</span>
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  type="button"
                   onClick={handleCopyBuyDetails}
                   className="h-7 text-xs px-2.5 border-border/80 text-muted-foreground hover:text-foreground hover:bg-surface-2"
                   title="Salin Harga Beli, Stok USDT, dan Plafon Limit IDR"
                 >
                   <Copy className="size-3 mr-1" />
-                  <span>Salin Iklan</span>
+                  <span>Salin</span>
                 </Button>
               </div>
             </div>
@@ -766,6 +869,51 @@ export function AutoPricingBotPanel({
                   <ShieldCheck className="size-3 text-ask" /> Min {fmtRp2(sellGuard.floorPrice)} (Aman)
                 </span>
               )}
+            </div>
+
+            {/* Quick Push ke Iklan Jual Binance C2C */}
+            <div className="mt-3 rounded-lg border border-ask/30 bg-ask/5 p-2.5 space-y-1.5">
+              <div className="flex items-center justify-between text-xs">
+                <div className="flex items-center gap-1.5">
+                  <Send className="size-3.5 text-ask" />
+                  <span className="text-[0.72rem] font-bold text-foreground">
+                    C2C Merchant API Push
+                  </span>
+                  <Badge
+                    variant="outline"
+                    className="h-4.5 px-1.5 text-[0.6rem] border-ask/30 text-ask bg-ask/10 font-semibold"
+                  >
+                    {config.merchantSellAdvNo ? `#${config.merchantSellAdvNo.slice(-6)}` : "Belum di-set"}
+                  </Badge>
+                </div>
+                <span className="text-[0.65rem] text-muted-foreground">
+                  Iklan Jual
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1.5 pt-0.5">
+                <Button
+                  size="sm"
+                  type="button"
+                  onClick={() => handlePushPrice("sell")}
+                  disabled={isPushingSell}
+                  className="flex-1 h-7 text-xs font-semibold bg-ask text-ask-foreground hover:bg-ask/90 gap-1.5 shadow-sm"
+                >
+                  <Send className={`size-3.5 ${isPushingSell ? "animate-pulse" : ""}`} />
+                  <span>{isPushingSell ? "Mengirim ke Binance..." : "Push Harga ke Binance"}</span>
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  type="button"
+                  onClick={() => handleCopy(recommendedSellPrice, "sell")}
+                  className="h-7 text-xs px-2.5 border-border/80 text-muted-foreground hover:text-foreground hover:bg-surface-2"
+                  title="Salin Harga Jual"
+                >
+                  <Copy className="size-3 mr-1" />
+                  <span>Salin</span>
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -1192,6 +1340,9 @@ export function AutoPricingBotPanel({
                 </TabsTrigger>
                 <TabsTrigger value="backup" className="text-xs px-2.5 h-6">
                   💾 Cadangan & Reset
+                </TabsTrigger>
+                <TabsTrigger value="c2c_api" className="text-xs px-2.5 h-6 font-semibold border-primary/30 text-primary">
+                  🔌 C2C Merchant API {config.autoPushToBinance ? "(Auto)" : ""}
                 </TabsTrigger>
               </TabsList>
             </div>
@@ -2569,6 +2720,305 @@ export function AutoPricingBotPanel({
                   </div>
                 </div>
               )}
+            </TabsContent>
+
+            {/* TAB INTEGRASI KHUSUS C2C MERCHANT API BINANCE */}
+            <TabsContent value="c2c_api" className="mt-3.5 space-y-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-2">
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <Terminal className="size-4 text-primary" />
+                    <h4 className="text-xs font-bold text-foreground">
+                      Integrasi Khusus Binance C2C Merchant Open API
+                    </h4>
+                    <Badge variant="outline" className="h-5 px-1.5 text-[0.62rem] border-primary/40 text-primary bg-primary/10 font-bold">
+                      Direct SAPI
+                    </Badge>
+                  </div>
+                  <p className="text-[0.7rem] text-muted-foreground pt-0.5">
+                    Hubungkan nomor iklan Binance P2P Anda (<span className="text-foreground font-semibold">advNo</span>) agar bot dapat langsung mengubah harga, stok USDT, dan batas limit pesanan secara real-time via API resmi Binance.
+                  </p>
+                </div>
+              </div>
+
+              {/* Status Autentikasi & Syarat Akses */}
+              <div className="rounded-xl border border-border/80 bg-surface-2/60 p-3.5 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Key className="size-4 text-amber-500" />
+                    <span className="text-xs font-bold text-foreground">Status Kredensial Binance API</span>
+                  </div>
+                  <Badge variant="outline" className="border-border text-foreground text-[0.65rem] font-semibold">
+                    HMAC-SHA256 (USER_DATA)
+                  </Badge>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                  <div className="rounded bg-surface p-2 border border-border/50">
+                    <div className="text-[0.65rem] text-muted-foreground">Endpoint Target:</div>
+                    <div className="font-mono text-[0.7rem] text-foreground font-semibold truncate">/sapi/v1/c2c/ads/update</div>
+                  </div>
+                  <div className="rounded bg-surface p-2 border border-border/50">
+                    <div className="text-[0.65rem] text-muted-foreground">Kebutuhan Akun:</div>
+                    <div className="text-[0.7rem] font-semibold text-amber-500">P2P Verified Merchant</div>
+                  </div>
+                  <div className="rounded bg-surface p-2 border border-border/50">
+                    <div className="text-[0.65rem] text-muted-foreground">Koneksi Server:</div>
+                    <div className="text-[0.7rem] font-semibold text-emerald-500 flex items-center gap-1">
+                      <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" /> Ready & Signed
+                    </div>
+                  </div>
+                </div>
+                <p className="text-[0.68rem] text-muted-foreground leading-relaxed">
+                  💡 <strong>Cara Mengetahui Nomor Iklan (advNo):</strong> Buka Binance App atau Web &rarr; masuk ke menu <strong>P2P &rarr; Iklan Saya (My Ads)</strong> &rarr; buka rincian iklan Beli dan Jual Anda &rarr; salin deretan angka nomor iklan (biasanya 19 digit angka unik).
+                </p>
+              </div>
+
+              {/* Form Input Nomor Iklan Beli & Jual */}
+              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+                {/* Iklan Beli (Maker Buy) */}
+                <div className="rounded-xl border border-bid/40 bg-bid/5 p-3.5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className="size-2 rounded-full bg-bid" />
+                      <span className="text-xs font-bold text-bid uppercase tracking-wider">
+                        Iklan Beli Anda (Maker Buy)
+                      </span>
+                    </div>
+                    <Badge variant="outline" className="border-bid/40 text-bid text-[0.62rem] font-bold">
+                      BUY IDR
+                    </Badge>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-xs font-semibold text-foreground">
+                      Nomor Iklan Beli Binance (advNo)
+                    </Label>
+                    <Input
+                      type="text"
+                      value={config.merchantBuyAdvNo || ""}
+                      onChange={(e) => updateConfig({ merchantBuyAdvNo: e.target.value.trim() })}
+                      placeholder="Contoh: 112233445566778899"
+                      className="h-8 text-xs font-mono bg-surface font-semibold"
+                    />
+                    <p className="text-[0.65rem] text-muted-foreground">
+                      Nomor ID unik iklan beli USDT Anda di Binance P2P.
+                    </p>
+                  </div>
+
+                  <div className="rounded bg-surface/80 p-2.5 border border-border/60 space-y-1 text-xs">
+                    <div className="flex justify-between text-muted-foreground text-[0.68rem]">
+                      <span>Harga Rekomendasi:</span>
+                      <strong className="num text-foreground">{fmtRp2(recommendedBuyPrice)}</strong>
+                    </div>
+                    <div className="flex justify-between text-muted-foreground text-[0.68rem]">
+                      <span>Target Stok USDT:</span>
+                      <strong className="num text-bid">
+                        {bankAllocation.autoBuyStockUsdt > 0 ? `${bankAllocation.autoBuyStockUsdt} USDT` : "—"}
+                      </strong>
+                    </div>
+                    <div className="flex justify-between text-muted-foreground text-[0.68rem]">
+                      <span>Plafon Limit Saldo Bank:</span>
+                      <strong className="num text-foreground">
+                        {bankAllocation.autoBuyMaxLimitIdr > 0 ? fmtRp(bankAllocation.autoBuyMaxLimitIdr) : "—"}
+                      </strong>
+                    </div>
+                  </div>
+
+                  <Button
+                    type="button"
+                    onClick={() => handlePushPrice("buy")}
+                    disabled={isPushingBuy || !config.merchantBuyAdvNo}
+                    className="w-full h-8 text-xs font-semibold bg-bid text-bid-foreground hover:bg-bid/90 gap-1.5 shadow-sm"
+                  >
+                    <Send className={`size-3.5 ${isPushingBuy ? "animate-pulse" : ""}`} />
+                    <span>{isPushingBuy ? "Mengirim ke Binance..." : "Push Harga Beli ke Binance Sekarang"}</span>
+                  </Button>
+                </div>
+
+                {/* Iklan Jual (Maker Sell) */}
+                <div className="rounded-xl border border-ask/40 bg-ask/5 p-3.5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className="size-2 rounded-full bg-ask" />
+                      <span className="text-xs font-bold text-ask uppercase tracking-wider">
+                        Iklan Jual Anda (Maker Sell)
+                      </span>
+                    </div>
+                    <Badge variant="outline" className="border-ask/40 text-ask text-[0.62rem] font-bold">
+                      SELL IDR
+                    </Badge>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label className="text-xs font-semibold text-foreground">
+                      Nomor Iklan Jual Binance (advNo)
+                    </Label>
+                    <Input
+                      type="text"
+                      value={config.merchantSellAdvNo || ""}
+                      onChange={(e) => updateConfig({ merchantSellAdvNo: e.target.value.trim() })}
+                      placeholder="Contoh: 112233445566778800"
+                      className="h-8 text-xs font-mono bg-surface font-semibold"
+                    />
+                    <p className="text-[0.65rem] text-muted-foreground">
+                      Nomor ID unik iklan jual USDT Anda di Binance P2P.
+                    </p>
+                  </div>
+
+                  <div className="rounded bg-surface/80 p-2.5 border border-border/60 space-y-1 text-xs">
+                    <div className="flex justify-between text-muted-foreground text-[0.68rem]">
+                      <span>Harga Rekomendasi:</span>
+                      <strong className="num text-foreground">{fmtRp2(recommendedSellPrice)}</strong>
+                    </div>
+                    <div className="flex justify-between text-muted-foreground text-[0.68rem]">
+                      <span>Floor Margin HPP:</span>
+                      <strong className="num text-ask">{fmtRp2(sellGuard.floorPrice)}</strong>
+                    </div>
+                    <div className="flex justify-between text-muted-foreground text-[0.68rem]">
+                      <span>Strategi:</span>
+                      <strong className="text-foreground">{config.sellOffsetRp} Rp Undercut</strong>
+                    </div>
+                  </div>
+
+                  <Button
+                    type="button"
+                    onClick={() => handlePushPrice("sell")}
+                    disabled={isPushingSell || !config.merchantSellAdvNo}
+                    className="w-full h-8 text-xs font-semibold bg-ask text-ask-foreground hover:bg-ask/90 gap-1.5 shadow-sm"
+                  >
+                    <Send className={`size-3.5 ${isPushingSell ? "animate-pulse" : ""}`} />
+                    <span>{isPushingSell ? "Mengirim ke Binance..." : "Push Harga Jual ke Binance Sekarang"}</span>
+                  </Button>
+                </div>
+              </div>
+
+              {/* Mode Otomasi Penuh (Auto-Push Live ke Binance) */}
+              <div className="rounded-xl border border-border/80 bg-surface-2/60 p-3.5 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-2">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <Zap className="size-4 text-primary" />
+                      <h4 className="text-xs font-bold text-foreground">
+                        Mode Auto-Push Live ke Binance
+                      </h4>
+                      {config.autoPushToBinance && (
+                        <Badge className="h-5 px-1.5 text-[0.6rem] bg-emerald-500/20 text-emerald-400 border-emerald-500/30 font-bold">
+                          ● AKTIF LIVE
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="text-[0.68rem] text-muted-foreground">
+                      Secara otomatis memperbarui harga iklan di Binance setiap kali pasar bergerak dan bot menghitung harga optimal baru.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={config.autoPushToBinance}
+                    onCheckedChange={(val) => {
+                      if (val && (!config.merchantBuyAdvNo && !config.merchantSellAdvNo)) {
+                        toast.error("Isi minimal salah satu nomor iklan (advNo) sebelum mengaktifkan Auto-Push.");
+                        return;
+                      }
+                      updateConfig({ autoPushToBinance: val });
+                      toast.success(
+                        val
+                          ? "Auto-Push Live diaktifkan! Bot akan otomatis menyinkronkan harga ke Binance."
+                          : "Auto-Push Live dimatikan."
+                      );
+                    }}
+                    className="scale-90 data-[state=checked]:bg-primary"
+                  />
+                </div>
+
+                {config.autoPushToBinance && (
+                  <div className="space-y-2 pt-1 text-xs">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs font-semibold text-foreground">
+                        Interval Minimal Push ke Binance
+                      </Label>
+                      <span className="num text-xs font-bold text-primary">
+                        {config.autoPushMinIntervalSec || 30} Detik
+                      </span>
+                    </div>
+                    <Slider
+                      value={[config.autoPushMinIntervalSec || 30]}
+                      min={10}
+                      max={120}
+                      step={5}
+                      onValueChange={(val) => updateConfig({ autoPushMinIntervalSec: val[0] })}
+                      className="py-1"
+                    />
+                    <div className="flex items-center justify-between text-[0.62rem] text-muted-foreground">
+                      {[15, 30, 45, 60, 90].map((sec) => (
+                        <button
+                          key={sec}
+                          type="button"
+                          onClick={() => updateConfig({ autoPushMinIntervalSec: sec })}
+                          className={`rounded px-1.5 py-0.5 ${
+                            (config.autoPushMinIntervalSec || 30) === sec
+                              ? "bg-primary text-primary-foreground font-bold"
+                              : "hover:text-foreground"
+                          }`}
+                        >
+                          {sec}s
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[0.62rem] text-muted-foreground">
+                      Jeda minimal antara setiap push untuk mencegah terkena limit rate request dari Binance (rekomendasi: 30 detik).
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Log Respons Terakhir dari Binance API */}
+              <div className="rounded-xl border border-border/70 bg-surface p-3 space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-foreground flex items-center gap-1.5">
+                    <Terminal className="size-3.5 text-primary" /> Log Respons Terakhir dari Server Binance
+                  </span>
+                  {lastPushLog && (
+                    <Badge
+                      variant="outline"
+                      className={`text-[0.62rem] font-bold ${
+                        lastPushLog.ok
+                          ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/10"
+                          : "border-destructive/40 text-destructive bg-destructive/10"
+                      }`}
+                    >
+                      {lastPushLog.ok ? "SUKSES" : `ERROR ${lastPushLog.binanceCode || ""}`}
+                    </Badge>
+                  )}
+                </div>
+
+                {lastPushLog ? (
+                  <div className="rounded bg-surface-2/80 p-2.5 font-mono text-[0.68rem] space-y-1 border border-border/50">
+                    <div className="flex justify-between text-muted-foreground">
+                      <span>Waktu:</span>
+                      <span>{new Date(lastPushLog.timestamp).toLocaleTimeString("id-ID")}</span>
+                    </div>
+                    <div className="flex justify-between text-muted-foreground">
+                      <span>Iklan:</span>
+                      <span>#{lastPushLog.advNo} ({lastPushLog.side.toUpperCase()})</span>
+                    </div>
+                    <div className="flex justify-between text-muted-foreground">
+                      <span>Harga Terkirim:</span>
+                      <span className="font-bold text-foreground">Rp {lastPushLog.price.toLocaleString("id-ID")}</span>
+                    </div>
+                    <div className="text-foreground pt-1 border-t border-border/40 font-sans">
+                      {lastPushLog.message}
+                    </div>
+                    {lastPushLog.error && (
+                      <div className="text-destructive font-sans text-[0.65rem]">
+                        Detail Error: {lastPushLog.error}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded bg-surface-2/40 p-3 text-center text-muted-foreground text-[0.7rem] italic">
+                    Belum ada riwayat push harga ke Binance pada sesi ini. Masukkan nomor iklan dan klik tombol Push untuk menguji.
+                  </div>
+                )}
+              </div>
             </TabsContent>
           </Tabs>
         </div>
