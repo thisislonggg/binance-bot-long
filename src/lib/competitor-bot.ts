@@ -75,7 +75,7 @@ export type CompetitorFilterConfig = {
   manualSellMaxLimitIdr?: number;         // Plafon limit IDR jual manual (0 = auto dari stok * harga)
   manualSellPriceOverrideRp?: number;     // Override pasang harga jual manual tetap (0 = auto bot)
   autoPushToBinance: boolean;             // Otomatis push perubahan harga ke Binance P2P
-  autoPushMinIntervalSec: number;         // Interval minimal push (detik, default 30)
+  autoPushMinIntervalSec: number;         // Interval minimal push (detik, default 1)
 };
 
 export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
@@ -139,7 +139,7 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   manualSellMaxLimitIdr: 0,
   manualSellPriceOverrideRp: 0,
   autoPushToBinance: false,
-  autoPushMinIntervalSec: 30,
+  autoPushMinIntervalSec: 1,
 };
 
 export type StrategyPreset = "balanced" | "conservative" | "aggressive" | "whale";
@@ -864,7 +864,7 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (typeof merged.manualBuyFloorRp !== "number") merged.manualBuyFloorRp = 0;
     if (typeof merged.manualBuyPriceOverrideRp !== "number") merged.manualBuyPriceOverrideRp = 0;
     if (typeof merged.autoPushToBinance !== "boolean") merged.autoPushToBinance = false;
-    if (typeof merged.autoPushMinIntervalSec !== "number") merged.autoPushMinIntervalSec = 30;
+    if (typeof merged.autoPushMinIntervalSec !== "number" || merged.autoPushMinIntervalSec < 1) merged.autoPushMinIntervalSec = 1;
     return merged;
   } catch {
     return DEFAULT_BOT_CONFIG;

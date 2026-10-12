@@ -516,30 +516,44 @@ export function AutoPricingBotPanel({
 
   useEffect(() => {
     if (!config.autoPushToBinance) return;
-    const now = Date.now();
-    const minIntervalMs = (config.autoPushMinIntervalSec || 30) * 1000;
-    if (now - lastPushTimeRef.current < minIntervalMs) return;
+    const minIntervalMs = Math.max(1, config.autoPushMinIntervalSec ?? 1) * 1000;
 
-    if (
-      config.merchantBuyAdvNo &&
-      recommendedBuyPrice > 0 &&
-      lastPushedPricesRef.current.buy !== Math.round(recommendedBuyPrice)
-    ) {
-      lastPushedPricesRef.current.buy = Math.round(recommendedBuyPrice);
-      lastPushTimeRef.current = now;
-      handlePushPrice("buy");
-    }
+    const checkAndPush = () => {
+      const now = Date.now();
+      if (now - lastPushTimeRef.current < minIntervalMs) return;
 
-    if (
-      config.merchantSellAdvNo &&
-      recommendedSellPrice > 0 &&
-      lastPushedPricesRef.current.sell !== Math.round(recommendedSellPrice)
-    ) {
-      lastPushedPricesRef.current.sell = Math.round(recommendedSellPrice);
-      lastPushTimeRef.current = now;
-      handlePushPrice("sell");
-    }
-  }, [config.autoPushToBinance, recommendedBuyPrice, recommendedSellPrice, config.merchantBuyAdvNo, config.merchantSellAdvNo]);
+      if (
+        config.merchantBuyAdvNo &&
+        recommendedBuyPrice > 0 &&
+        lastPushedPricesRef.current.buy !== Math.round(recommendedBuyPrice)
+      ) {
+        lastPushedPricesRef.current.buy = Math.round(recommendedBuyPrice);
+        lastPushTimeRef.current = now;
+        handlePushPrice("buy");
+      }
+
+      if (
+        config.merchantSellAdvNo &&
+        recommendedSellPrice > 0 &&
+        lastPushedPricesRef.current.sell !== Math.round(recommendedSellPrice)
+      ) {
+        lastPushedPricesRef.current.sell = Math.round(recommendedSellPrice);
+        lastPushTimeRef.current = now;
+        handlePushPrice("sell");
+      }
+    };
+
+    checkAndPush();
+    const timer = setInterval(checkAndPush, Math.max(1000, minIntervalMs));
+    return () => clearInterval(timer);
+  }, [
+    config.autoPushToBinance,
+    config.autoPushMinIntervalSec,
+    recommendedBuyPrice,
+    recommendedSellPrice,
+    config.merchantBuyAdvNo,
+    config.merchantSellAdvNo,
+  ]);
 
   // ── Filter Data untuk Tabel Radar Pasar ─────────────────────────────────────
   const currentRadarAds = radarTab === "sell" ? evaluatedSellAds : evaluatedBuyAds;
@@ -3711,31 +3725,43 @@ export function AutoPricingBotPanel({
                 {config.autoPushToBinance && (
                   <div className="space-y-2 pt-1 text-xs">
                     <div className="flex items-center justify-between">
-                      <Label className="text-xs font-semibold text-foreground">
-                        Interval Minimal Push ke Binance
+                      <Label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                        <Zap className="size-3.5 text-primary" />
+                        <span>Interval Minimal Push / Refresh ke Binance</span>
                       </Label>
-                      <span className="num text-xs font-bold text-primary">
-                        {config.autoPushMinIntervalSec || 30} Detik
-                      </span>
+                      <div className="flex items-center gap-1">
+                        <Input
+                          type="number"
+                          min={1}
+                          max={120}
+                          value={config.autoPushMinIntervalSec ?? 1}
+                          onChange={(e) => {
+                            const val = Math.max(1, Math.min(120, Number(e.target.value) || 1));
+                            updateConfig({ autoPushMinIntervalSec: val });
+                          }}
+                          className="h-6.5 w-16 text-xs text-right font-bold bg-surface font-mono"
+                        />
+                        <span className="text-xs font-bold text-primary">Detik</span>
+                      </div>
                     </div>
                     <Slider
-                      value={[config.autoPushMinIntervalSec || 30]}
-                      min={10}
-                      max={120}
-                      step={5}
-                      onValueChange={(val) => updateConfig({ autoPushMinIntervalSec: val[0] })}
+                      value={[config.autoPushMinIntervalSec ?? 1]}
+                      min={1}
+                      max={60}
+                      step={1}
+                      onValueChange={(val) => updateConfig({ autoPushMinIntervalSec: Math.max(1, val[0]) })}
                       className="py-1"
                     />
                     <div className="flex items-center justify-between text-[0.62rem] text-muted-foreground">
-                      {[15, 30, 45, 60, 90].map((sec) => (
+                      {[1, 2, 3, 5, 10, 30].map((sec) => (
                         <button
                           key={sec}
                           type="button"
                           onClick={() => updateConfig({ autoPushMinIntervalSec: sec })}
-                          className={`rounded px-1.5 py-0.5 ${
-                            (config.autoPushMinIntervalSec || 30) === sec
-                              ? "bg-primary text-primary-foreground font-bold"
-                              : "hover:text-foreground"
+                          className={`rounded px-2 py-0.5 font-semibold transition-colors ${
+                            (config.autoPushMinIntervalSec ?? 1) === sec
+                              ? "bg-primary text-primary-foreground font-bold shadow-xs"
+                              : "bg-surface-2 text-muted-foreground hover:text-foreground"
                           }`}
                         >
                           {sec}s
@@ -3743,7 +3769,7 @@ export function AutoPricingBotPanel({
                       ))}
                     </div>
                     <p className="text-[0.62rem] text-muted-foreground">
-                      Jeda minimal antara setiap push untuk mencegah terkena limit rate request dari Binance (rekomendasi: 30 detik).
+                      Jeda minimal antara setiap push ke Binance. Sekarang mendukung hingga kecepatan 1 detik untuk update harga ultra cepat!
                     </p>
                   </div>
                 )}

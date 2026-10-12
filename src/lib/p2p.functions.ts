@@ -24,8 +24,24 @@ const HEADERS = {
 // Cache data real-time terakhir dari Binance agar tidak terpental ke mock jika terjadi temporary glitch
 let lastLiveSellAds: Ad[] = [];
 let lastLiveBuyAds: Ad[] = [];
+const inFlightP2p: { BUY: Promise<Ad[]> | null; SELL: Promise<Ad[]> | null } = { BUY: null, SELL: null };
 
 async function fetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: number = 17650): Promise<Ad[]> {
+  if (inFlightP2p[tradeType]) {
+    return inFlightP2p[tradeType]!;
+  }
+  const promise = (async () => {
+    try {
+      return await doFetchP2pAds(tradeType, benchmarkBasePrice);
+    } finally {
+      inFlightP2p[tradeType] = null;
+    }
+  })();
+  inFlightP2p[tradeType] = promise;
+  return promise;
+}
+
+async function doFetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: number = 17650): Promise<Ad[]> {
   const customProxy = process.env.BINANCE_P2P_PROXY_URL || process.env.BINANCE_PROXY_URL;
   const urls = customProxy
     ? [customProxy, ...DEFAULT_BINANCE_P2P_URLS]
@@ -118,12 +134,21 @@ function generateFallbackAds(tradeType: "BUY" | "SELL", basePrice: number = 1765
 
 const FOREX_URL = "https://open.er-api.com/v6/latest/USD";
 
+// In-memory cache agar polling 1 detik tidak terkena rate limit dari Indodax, CoinGecko, & Forex
+let cachedCrossPlatform: { timestamp: number; data: Record<string, number> } | null = null;
+const CROSS_PLATFORM_CACHE_TTL_MS = 10_000; // 10 detik
+
 async function fetchCrossPlatform(): Promise<Record<string, number>> {
+  const now = Date.now();
+  if (cachedCrossPlatform && now - cachedCrossPlatform.timestamp < CROSS_PLATFORM_CACHE_TTL_MS) {
+    return cachedCrossPlatform.data;
+  }
+
   const refs: Record<string, number> = {};
   await Promise.allSettled([
     (async () => {
       try {
-        const resp = await fetch(INDODAX_TICKER_URL, { signal: AbortSignal.timeout(4000) });
+        const resp = await fetch(INDODAX_TICKER_URL, { signal: AbortSignal.timeout(3000) });
         if (resp.ok) {
           const r: any = await resp.json();
           const last = Number(r?.ticker?.last);
@@ -139,7 +164,7 @@ async function fetchCrossPlatform(): Promise<Record<string, number>> {
     })(),
     (async () => {
       try {
-        const resp = await fetch(COINGECKO_URL, { signal: AbortSignal.timeout(4000) });
+        const resp = await fetch(COINGECKO_URL, { signal: AbortSignal.timeout(3000) });
         if (resp.ok) {
           const r: any = await resp.json();
           const v = Number(r?.tether?.idr);
@@ -151,7 +176,7 @@ async function fetchCrossPlatform(): Promise<Record<string, number>> {
     })(),
     (async () => {
       try {
-        const resp = await fetch(FOREX_URL, { signal: AbortSignal.timeout(4000) });
+        const resp = await fetch(FOREX_URL, { signal: AbortSignal.timeout(3000) });
         if (resp.ok) {
           const r: any = await resp.json();
           const usdIdr = Number(r?.rates?.IDR);
@@ -167,6 +192,12 @@ async function fetchCrossPlatform(): Promise<Record<string, number>> {
       }
     })(),
   ]);
+
+  if (Object.keys(refs).length > 0) {
+    cachedCrossPlatform = { timestamp: now, data: refs };
+  } else if (cachedCrossPlatform) {
+    return cachedCrossPlatform.data;
+  }
   return refs;
 }
 
@@ -177,21 +208,38 @@ import {
   type MacroSentiment,
 } from "./news-analyzer";
 
+// In-memory cache berita makro (60 detik)
+let cachedNews: {
+  timestamp: number;
+  data: {
+    rawItems: { title: string; link: string }[];
+    analyzedNews: AnalyzedNews[];
+    macroSentiment: MacroSentiment;
+  };
+} | null = null;
+const NEWS_CACHE_TTL_MS = 60_000;
+
 async function fetchNews(): Promise<{
   rawItems: { title: string; link: string }[];
   analyzedNews: AnalyzedNews[];
   macroSentiment: MacroSentiment;
 }> {
+  const now = Date.now();
+  if (cachedNews && now - cachedNews.timestamp < NEWS_CACHE_TTL_MS) {
+    return cachedNews.data;
+  }
+
   const query = "rupiah OR USDT OR tether OR Bank Indonesia OR The Fed OR dolar AS OR kripto Indonesia";
   try {
     const resp = await fetch(
       `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=id&gl=ID&ceid=ID:id`,
       {
         headers: { "User-Agent": "Mozilla/5.0" },
-        signal: AbortSignal.timeout(4000),
+        signal: AbortSignal.timeout(3500),
       },
     );
     if (!resp.ok) {
+      if (cachedNews) return cachedNews.data;
       return {
         rawItems: [],
         analyzedNews: [],
@@ -224,8 +272,11 @@ async function fetchNews(): Promise<{
     }
 
     const macroSentiment = computeMacroSentiment(analyzedNews);
-    return { rawItems, analyzedNews, macroSentiment };
+    const result = { rawItems, analyzedNews, macroSentiment };
+    cachedNews = { timestamp: now, data: result };
+    return result;
   } catch {
+    if (cachedNews) return cachedNews.data;
     return {
       rawItems: [],
       analyzedNews: [],
@@ -234,35 +285,62 @@ async function fetchNews(): Promise<{
   }
 }
 
+// In-memory cache db history (10 detik)
+let cachedDbHistory: { timestamp: number; data: HistoryPoint[] } | null = null;
+const DB_HISTORY_CACHE_TTL_MS = 10_000;
 
 // Ambil N titik history terakhir dari Supabase. Kalau Supabase belum
 // dikonfigurasi, balikin array kosong -> fallback ke history yang dikirim client.
 async function loadHistoryFromDb(): Promise<HistoryPoint[]> {
+  const now = Date.now();
+  if (cachedDbHistory && now - cachedDbHistory.timestamp < DB_HISTORY_CACHE_TTL_MS) {
+    return cachedDbHistory.data;
+  }
+
   const db = getSupabase();
   if (!db) return [];
-  const { data, error } = await db
-    .from("price_history")
-    .select("ts, fair_price")
-    .order("ts", { ascending: false })
-    .limit(CFG.HISTORY_MAX_POINTS);
-  if (error || !data) return [];
-  return data.reverse().map((row) => ({ ts: row.ts as string, fair_price: Number(row.fair_price) }));
+  try {
+    const { data, error } = await db
+      .from("price_history")
+      .select("ts, fair_price")
+      .order("ts", { ascending: false })
+      .limit(CFG.HISTORY_MAX_POINTS);
+    if (error || !data) return cachedDbHistory ? cachedDbHistory.data : [];
+    const res = data.reverse().map((row) => ({ ts: row.ts as string, fair_price: Number(row.fair_price) }));
+    cachedDbHistory = { timestamp: now, data: res };
+    return res;
+  } catch {
+    return cachedDbHistory ? cachedDbHistory.data : [];
+  }
 }
+
+let lastSavedHistoryPointTime = 0;
+const HISTORY_SAVE_DEBOUNCE_MS = 15_000; // Simpan history ke Supabase maks 1x per 15 detik
 
 // Simpan titik fair_price terbaru + buang baris lama di luar HISTORY_MAX_POINTS.
 async function saveHistoryPoint(point: HistoryPoint): Promise<void> {
+  const now = Date.now();
+  if (now - lastSavedHistoryPointTime < HISTORY_SAVE_DEBOUNCE_MS) {
+    return;
+  }
+  lastSavedHistoryPointTime = now;
+
   const db = getSupabase();
   if (!db) return;
-  await db.from("price_history").insert({ ts: point.ts, fair_price: point.fair_price });
+  try {
+    await db.from("price_history").insert({ ts: point.ts, fair_price: point.fair_price });
 
-  const { data: staleRows } = await db
-    .from("price_history")
-    .select("id")
-    .order("ts", { ascending: false })
-    .range(CFG.HISTORY_MAX_POINTS, CFG.HISTORY_MAX_POINTS + 500);
-  const staleIds = (staleRows ?? []).map((r) => r.id);
-  if (staleIds.length > 0) {
-    await db.from("price_history").delete().in("id", staleIds);
+    const { data: staleRows } = await db
+      .from("price_history")
+      .select("id")
+      .order("ts", { ascending: false })
+      .range(CFG.HISTORY_MAX_POINTS, CFG.HISTORY_MAX_POINTS + 500);
+    const staleIds = (staleRows ?? []).map((r) => r.id);
+    if (staleIds.length > 0) {
+      await db.from("price_history").delete().in("id", staleIds);
+    }
+  } catch {
+    // Abaikan error transient db
   }
 }
 

@@ -107,7 +107,8 @@ export const Route = createFileRoute("/")({
 
 const HISTORY_KEY = "p2p_price_history";
 const SESSION_KEY = "p2p_session_token";
-const POLL_SECONDS = 15;
+const POLL_INTERVAL_STORAGE_KEY = "p2p_market_poll_sec";
+const DEFAULT_POLL_SECONDS = 1;
 const BINANCE_SYNC_SECONDS = 180;
 
 function loadHistory(): HistoryPoint[] {
@@ -201,6 +202,30 @@ function Dashboard() {
   const [copiedPrice, setCopiedPrice] = useState<"buy" | "sell" | null>(null);
   const [activeTab, setActiveTab] = useState<"pnl" | "market" | "calculator" | "arbitrage" | "news" | "verifier">("pnl");
 
+  // Interval polling harga real-time (default 1 detik sesuai permintaan user)
+  const [pollIntervalSec, setPollIntervalSec] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem(POLL_INTERVAL_STORAGE_KEY);
+      if (saved) {
+        const val = parseInt(saved, 10);
+        if (Number.isFinite(val) && val >= 1 && val <= 60) return val;
+      }
+    } catch {
+      // Abaikan
+    }
+    return DEFAULT_POLL_SECONDS;
+  });
+
+  const handleSetPollInterval = (sec: number) => {
+    const clamped = Math.max(1, Math.min(60, sec));
+    setPollIntervalSec(clamped);
+    try {
+      localStorage.setItem(POLL_INTERVAL_STORAGE_KEY, String(clamped));
+    } catch {
+      // Abaikan
+    }
+  };
+
   const [newsCategoryFilter, setNewsCategoryFilter] = useState<"all" | "kurs_rupiah" | "kebijakan_fed_bi" | "pasar_kripto">("all");
 
 
@@ -270,11 +295,11 @@ function Dashboard() {
     }
   }, []);
 
-  // Query Market Snapshot
+  // Query Market Snapshot (Refresh harga ultra-cepat hingga 1 detik)
   const snapshotQuery = useQuery({
     queryKey: ["p2p-snapshot"],
     queryFn: () => getSnapshotFn({ data: { sessionToken: sessionToken ?? undefined } }),
-    refetchInterval: POLL_SECONDS * 1000,
+    refetchInterval: Math.max(1, pollIntervalSec) * 1000,
     enabled: Boolean(sessionToken),
   });
 
@@ -883,8 +908,31 @@ function Dashboard() {
             </div>
           ) : null}
 
-          {/* Actions & Logout */}
-          <div className="flex items-center gap-1.5">
+          {/* Actions & Refresh Speed & Logout */}
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <div className="flex items-center gap-0.5 rounded border border-border bg-surface-2 p-0.5">
+              <span className="hidden lg:flex items-center gap-1 px-1.5 text-[0.62rem] font-semibold text-muted-foreground">
+                <Zap className="size-3 text-primary" />
+                <span>Auto:</span>
+              </span>
+              {[1, 2, 5, 15].map((sec) => (
+                <button
+                  key={sec}
+                  type="button"
+                  onClick={() => handleSetPollInterval(sec)}
+                  className={cn(
+                    "rounded px-1.5 sm:px-2 py-0.5 text-[0.68rem] font-bold transition-colors",
+                    pollIntervalSec === sec
+                      ? "bg-primary text-primary-foreground shadow-xs"
+                      : "text-muted-foreground hover:text-foreground hover:bg-surface-3"
+                  )}
+                  title={`Refresh pasar otomatis setiap ${sec} detik`}
+                >
+                  {sec}s
+                </button>
+              ))}
+            </div>
+
             <Button
               variant="outline"
               size="sm"
@@ -894,8 +942,9 @@ function Dashboard() {
               }}
               disabled={snapshotQuery.isFetching || pnlQuery.isFetching}
               className="h-7.5 gap-1.5 text-xs bg-surface-2 hover:bg-surface-3"
+              title={`Refresh manual (auto polling: ${pollIntervalSec}s)`}
             >
-              <RefreshCw className={snapshotQuery.isFetching ? "size-3 animate-spin" : "size-3"} />
+              <RefreshCw className={snapshotQuery.isFetching ? "size-3 animate-spin text-primary" : "size-3"} />
               <span className="hidden sm:inline">Refresh</span>
             </Button>
 
