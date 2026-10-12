@@ -4182,7 +4182,7 @@ export function AutoPricingBotPanel({
                       : "https://binance-bot-long.vercel.app/api/cron/auto-pricing"}
                   </div>
                   <p className="text-[0.65rem] text-muted-foreground leading-relaxed">
-                    💡 <strong>Tips:</strong> Vercel Cron sudah otomatis memanggil URL ini setiap 1 menit. Jika ingin update lebih cepat (setiap 10-30 detik nonstop), cukup salin URL di atas dan pasang di layanan gratis seperti <strong>cron-job.org</strong> atau <strong>UptimeRobot</strong>!
+                    💡 <strong>Tips Akun Vercel Hobby (Free):</strong> Vercel gratis membatasi Cron internal maks 1x/hari. Agar bot berjalan 24 jam nonstop setiap 1 menit (atau 30 detik) secara 100% gratis tanpa perlu bayar Vercel Pro, cukup salin URL di atas dan pasang di layanan gratis seperti <strong>cron-job.org</strong> atau <strong>UptimeRobot</strong>!
                   </p>
                 </div>
               </div>
