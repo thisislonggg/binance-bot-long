@@ -392,6 +392,26 @@ export function AutoPricingBotPanel({
       (typeof window !== "undefined" ? sessionStorage.getItem("p2p_session_token") : null) ||
       undefined;
 
+    const effectiveBuyStock =
+      side === "buy"
+        ? config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0
+          ? config.manualBuyStockUsdt
+          : bankAllocation.autoBuyStockUsdt > 0
+          ? bankAllocation.autoBuyStockUsdt
+          : undefined
+        : undefined;
+
+    const effectiveBuyMaxLimit =
+      side === "buy"
+        ? config.manualBuyMaxLimitIdr && config.manualBuyMaxLimitIdr > 0
+          ? config.manualBuyMaxLimitIdr
+          : bankAllocation.autoBuyMaxLimitIdr > 0
+          ? bankAllocation.autoBuyMaxLimitIdr
+          : effectiveBuyStock && price > 0
+          ? Math.floor(effectiveBuyStock * price)
+          : undefined
+        : undefined;
+
     try {
       const res = await pushPriceFn({
         data: {
@@ -399,14 +419,8 @@ export function AutoPricingBotPanel({
           advNo: advNo.trim(),
           side,
           price,
-          amountUsdt:
-            side === "buy" && bankAllocation.autoBuyStockUsdt > 0
-              ? bankAllocation.autoBuyStockUsdt
-              : undefined,
-          maxLimitIdr:
-            side === "buy" && bankAllocation.autoBuyMaxLimitIdr > 0
-              ? bankAllocation.autoBuyMaxLimitIdr
-              : undefined,
+          amountUsdt: effectiveBuyStock,
+          maxLimitIdr: effectiveBuyMaxLimit,
         },
       });
 
@@ -2956,21 +2970,73 @@ export function AutoPricingBotPanel({
                     </p>
                   </div>
 
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs font-semibold text-foreground">
+                        Target Pasang Stok Beli (USDT)
+                      </Label>
+                      {bankAllocation.autoBuyStockUsdt > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => updateConfig({ manualBuyStockUsdt: bankAllocation.autoBuyStockUsdt })}
+                          className="text-[0.62rem] text-bid hover:underline font-semibold"
+                        >
+                          Hitung Kas: {bankAllocation.autoBuyStockUsdt} USDT
+                        </button>
+                      )}
+                    </div>
+                    <div className="relative">
+                      <Input
+                        type="number"
+                        step="any"
+                        value={config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0 ? config.manualBuyStockUsdt : ""}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          updateConfig({ manualBuyStockUsdt: Number.isFinite(val) && val > 0 ? val : 0 });
+                        }}
+                        placeholder={
+                          bankAllocation.autoBuyStockUsdt > 0
+                            ? `Otomatis: ${bankAllocation.autoBuyStockUsdt} USDT`
+                            : "Contoh: 100 USDT"
+                        }
+                        className="h-8 text-xs font-mono bg-surface font-semibold pr-14"
+                      />
+                      <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[0.68rem] text-muted-foreground font-semibold">
+                        USDT
+                      </span>
+                    </div>
+                    <p className="text-[0.65rem] text-muted-foreground">
+                      {config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0
+                        ? `Menggunakan stok manual: ${config.manualBuyStockUsdt} USDT. Hapus untuk pakai hitungan kas bank.`
+                        : bankAllocation.autoBuyStockUsdt > 0
+                        ? `Otomatis dari kas bank: ${bankAllocation.autoBuyStockUsdt} USDT.`
+                        : "Jumlah USDT yang akan dipasang di iklan beli Anda."}
+                    </p>
+                  </div>
+
                   <div className="rounded bg-surface/80 p-2.5 border border-border/60 space-y-1 text-xs">
                     <div className="flex justify-between text-muted-foreground text-[0.68rem]">
                       <span>Harga Rekomendasi:</span>
                       <strong className="num text-foreground">{fmtRp2(recommendedBuyPrice)}</strong>
                     </div>
                     <div className="flex justify-between text-muted-foreground text-[0.68rem]">
-                      <span>Target Stok USDT:</span>
+                      <span>Stok USDT Terkirim:</span>
                       <strong className="num text-bid">
-                        {bankAllocation.autoBuyStockUsdt > 0 ? `${bankAllocation.autoBuyStockUsdt} USDT` : "—"}
+                        {config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0
+                          ? `${config.manualBuyStockUsdt} USDT (Manual)`
+                          : bankAllocation.autoBuyStockUsdt > 0
+                          ? `${bankAllocation.autoBuyStockUsdt} USDT (Kas Bank)`
+                          : "—"}
                       </strong>
                     </div>
                     <div className="flex justify-between text-muted-foreground text-[0.68rem]">
-                      <span>Plafon Limit Saldo Bank:</span>
+                      <span>Plafon Limit Transaksi:</span>
                       <strong className="num text-foreground">
-                        {bankAllocation.autoBuyMaxLimitIdr > 0 ? fmtRp(bankAllocation.autoBuyMaxLimitIdr) : "—"}
+                        {config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0 && recommendedBuyPrice > 0
+                          ? fmtRp(Math.floor(config.manualBuyStockUsdt * recommendedBuyPrice))
+                          : bankAllocation.autoBuyMaxLimitIdr > 0
+                          ? fmtRp(bankAllocation.autoBuyMaxLimitIdr)
+                          : "—"}
                       </strong>
                     </div>
                   </div>
@@ -2982,7 +3048,7 @@ export function AutoPricingBotPanel({
                     className="w-full h-8 text-xs font-semibold bg-bid text-bid-foreground hover:bg-bid/90 gap-1.5 shadow-sm"
                   >
                     <Send className={`size-3.5 ${isPushingBuy ? "animate-pulse" : ""}`} />
-                    <span>{isPushingBuy ? "Mengirim ke Binance..." : "Push Harga Beli ke Binance Sekarang"}</span>
+                    <span>{isPushingBuy ? "Mengirim ke Binance..." : "Push Harga & Stok Beli ke Binance"}</span>
                   </Button>
                 </div>
 

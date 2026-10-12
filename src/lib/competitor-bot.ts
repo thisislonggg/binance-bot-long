@@ -64,6 +64,8 @@ export type CompetitorFilterConfig = {
   // ── Integrasi C2C Merchant API Binance ─────────────────────────────────────
   merchantBuyAdvNo: string;               // Nomor iklan beli di Binance (advNo)
   merchantSellAdvNo: string;              // Nomor iklan jual di Binance (advNo)
+  manualBuyStockUsdt?: number;            // Target stok USDT beli manual/override (0 = auto dari kas bank)
+  manualBuyMaxLimitIdr?: number;          // Plafon limit IDR beli manual/override (0 = auto dari stok * harga)
   autoPushToBinance: boolean;             // Otomatis push perubahan harga ke Binance P2P
   autoPushMinIntervalSec: number;         // Interval minimal push (detik, default 30)
 };
@@ -118,6 +120,8 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
 
   merchantBuyAdvNo: "",
   merchantSellAdvNo: "",
+  manualBuyStockUsdt: 0,
+  manualBuyMaxLimitIdr: 0,
   autoPushToBinance: false,
   autoPushMinIntervalSec: 30,
 };
@@ -802,6 +806,8 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (typeof merged.deductLiveStockFromBudget !== "boolean") merged.deductLiveStockFromBudget = true;
     if (typeof merged.merchantBuyAdvNo !== "string") merged.merchantBuyAdvNo = "";
     if (typeof merged.merchantSellAdvNo !== "string") merged.merchantSellAdvNo = "";
+    if (typeof merged.manualBuyStockUsdt !== "number") merged.manualBuyStockUsdt = 0;
+    if (typeof merged.manualBuyMaxLimitIdr !== "number") merged.manualBuyMaxLimitIdr = 0;
     if (typeof merged.autoPushToBinance !== "boolean") merged.autoPushToBinance = false;
     if (typeof merged.autoPushMinIntervalSec !== "number") merged.autoPushMinIntervalSec = 30;
     return merged;
