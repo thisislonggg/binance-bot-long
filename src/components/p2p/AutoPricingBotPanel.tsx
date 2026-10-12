@@ -82,7 +82,14 @@ interface AutoPricingBotPanelProps {
   buyRefAds: Ad[];
   fairPrice: number;
   stockHpp?: number;
-  onApplyPrice?: (prices: { buyPrice: number; sellPrice: number }) => void;
+  bankBalanceIdr?: number;
+  onApplyPrice?: (payload: {
+    buyPrice: number;
+    sellPrice: number;
+    buyAmountUsdt?: number;
+    maxBuyLimitIdr?: number;
+    targetSide?: "buy" | "sell";
+  }) => void;
   onRefresh?: () => void;
   isRefreshing?: boolean;
 }
@@ -92,6 +99,7 @@ export function AutoPricingBotPanel({
   buyRefAds,
   fairPrice,
   stockHpp = 0,
+  bankBalanceIdr = 0,
   onApplyPrice,
   onRefresh,
   isRefreshing = false,
@@ -230,8 +238,9 @@ export function AutoPricingBotPanel({
       config,
       stockHpp,
       fairPrice,
+      bankBalanceIdr,
     });
-  }, [sellRefAds, buyRefAds, config, stockHpp, fairPrice]);
+  }, [sellRefAds, buyRefAds, config, stockHpp, fairPrice, bankBalanceIdr]);
 
   const {
     recommendedSellPrice,
@@ -252,6 +261,7 @@ export function AutoPricingBotPanel({
     makerFeeSellPerUsdt,
     makerFeeBuyPerUsdt,
     estimatedNetProfitPerUsdt,
+    bankAllocation,
   } = pricingResult;
 
   const hasAnyGuardTriggered = sellGuard.triggered || buyGuard.triggered;
@@ -268,6 +278,8 @@ export function AutoPricingBotPanel({
       onApplyPrice({
         buyPrice: recommendedBuyPrice,
         sellPrice: recommendedSellPrice,
+        buyAmountUsdt: bankAllocation.autoBuyStockUsdt,
+        maxBuyLimitIdr: bankAllocation.autoBuyMaxLimitIdr,
       });
       toast.success("Harga rekomendasi bot diterapkan ke form transaksi!");
     } else {
@@ -278,6 +290,34 @@ export function AutoPricingBotPanel({
       toast.success("Pasangan harga Beli & Jual disalin ke clipboard!");
       setTimeout(() => setCopiedSide(null), 2000);
     }
+  };
+
+  const handleApplyBuyOnly = () => {
+    if (onApplyPrice) {
+      onApplyPrice({
+        buyPrice: recommendedBuyPrice,
+        sellPrice: recommendedSellPrice,
+        buyAmountUsdt: bankAllocation.autoBuyStockUsdt,
+        maxBuyLimitIdr: bankAllocation.autoBuyMaxLimitIdr,
+        targetSide: "buy",
+      });
+      toast.success(
+        bankAllocation.autoBuyStockUsdt > 0
+          ? `Iklan Beli: Rp ${Math.round(recommendedBuyPrice).toLocaleString("id-ID")} & Stok ${bankAllocation.autoBuyStockUsdt.toLocaleString("id-ID")} USDT diterapkan ke form!`
+          : `Harga Beli Rp ${Math.round(recommendedBuyPrice).toLocaleString("id-ID")} diterapkan ke form!`
+      );
+    } else {
+      handleCopyBuyDetails();
+    }
+  };
+
+  const handleCopyBuyDetails = () => {
+    const text =
+      bankAllocation.autoBuyStockUsdt > 0
+        ? `Harga Beli: Rp ${Math.round(recommendedBuyPrice).toLocaleString("id-ID")}\nStok USDT: ${bankAllocation.autoBuyStockUsdt.toLocaleString("id-ID")} USDT\nMax Limit: Rp ${Math.round(bankAllocation.autoBuyMaxLimitIdr).toLocaleString("id-ID")}`
+        : `Harga Beli: Rp ${Math.round(recommendedBuyPrice).toLocaleString("id-ID")}`;
+    navigator.clipboard.writeText(text);
+    toast.success("Rincian iklan beli disalin ke clipboard!");
   };
 
   // ── Filter Data untuk Tabel Radar Pasar ─────────────────────────────────────
@@ -477,6 +517,161 @@ export function AutoPricingBotPanel({
                   <ShieldCheck className="size-3 text-bid" /> Max {fmtRp2(buyGuard.ceilingPrice)} (Aman)
                 </span>
               )}
+            </div>
+
+            {/* Fitur Otomatis Pasang Stok Sesuai Sisa Saldo Bank */}
+            <div className="mt-3 rounded-lg border border-bid/30 bg-bid/5 p-3 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <CreditCard className="size-3.5 text-bid" />
+                  <span className="text-[0.72rem] font-bold text-foreground">
+                    Pasang Stok dari Sisa Saldo Bank
+                  </span>
+                  <Badge
+                    variant="outline"
+                    className="h-4.5 px-1.5 text-[0.6rem] border-bid/30 text-bid bg-bid/10 font-semibold"
+                  >
+                    {config.bankBalanceSource === "auto" && bankBalanceIdr > 0 ? "Kas PnL" : "Rekening"}
+                  </Badge>
+                </div>
+                <div className="flex items-center gap-1 text-[0.68rem] text-muted-foreground">
+                  <span>Alokasi:</span>
+                  <span className="font-bold text-foreground">{config.bankAllocationPct || 100}%</span>
+                </div>
+              </div>
+
+              {/* Detail Sisa Saldo & Kalkulasi Stok */}
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-md border border-border/60 bg-surface-2/80 p-2 space-y-0.5">
+                  <div className="text-[0.65rem] text-muted-foreground">Sisa Uang di Bank:</div>
+                  <div className="num font-bold text-foreground truncate" title={fmtRp(bankAllocation.usableBankIdr)}>
+                    {bankAllocation.effectiveBankBalance > 0
+                      ? fmtRp(bankAllocation.usableBankIdr)
+                      : "Rp 0"}
+                  </div>
+                  {config.bankReserveBufferIdr > 0 && (
+                    <div className="text-[0.6rem] text-muted-foreground truncate">
+                      Buffer simpanan: {fmtRp(config.bankReserveBufferIdr)}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-md border border-bid/40 bg-bid/10 p-2 space-y-0.5">
+                  <div className="text-[0.65rem] text-bid font-medium">Stok USDT Yang Dibeli:</div>
+                  <div className="num font-extrabold text-bid text-sm truncate">
+                    {bankAllocation.autoBuyStockUsdt > 0
+                      ? `${bankAllocation.autoBuyStockUsdt.toLocaleString("id-ID")} USDT`
+                      : "0 USDT"}
+                  </div>
+                  <div className="text-[0.6rem] text-muted-foreground truncate">
+                    Plafon Limit: {bankAllocation.autoBuyMaxLimitIdr > 0 ? fmtRp(bankAllocation.autoBuyMaxLimitIdr) : "—"}
+                  </div>
+                </div>
+              </div>
+
+              {/* Quick Input / Preset Saldo jika Saldo Rp 0 */}
+              {bankAllocation.effectiveBankBalance === 0 && (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 space-y-1.5 text-[0.7rem]">
+                  <div className="flex items-center gap-1 text-amber-500 font-semibold">
+                    <Info className="size-3 shrink-0" />
+                    <span>Saldo bank belum terisi. Pilih nominal sisa uang Anda:</span>
+                  </div>
+                  <div className="flex items-center gap-1 flex-wrap pt-0.5">
+                    {[
+                      { label: "5 Jt", val: 5_000_000 },
+                      { label: "10 Jt", val: 10_000_000 },
+                      { label: "25 Jt", val: 25_000_000 },
+                      { label: "50 Jt", val: 50_000_000 },
+                      { label: "100 Jt", val: 100_000_000 },
+                    ].map((chip) => (
+                      <button
+                        key={chip.val}
+                        type="button"
+                        onClick={() =>
+                          updateConfig({
+                            bankBalanceSource: "manual",
+                            manualBankBalanceIdr: chip.val,
+                          })
+                        }
+                        className="rounded bg-surface px-1.5 py-0.5 text-[0.62rem] font-bold border border-amber-500/30 text-foreground hover:bg-amber-500/20 transition-colors"
+                      >
+                        +{chip.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Quick chips penyesuaian jika saldo sudah ada */}
+              {bankAllocation.effectiveBankBalance > 0 && (
+                <div className="flex items-center justify-between text-[0.65rem] text-muted-foreground pt-0.5">
+                  <span>Quick Ganti Saldo:</span>
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {[
+                      { label: "5 Jt", val: 5_000_000 },
+                      { label: "10 Jt", val: 10_000_000 },
+                      { label: "25 Jt", val: 25_000_000 },
+                      { label: "50 Jt", val: 50_000_000 },
+                    ].map((chip) => (
+                      <button
+                        key={chip.val}
+                        type="button"
+                        onClick={() =>
+                          updateConfig({
+                            bankBalanceSource: "manual",
+                            manualBankBalanceIdr: chip.val,
+                          })
+                        }
+                        className={`rounded px-1.5 py-0.5 text-[0.6rem] font-semibold transition-colors ${
+                          config.bankBalanceSource === "manual" && config.manualBankBalanceIdr === chip.val
+                            ? "bg-bid text-bid-foreground font-bold"
+                            : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {chip.label}
+                      </button>
+                    ))}
+                    {bankBalanceIdr > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => updateConfig({ bankBalanceSource: "auto" })}
+                        className={`rounded px-1.5 py-0.5 text-[0.6rem] font-semibold transition-colors ${
+                          config.bankBalanceSource === "auto"
+                            ? "bg-primary text-primary-foreground font-bold"
+                            : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                        }`}
+                        title="Gunakan Saldo Kas Bebas PnL"
+                      >
+                        Auto Kas
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Action Buttons: Terapkan ke Form Beli & Salin Rincian Iklan Beli */}
+              <div className="flex items-center gap-1.5 pt-1">
+                <Button
+                  size="sm"
+                  type="button"
+                  onClick={handleApplyBuyOnly}
+                  className="flex-1 h-7 text-xs font-semibold bg-bid text-bid-foreground hover:bg-bid/90 gap-1.5 shadow-sm"
+                >
+                  <Zap className="size-3.5" />
+                  <span>Terapkan ke Form Beli</span>
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  type="button"
+                  onClick={handleCopyBuyDetails}
+                  className="h-7 text-xs px-2.5 border-border/80 text-muted-foreground hover:text-foreground hover:bg-surface-2"
+                  title="Salin Harga Beli, Stok USDT, dan Plafon Limit IDR"
+                >
+                  <Copy className="size-3 mr-1" />
+                  <span>Salin Iklan</span>
+                </Button>
+              </div>
             </div>
           </div>
 
@@ -1445,9 +1640,256 @@ export function AutoPricingBotPanel({
               </div>
             </TabsContent>
 
-            {/* TAB METODE PEMBAYARAN */}
+            {/* TAB METODE PEMBAYARAN & SALDO BANK */}
             <TabsContent value="payment" className="mt-3.5 space-y-3.5">
-              <div className="flex flex-wrap items-center justify-between gap-2">
+              {/* Fitur Auto-Sync Stok Beli dengan Saldo Bank */}
+              <div className="rounded-xl border border-border/80 bg-surface-2/60 p-3.5 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-2">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <CreditCard className="size-4 text-primary" />
+                      <h4 className="text-xs font-bold text-foreground">
+                        Otomatisasi Pasang Stok Beli Sesuai Sisa Uang Bank
+                      </h4>
+                      <Badge variant="outline" className="h-5 px-1.5 text-[0.62rem] border-bid/30 text-bid bg-bid/10 font-semibold">
+                        Auto-Limit IDR
+                      </Badge>
+                    </div>
+                    <p className="text-[0.68rem] text-muted-foreground">
+                      Bot otomatis menghitung jumlah USDT yang mau dibeli (<span className="text-foreground font-semibold">Sisa Uang Bank &divide; Harga Rekomendasi Beli</span>) dan membatasi plafon batas maksimal transaksi agar order masuk tidak melebihi uang di rekening.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={config.autoSyncBuyStockWithBank}
+                    onCheckedChange={(val) => updateConfig({ autoSyncBuyStockWithBank: val })}
+                    className="scale-90 data-[state=checked]:bg-bid"
+                  />
+                </div>
+
+                {config.autoSyncBuyStockWithBank && (
+                  <div className="space-y-3 pt-1">
+                    {/* Pemilihan Sumber Saldo Bank: Auto (PnL) vs Manual */}
+                    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                      <div
+                        onClick={() => updateConfig({ bankBalanceSource: "auto" })}
+                        className={`cursor-pointer rounded-lg border p-2.5 space-y-1 transition-all ${
+                          config.bankBalanceSource === "auto"
+                            ? "border-primary bg-primary/10 shadow-sm"
+                            : "border-border/60 bg-surface/80 hover:bg-surface"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                            <Zap className="size-3 text-primary" /> Otomatis (Kas Bebas PnL)
+                          </span>
+                          {config.bankBalanceSource === "auto" && <Check className="size-3.5 text-primary" />}
+                        </div>
+                        <div className="num text-sm font-extrabold text-primary">
+                          {bankBalanceIdr > 0 ? fmtRp(bankBalanceIdr) : "Rp 0 (Belum terisi)"}
+                        </div>
+                        <p className="text-[0.65rem] text-muted-foreground">
+                          Terhubung otomatis dengan Modal Awal PnL Tracker dikurangi modal stok berjalan.
+                        </p>
+                      </div>
+
+                      <div
+                        onClick={() => updateConfig({ bankBalanceSource: "manual" })}
+                        className={`cursor-pointer rounded-lg border p-2.5 space-y-1 transition-all ${
+                          config.bankBalanceSource === "manual"
+                            ? "border-primary bg-primary/10 shadow-sm"
+                            : "border-border/60 bg-surface/80 hover:bg-surface"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                            <CreditCard className="size-3 text-primary" /> Input Manual Saldo Bank
+                          </span>
+                          {config.bankBalanceSource === "manual" && <Check className="size-3.5 text-primary" />}
+                        </div>
+                        <div className="num text-sm font-extrabold text-foreground">
+                          {config.manualBankBalanceIdr > 0 ? fmtRp(config.manualBankBalanceIdr) : "Rp 0"}
+                        </div>
+                        <p className="text-[0.65rem] text-muted-foreground">
+                          Masukkan nominal saldo rekening fisik Anda secara langsung jika berbeda dari pembukuan PnL.
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Input Nominal Saldo Manual & Quick Chips jika mode manual atau saldo auto kosong */}
+                    {(config.bankBalanceSource === "manual" || bankBalanceIdr === 0) && (
+                      <div className="space-y-1.5 rounded-lg border border-border/70 bg-surface p-2.5">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs font-semibold text-foreground">
+                            Nominal Saldo Rekening Bank (IDR)
+                          </Label>
+                          <span className="num text-xs font-bold text-primary">
+                            {fmtRp(config.manualBankBalanceIdr || 0)}
+                          </span>
+                        </div>
+                        <Input
+                          type="number"
+                          min={0}
+                          step={1000000}
+                          value={config.manualBankBalanceIdr || ""}
+                          onChange={(e) =>
+                            updateConfig({
+                              manualBankBalanceIdr: Math.max(0, Number(e.target.value)),
+                              bankBalanceSource: "manual",
+                            })
+                          }
+                          className="h-8 text-xs bg-surface-2 font-semibold"
+                          placeholder="Masukkan sisa uang di rekening bank, misal: 25000000"
+                        />
+                        <div className="flex items-center gap-1 pt-1 flex-wrap">
+                          {[
+                            { label: "5 Jt", val: 5_000_000 },
+                            { label: "10 Jt", val: 10_000_000 },
+                            { label: "25 Jt", val: 25_000_000 },
+                            { label: "50 Jt", val: 50_000_000 },
+                            { label: "100 Jt", val: 100_000_000 },
+                          ].map((item) => (
+                            <button
+                              key={item.val}
+                              type="button"
+                              onClick={() =>
+                                updateConfig({
+                                  manualBankBalanceIdr: item.val,
+                                  bankBalanceSource: "manual",
+                                })
+                              }
+                              className={`rounded px-2 py-0.5 text-[0.65rem] font-semibold transition-colors ${
+                                config.manualBankBalanceIdr === item.val
+                                  ? "bg-primary text-primary-foreground font-bold"
+                                  : "bg-surface-2 text-muted-foreground hover:bg-surface-3 hover:text-foreground"
+                              }`}
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Alokasi Persentase & Buffer Cadangan */}
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="space-y-1.5 rounded-lg border border-border/70 bg-surface p-2.5">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs font-semibold text-foreground">
+                            Persentase Alokasi Beli
+                          </Label>
+                          <span className="num text-xs font-bold text-bid">
+                            {config.bankAllocationPct || 100}%
+                          </span>
+                        </div>
+                        <Slider
+                          value={[config.bankAllocationPct || 100]}
+                          min={10}
+                          max={100}
+                          step={5}
+                          onValueChange={(val) => updateConfig({ bankAllocationPct: val[0] })}
+                          className="py-1"
+                        />
+                        <div className="flex items-center justify-between text-[0.62rem] text-muted-foreground pt-0.5">
+                          {[25, 50, 75, 100].map((pct) => (
+                            <button
+                              key={pct}
+                              type="button"
+                              onClick={() => updateConfig({ bankAllocationPct: pct })}
+                              className={`rounded px-1.5 py-0.5 ${
+                                (config.bankAllocationPct || 100) === pct
+                                  ? "bg-bid text-bid-foreground font-bold"
+                                  : "hover:text-foreground"
+                              }`}
+                            >
+                              {pct}%
+                            </button>
+                          ))}
+                        </div>
+                        <p className="text-[0.62rem] text-muted-foreground">
+                          Gunakan 100% untuk pasang stok maksimal sesuai seluruh uang di bank.
+                        </p>
+                      </div>
+
+                      <div className="space-y-1.5 rounded-lg border border-border/70 bg-surface p-2.5">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs font-semibold text-foreground">
+                            Cadangan Saldo Mengendap (Buffer)
+                          </Label>
+                          <span className="num text-xs font-bold text-primary">
+                            {config.bankReserveBufferIdr ? fmtRp(config.bankReserveBufferIdr) : "Rp 0"}
+                          </span>
+                        </div>
+                        <Input
+                          type="number"
+                          min={0}
+                          step={200000}
+                          value={config.bankReserveBufferIdr || ""}
+                          onChange={(e) =>
+                            updateConfig({
+                              bankReserveBufferIdr: Math.max(0, Number(e.target.value)),
+                            })
+                          }
+                          className="h-8 text-xs bg-surface-2 font-semibold"
+                          placeholder="0 (Habiskan semua)"
+                        />
+                        <div className="flex items-center gap-1 pt-1 flex-wrap">
+                          {[
+                            { label: "0 (Semua)", val: 0 },
+                            { label: "250 Rb", val: 250_000 },
+                            { label: "500 Rb", val: 500_000 },
+                            { label: "1 Jt", val: 1_000_000 },
+                          ].map((item) => (
+                            <button
+                              key={item.val}
+                              type="button"
+                              onClick={() => updateConfig({ bankReserveBufferIdr: item.val })}
+                              className={`rounded px-1.5 py-0.5 text-[0.62rem] font-semibold transition-colors ${
+                                (config.bankReserveBufferIdr || 0) === item.val
+                                  ? "bg-primary text-primary-foreground font-bold"
+                                  : "bg-surface-2 text-muted-foreground hover:bg-surface-3"
+                              }`}
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+                        <p className="text-[0.62rem] text-muted-foreground">
+                          Uang minimal yang disisakan di rekening dan tidak dipakai pasang stok beli.
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Kotak Ringkasan Hasil Kalkulasi Stok */}
+                    <div className="rounded-lg border border-bid/40 bg-bid/10 p-3 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-foreground">Hasil Kalkulasi Stok Beli Otomatis:</span>
+                        <Badge variant="outline" className="border-bid/40 bg-bid/20 text-bid font-bold text-[0.65rem]">
+                          Live Sync
+                        </Badge>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 text-xs">
+                        <div className="rounded bg-surface/80 p-2 border border-border/50">
+                          <div className="text-[0.65rem] text-muted-foreground">Sisa Uang Siap Beli:</div>
+                          <div className="num font-bold text-foreground">{fmtRp(bankAllocation.usableBankIdr)}</div>
+                        </div>
+                        <div className="rounded bg-surface/80 p-2 border border-border/50">
+                          <div className="text-[0.65rem] text-bid font-semibold">Target Pasang Stok USDT:</div>
+                          <div className="num font-extrabold text-bid text-sm">{bankAllocation.autoBuyStockUsdt.toLocaleString("id-ID")} USDT</div>
+                        </div>
+                        <div className="rounded bg-surface/80 p-2 border border-border/50">
+                          <div className="text-[0.65rem] text-muted-foreground">Plafon Max Limit Pesanan:</div>
+                          <div className="num font-bold text-foreground">{fmtRp(bankAllocation.autoBuyMaxLimitIdr)}</div>
+                        </div>
+                      </div>
+                      <p className="text-[0.65rem] text-muted-foreground pt-0.5">
+                        Formula: {fmtRp(bankAllocation.usableBankIdr)} &divide; {fmtRp2(recommendedBuyPrice)} = <strong className="text-foreground">{bankAllocation.autoBuyStockUsdt} USDT</strong>
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                 <div>
                   <h4 className="text-xs font-bold text-foreground">Filter Metode Pembayaran & Rekening Bank</h4>
                   <p className="text-[0.7rem] text-muted-foreground">

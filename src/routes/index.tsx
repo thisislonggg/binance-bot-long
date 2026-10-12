@@ -825,6 +825,18 @@ function Dashboard() {
   const s = snapshotQuery.data;
   const pnl = pnlQuery.data;
 
+  // Sisa Uang Kas / Saldo Bank Bebas dari Modal PnL & Pendanaan
+  const initialCapital = pnl?.initial_capital_idr ?? 0;
+  const fb = fundingBalanceQuery.data;
+  const isFundingLive = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
+  const stockUsdt = isFundingLive ? fb!.usdt! : (pnl?.open_position_usdt ?? 0);
+  const avgCost = pnl && pnl.open_position_avg_cost_idr > 0 ? pnl.open_position_avg_cost_idr : 0;
+  const stockCapitalIdr = stockUsdt > 0 && avgCost > 0 ? stockUsdt * avgCost : 0;
+  const allTimeProfit = pnl?.all_time_profit_idr ?? 0;
+  const freeCashIdr = initialCapital > 0
+    ? Math.max(0, initialCapital - stockCapitalIdr + allTimeProfit)
+    : 0;
+
   return (
     <div className="min-h-screen bg-background text-foreground pb-12">
       <Toaster position="top-right" richColors />
@@ -907,13 +919,22 @@ function Dashboard() {
             buyRefAds={s.all_buy_ads || s.top_buy_ref_ads || []}
             fairPrice={s.fair_price || 0}
             stockHpp={pnl?.open_position_avg_cost_idr || 0}
-            onApplyPrice={(prices) => {
-              setTradePrice(String(tradeSide === "buy" ? Math.round(prices.buyPrice) : Math.round(prices.sellPrice)));
+            bankBalanceIdr={freeCashIdr}
+            onApplyPrice={(payload) => {
+              const side = payload.targetSide || tradeSide;
+              setTradeSide(side);
+              const chosenPrice =
+                side === "buy" ? Math.round(payload.buyPrice) : Math.round(payload.sellPrice);
+              setTradePrice(String(chosenPrice));
+              if (side === "buy" && payload.buyAmountUsdt && payload.buyAmountUsdt > 0) {
+                setTradeAmount(String(payload.buyAmountUsdt));
+              }
+              setTradeRoleState("maker");
               setShowManualForm(true);
               toast.success(
-                `Harga ${tradeSide === "buy" ? "Beli" : "Jual"} Rp ${Math.round(
-                  tradeSide === "buy" ? prices.buyPrice : prices.sellPrice,
-                ).toLocaleString("id-ID")} dimasukkan ke form transaksi!`
+                side === "buy" && payload.buyAmountUsdt
+                  ? `Iklan Beli: Harga Rp ${chosenPrice.toLocaleString("id-ID")} & Stok ${payload.buyAmountUsdt.toLocaleString("id-ID")} USDT (sesuai saldo bank) dimasukkan ke form!`
+                  : `Harga ${side === "buy" ? "Beli" : "Jual"} Rp ${chosenPrice.toLocaleString("id-ID")} dimasukkan ke form!`
               );
             }}
             onRefresh={() => {

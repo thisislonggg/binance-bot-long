@@ -52,6 +52,13 @@ export type CompetitorFilterConfig = {
 
   minSpreadRp: number;            // Selisih minimal (Jual - Beli) agar tetap profit
   maxPriceStepRp: number;         // Pembatas lonjakan harga per siklus (anti-spoofing)
+
+  // ── Alokasi Stok Beli Otomatis dari Sisa Saldo Bank ───────────────────────
+  autoSyncBuyStockWithBank: boolean;      // Otomatis pasang jumlah USDT beli sesuai sisa uang di bank
+  bankBalanceSource: "auto" | "manual";   // Sumber saldo bank: "auto" (modal kas PnL) atau "manual"
+  manualBankBalanceIdr: number;           // Saldo bank manual jika mode manual atau override (misal: 25.000.000)
+  bankAllocationPct: number;              // Persentase alokasi saldo bank untuk beli (misal: 100%)
+  bankReserveBufferIdr: number;           // Cadangan uang minimal di bank yang tidak boleh dibelanjakan (Rp)
 };
 
 export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
@@ -94,6 +101,12 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
 
   minSpreadRp: 25,
   maxPriceStepRp: 50,
+
+  autoSyncBuyStockWithBank: true,
+  bankBalanceSource: "auto",
+  manualBankBalanceIdr: 0,
+  bankAllocationPct: 100,
+  bankReserveBufferIdr: 0,
 };
 
 export type StrategyPreset = "balanced" | "conservative" | "aggressive" | "whale";
@@ -247,6 +260,13 @@ export type CompetitorPricingResult = {
   makerFeeBuyPerUsdt: number;
   effectiveHpp: number;
   estimatedNetProfitPerUsdt: number;
+  bankAllocation: {
+    effectiveBankBalance: number;
+    usableBankIdr: number;
+    autoBuyStockUsdt: number;
+    autoBuyMaxLimitIdr: number;
+    isSynced: boolean;
+  };
 };
 
 const EWALLET_KEYWORDS = [
@@ -494,6 +514,7 @@ export function computeCompetitorPricing(input: {
   config: CompetitorFilterConfig;
   stockHpp: number; // Harga modal stok riil dari PnL / portfolio
   fairPrice: number; // Nilai wajar pasar P2P saat ini
+  bankBalanceIdr?: number; // Sisa uang di bank (kas modal PnL atau saldo verifier)
   fallbackSellPrice?: number;
   fallbackBuyPrice?: number;
 }): CompetitorPricingResult {
@@ -503,6 +524,7 @@ export function computeCompetitorPricing(input: {
     config,
     stockHpp,
     fairPrice,
+    bankBalanceIdr = 0,
     fallbackSellPrice = 16_250,
     fallbackBuyPrice = 16_200,
   } = input;
@@ -638,6 +660,35 @@ export function computeCompetitorPricing(input: {
   const spreadPct = recommendedBuyPrice > 0 ? (spreadAbs / recommendedBuyPrice) * 100 : 0;
   const estimatedNetProfitPerUsdt = Math.round((netSellProceeds - netBuyCost) * 100) / 100;
 
+  // 8. Kalkulasi Alokasi Stok Beli Otomatis Sesuai Sisa Uang di Bank
+  const effectiveBankBalance =
+    config.bankBalanceSource === "manual" && config.manualBankBalanceIdr > 0
+      ? config.manualBankBalanceIdr
+      : (bankBalanceIdr > 0
+          ? bankBalanceIdr
+          : config.manualBankBalanceIdr);
+
+  const bankAllocationFraction = Math.min(100, Math.max(1, config.bankAllocationPct || 100)) / 100;
+  const usableBankIdr = Math.max(
+    0,
+    (effectiveBankBalance - (config.bankReserveBufferIdr || 0)) * bankAllocationFraction,
+  );
+
+  const autoBuyStockUsdt =
+    recommendedBuyPrice > 0 && usableBankIdr > 0
+      ? Math.floor((usableBankIdr / recommendedBuyPrice) * 100) / 100
+      : 0;
+
+  const autoBuyMaxLimitIdr = Math.round(usableBankIdr);
+
+  const bankAllocation = {
+    effectiveBankBalance,
+    usableBankIdr,
+    autoBuyStockUsdt,
+    autoBuyMaxLimitIdr,
+    isSynced: Boolean(config.autoSyncBuyStockWithBank && usableBankIdr > 0),
+  };
+
   return {
     recommendedSellPrice,
     recommendedBuyPrice,
@@ -663,6 +714,7 @@ export function computeCompetitorPricing(input: {
     makerFeeBuyPerUsdt,
     effectiveHpp,
     estimatedNetProfitPerUsdt,
+    bankAllocation,
   };
 }
 
@@ -692,6 +744,11 @@ export function loadBotConfig(): CompetitorFilterConfig {
       merged.minOrderLimitIdr = 50_000_000;
       saveBotConfig(merged);
     }
+    if (typeof merged.autoSyncBuyStockWithBank !== "boolean") merged.autoSyncBuyStockWithBank = true;
+    if (!merged.bankBalanceSource) merged.bankBalanceSource = "auto";
+    if (typeof merged.manualBankBalanceIdr !== "number") merged.manualBankBalanceIdr = 0;
+    if (typeof merged.bankAllocationPct !== "number") merged.bankAllocationPct = 100;
+    if (typeof merged.bankReserveBufferIdr !== "number") merged.bankReserveBufferIdr = 0;
     return merged;
   } catch {
     return DEFAULT_BOT_CONFIG;
