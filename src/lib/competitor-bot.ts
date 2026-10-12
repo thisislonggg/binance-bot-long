@@ -10,7 +10,7 @@ export type CompetitorFilterConfig = {
   // ── Filter Merchant Acuan ──────────────────────────────────────────────────
   minUsdtAmount: number;          // Minimal USDT yang dimiliki/dijual merchant (misal: 500 USDT)
   maxUsdtAmount: number;          // Batas maksimal USDT (0 = Bebas, mencegah whale besar)
-  minOrderLimitIdr: number;       // Minimal batas pesanan IDR (0 = Bebas)
+  minOrderLimitIdr: number;       // Toleransi maksimal syarat min order kompetitor (0 = Bebas, misal: 50 Jt)
   minMaxLimitIdr: number;         // Kapasitas order maksimal harus >= nominal ini (0 = Bebas)
   verifiedOnly: boolean;          // Hanya ikuti Verified Merchant (centang kuning)
   userTypeFilter: "all" | "merchant_only" | "user_only"; // Filter tipe user Binance
@@ -58,7 +58,7 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   enabled: true,
   minUsdtAmount: 500,
   maxUsdtAmount: 0,
-  minOrderLimitIdr: 0,
+  minOrderLimitIdr: 50_000_000, // Otomatis filter order buy/jual yang mensyaratkan min transaksi >= 50 Juta
   minMaxLimitIdr: 0,
   verifiedOnly: true,
   userTypeFilter: "all",
@@ -108,7 +108,7 @@ export const STRATEGY_PRESETS: Record<
     config: {
       minUsdtAmount: 500,
       maxUsdtAmount: 0,
-      minOrderLimitIdr: 0,
+      minOrderLimitIdr: 50_000_000,
       minMaxLimitIdr: 0,
       verifiedOnly: true,
       userTypeFilter: "all",
@@ -129,7 +129,7 @@ export const STRATEGY_PRESETS: Record<
     config: {
       minUsdtAmount: 1000,
       maxUsdtAmount: 0,
-      minOrderLimitIdr: 0,
+      minOrderLimitIdr: 25_000_000,
       minMaxLimitIdr: 0,
       verifiedOnly: true,
       userTypeFilter: "merchant_only",
@@ -150,7 +150,7 @@ export const STRATEGY_PRESETS: Record<
     config: {
       minUsdtAmount: 250,
       maxUsdtAmount: 0,
-      minOrderLimitIdr: 0,
+      minOrderLimitIdr: 50_000_000,
       minMaxLimitIdr: 0,
       verifiedOnly: false,
       userTypeFilter: "all",
@@ -326,11 +326,12 @@ export function evaluateCompetitorAds(
       });
     }
 
-    // 2. Filter Batas Pesanan Minimal IDR (diabaikan jika 0 / nonaktif)
-    if (config.minOrderLimitIdr > 0 && ad.min_limit_idr > config.minOrderLimitIdr) {
+    // 2. Filter Batas Pesanan Minimal IDR (Toleransi Min Order Kompetitor)
+    // Otomatis diskualifikasi jika syarat transaksi minimal kompetitor >= nominal filter (misal: pasang buy >= Rp 50 Juta)
+    if (config.minOrderLimitIdr > 0 && ad.min_limit_idr >= config.minOrderLimitIdr) {
       reasons.push({
         code: "MIN_LIMIT_TOO_HIGH",
-        message: `Min transaksi merchant Rp ${ad.min_limit_idr.toLocaleString("id-ID")} melebihi batas filter Anda (Rp ${config.minOrderLimitIdr.toLocaleString("id-ID")})`,
+        message: `Min transaksi merchant Rp ${ad.min_limit_idr.toLocaleString("id-ID")} >= batas filter Rp ${config.minOrderLimitIdr.toLocaleString("id-ID")} (pesanan jumbo)`,
       });
     }
 
@@ -681,9 +682,14 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (!merged.merchantFilterMode) merged.merchantFilterMode = "all_except_blacklist";
     if (!merged.paymentMatchMode) merged.paymentMatchMode = "any";
     if (typeof merged.excludeEwallets !== "boolean") merged.excludeEwallets = false;
-    // Jika masih tersimpan nilai lama default 500.000 yang memblokir merchant 20jt, migrasi ke 0
-    if (merged.minOrderLimitIdr === 500_000) {
-      merged.minOrderLimitIdr = 0;
+    // Migrasi otomatis ke 50 Juta jika masih nilai lama (500rb atau 0)
+    const hasMigrated50m = localStorage.getItem("binance_bot_migrated_50m_limit");
+    if (!hasMigrated50m) {
+      merged.minOrderLimitIdr = 50_000_000;
+      localStorage.setItem("binance_bot_migrated_50m_limit", "true");
+      saveBotConfig(merged);
+    } else if (merged.minOrderLimitIdr === 500_000) {
+      merged.minOrderLimitIdr = 50_000_000;
       saveBotConfig(merged);
     }
     return merged;

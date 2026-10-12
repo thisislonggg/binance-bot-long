@@ -725,6 +725,11 @@ export function AutoPricingBotPanel({
                     Akun Whale ({disqualificationStats.USDT_TOO_HIGH})
                   </Badge>
                 )}
+                {disqualificationStats.MIN_LIMIT_TOO_HIGH && (
+                  <Badge variant="outline" className="h-5 px-1.5 text-[0.62rem] border-rose-500/30 text-rose-400">
+                    Min Limit &ge; Batas ({disqualificationStats.MIN_LIMIT_TOO_HIGH})
+                  </Badge>
+                )}
                 {disqualificationStats.UNVERIFIED && (
                   <Badge variant="outline" className="h-5 px-1.5 text-[0.62rem] border-border text-muted-foreground">
                     Non-Verified ({disqualificationStats.UNVERIFIED})
@@ -1093,30 +1098,37 @@ export function AutoPricingBotPanel({
                   </p>
                 </div>
 
-                {/* Min Order Limit IDR */}
+                {/* Min Order Limit IDR (Plafon Toleransi Syarat Min Transaksi Kompetitor) */}
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <Label className="text-xs font-semibold text-foreground">
-                      Min Transaksi (Min Limit)
-                    </Label>
+                    <div>
+                      <Label className="text-xs font-semibold text-foreground">
+                        Toleransi Maks Min-Limit (Filter Min Order)
+                      </Label>
+                      <p className="text-[0.65rem] text-muted-foreground">
+                        Filter iklan jika kompetitor mensyaratkan min. order &ge; plafon ini
+                      </p>
+                    </div>
                     <span className="num text-xs font-bold text-primary">
-                      {config.minOrderLimitIdr === 0 ? "Bebas (0)" : fmtRp(config.minOrderLimitIdr)}
+                      {config.minOrderLimitIdr === 0 ? "Bebas (0)" : `< ${fmtRp(config.minOrderLimitIdr)}`}
                     </span>
                   </div>
                   <Input
                     type="number"
                     min={0}
-                    step={1000000}
+                    step={5000000}
                     value={config.minOrderLimitIdr}
                     onChange={(e) => updateConfig({ minOrderLimitIdr: Math.max(0, Number(e.target.value)) })}
                     className="h-8 text-xs bg-surface-2 font-semibold"
-                    placeholder="0 = Bebas / Nonaktif"
+                    placeholder="Contoh: 50000000 (50 Juta)"
                   />
                   <div className="flex items-center gap-1 pt-1 flex-wrap">
                     {[
                       { label: "Bebas (0)", val: 0 },
                       { label: "10 Jt", val: 10_000_000 },
-                      { label: "20 Jt", val: 20_000_000 },
+                      { label: "25 Jt", val: 25_000_000 },
+                      { label: "50 Jt (Anti-Jumbo)", val: 50_000_000 },
+                      { label: "100 Jt", val: 100_000_000 },
                     ].map((item) => (
                       <button
                         key={item.val}
@@ -1133,7 +1145,7 @@ export function AutoPricingBotPanel({
                     ))}
                   </div>
                   <p className="text-[0.65rem] text-muted-foreground">
-                    Set 0 agar bot tetap melirik merchant berapapun batas minimalnya.
+                    Kompetitor yang pasang buy/sell dengan syarat minimal transaksi &ge; nilai ini (misal 50 Jt) otomatis terfilter agar bot Anda tidak ikut perang harga melawan order partai besar/grosir.
                   </p>
                 </div>
 
