@@ -215,7 +215,150 @@ async function binanceMerchantRequest<T = unknown>(options: {
   }
 }
 
-// ── 1. Ambil Daftar Iklan Merchant (GET /sapi/v1/c2c/ads/list) ───────────────
+// ── Helper Eksekusi Request ke Binance C2C Agent SAPI (Protokol Binance Skill Hub) ─
+/**
+ * Helper Eksekusi Request ke Binance C2C Agent SAPI (Protokol Resmi Binance P2P Skill Hub).
+ * Sesuai spesifikasi resmi: https://www.binance.com/en/skills/detail/binance/p2p
+ *
+ * Aturan krusial SAPI:
+ *  1. JANGAN urutkan parameter (preserve original insertion order)! SAPI menolak query string yang disortir.
+ *  2. Header wajib: User-Agent: binance-wallet/1.0.0 (Skill) dan X-MBX-APIKEY.
+ *  3. Default recvWindow = 60000ms.
+ *  4. Body JSON dikirim via method POST dengan header Content-Type: application/json.
+ */
+export async function binanceAgentRequest<T = unknown>(options: {
+  endpoint: string;
+  method?: "GET" | "POST";
+  queryParams?: Record<string, string | number | boolean | undefined>;
+  body?: unknown;
+  apiKeyOverride?: string;
+  apiSecretOverride?: string;
+}): Promise<MerchantApiResponse<T>> {
+  const apiKey = (options.apiKeyOverride || process.env["BINANCE_API_KEY"])?.trim();
+  const apiSecret = (options.apiSecretOverride || process.env["BINANCE_API_SECRET"])?.trim();
+
+  if (!apiKey || !apiSecret || apiKey === "your_binance_api_key_here" || apiSecret === "your_binance_api_secret_here") {
+    return {
+      ok: false,
+      code: "NO_CREDENTIALS",
+      error: "BINANCE_API_KEY dan BINANCE_API_SECRET belum diisi di file .env atau hosting!",
+      message: "Harap konfigurasikan API Key & Secret Binance Anda terlebih dahulu.",
+    };
+  }
+
+  const baseUrl =
+    process.env["BINANCE_C2C_BASE_URL"] ||
+    process.env["BINANCE_API_BASE_URL"] ||
+    process.env["BINANCE_PROXY_URL"] ||
+    DEFAULT_BINANCE_API_URL;
+
+  const method = options.method || "POST";
+  const timestamp = Date.now();
+
+  // Mempertahankan original insertion order parameter untuk SAPI (CRITICAL!)
+  const queryEntries: [string, string][] = [];
+  if (options.queryParams) {
+    for (const [k, v] of Object.entries(options.queryParams)) {
+      if (v !== undefined && v !== null && v !== "") {
+        queryEntries.push([k, String(v)]);
+      }
+    }
+  }
+  queryEntries.push(["recvWindow", "60000"]);
+  queryEntries.push(["timestamp", String(timestamp)]);
+
+  const qs = queryEntries
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join("&");
+
+  const signature = createHmac("sha256", apiSecret).update(qs).digest("hex");
+  const fullQs = `${qs}&signature=${signature}`;
+  const url = `${baseUrl.replace(/\/$/, "")}${options.endpoint}?${fullQs}`;
+
+  const headers: Record<string, string> = {
+    "X-MBX-APIKEY": apiKey,
+    "User-Agent": "binance-wallet/1.0.0 (Skill)",
+  };
+
+  let bodyStr: string | undefined = undefined;
+  if (options.body !== undefined && options.body !== null) {
+    headers["Content-Type"] = "application/json";
+    bodyStr = JSON.stringify(options.body);
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+
+    const resp = await fetch(url, {
+      method,
+      headers,
+      body: bodyStr,
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeout));
+
+    const rawText = await resp.text();
+    let json: Record<string, unknown> = {};
+    try {
+      json = JSON.parse(rawText);
+    } catch {
+      // Abaikan jika bukan JSON
+    }
+
+    const code = String(json["code"] ?? (resp.ok ? "000000" : resp.status));
+    const isSuccess =
+      resp.ok &&
+      (code === "000000" ||
+        code === "0" ||
+        json["success"] === true ||
+        json["status"] === true);
+
+    if (!isSuccess) {
+      const errMsg = String(
+        json["message"] || json["msg"] || json["error"] || "Gagal memproses request C2C Agent SAPI"
+      );
+      let friendlyMsg = errMsg;
+      if (code === "-1002") {
+        friendlyMsg = "Iklan tidak ditemukan atau bukan milik akun API Key Anda (-1002).";
+      } else if (code === "-2015" || errMsg.includes("API-key")) {
+        friendlyMsg = "API Key tidak valid, IP belum terdaftar di whitelist, atau izin C2C belum aktif (-2015).";
+      } else if (code === "-1022") {
+        friendlyMsg = "Signature verification failed (-1022). Pastikan Secret Key benar dan jam tersinkron.";
+      } else if (code === "-9000") {
+        friendlyMsg = "Parameter iklan tidak valid (-9000). Binance mengharuskan update objek lengkap (full-object).";
+      }
+
+      return {
+        ok: false,
+        code,
+        error: errMsg,
+        message: friendlyMsg,
+        data: json["data"] as T,
+        timestamp,
+      };
+    }
+
+    return {
+      ok: true,
+      code: "000000",
+      data: (json["data"] !== undefined ? json["data"] : json) as T,
+      message: "Sukses",
+      timestamp,
+    };
+  } catch (err: unknown) {
+    const errorStr = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      code: "NETWORK_ERROR",
+      error: errorStr,
+      message: errorStr.includes("aborted")
+        ? "Koneksi ke Binance timeout (15 detik). Periksa koneksi atau proxy."
+        : `Gagal menghubungi Binance SAPI: ${errorStr}`,
+    };
+  }
+}
+
+// ── 1. Ambil Daftar Iklan Merchant ──────────────────────────────────────────
 
 const listAdsInputSchema = z.object({
   sessionToken: z.string().optional(),
@@ -241,7 +384,36 @@ export const getMerchantAdsList = createServerFn({ method: "POST" })
       };
     }
 
-    // Coba endpoint standar C2C ads list
+    // 1. Coba Agent SAPI listWithPagination (Protokol Resmi Binance Skill)
+    const agentListRes = await binanceAgentRequest<{
+      total?: number;
+      data?: BinanceMerchantAd[];
+    } | BinanceMerchantAd[]>({
+      endpoint: "/sapi/v1/c2c/agent/ads/listWithPagination",
+      method: "POST",
+      body: {
+        page: data.page,
+        rows: data.rows,
+      },
+    });
+
+    if (agentListRes.ok && agentListRes.data) {
+      const list = Array.isArray(agentListRes.data)
+        ? agentListRes.data
+        : Array.isArray((agentListRes.data as Record<string, unknown>)["data"])
+        ? ((agentListRes.data as Record<string, unknown>)["data"] as BinanceMerchantAd[])
+        : [];
+      if (list.length > 0) {
+        return {
+          ok: true,
+          code: "000000",
+          data: list,
+          message: "Sukses",
+        };
+      }
+    }
+
+    // 2. Coba endpoint standar C2C ads list
     const res = await binanceMerchantRequest<BinanceMerchantAd[]>({
       endpoint: "/sapi/v1/c2c/ads/list",
       method: "GET",
@@ -255,7 +427,7 @@ export const getMerchantAdsList = createServerFn({ method: "POST" })
       },
     });
 
-    // Jika endpoint /ads/list tidak ditemukan, fallback ke /orderMatch/getUserAdvList
+    // 3. Jika endpoint /ads/list tidak ditemukan, fallback ke /orderMatch/getUserAdvList
     if (!res.ok && (res.code === 404 || String(res.code) === "-1002")) {
       return binanceMerchantRequest<BinanceMerchantAd[]>({
         endpoint: "/sapi/v1/c2c/orderMatch/getUserAdvList",
@@ -270,7 +442,7 @@ export const getMerchantAdsList = createServerFn({ method: "POST" })
     return res;
   });
 
-// ── 2. Update Harga, Stok, & Limit Iklan (POST /sapi/v1/c2c/ads/update) ──────
+// ── 2. Update Harga, Stok, & Limit Iklan (Protokol Binance Skill 2-Step) ─────
 
 const updateAdInputSchema = z.object({
   sessionToken: z.string().optional(),
@@ -297,9 +469,154 @@ export const updateMerchantAd = createServerFn({ method: "POST" })
       };
     }
 
+    const advNo = data.advNo.trim();
+    const newPrice = Math.round(data.price);
+
+    // =========================================================================
+    // PROTOKOL UTAMA: Binance P2P Skill Agent SAPI (Full-Object Update)
+    // Sesuai dokumentasi https://www.binance.com/en/skills/detail/binance/p2p
+    // Step 1: POST /sapi/v1/c2c/agent/ads/getDetailByNo?advNo={advNo}
+    // Step 2: Merge perubahan (harga, stok, max limit) ke objek iklan utuh
+    // Step 3: POST /sapi/v1/c2c/agent/ads/update dengan full object JSON
+    // =========================================================================
+
+    const detailRes = await binanceAgentRequest<Record<string, unknown>>({
+      endpoint: "/sapi/v1/c2c/agent/ads/getDetailByNo",
+      method: "POST",
+      queryParams: { advNo },
+      body: { advNo },
+    });
+
+    if (detailRes.ok && detailRes.data && typeof detailRes.data === "object" && !Array.isArray(detailRes.data)) {
+      const existingAd = detailRes.data;
+
+      // Merge perubahan ke objek utuh yang dikembalikan Binance
+      const mergedPayload: Record<string, unknown> = {
+        ...existingAd,
+        advNo,
+        price: newPrice,
+      };
+
+      if (data.amount && data.amount > 0) {
+        mergedPayload["initAmount"] = Math.floor(data.amount * 100) / 100;
+      }
+      if (data.minSingleTransAmount && data.minSingleTransAmount > 0) {
+        mergedPayload["minSingleTransAmount"] = Math.round(data.minSingleTransAmount);
+      }
+      if (data.maxSingleTransAmount && data.maxSingleTransAmount > 0) {
+        mergedPayload["maxSingleTransAmount"] = Math.round(data.maxSingleTransAmount);
+      }
+
+      // Step 3: Kirim full-object update ke Agent SAPI
+      const agentUpdateRes = await binanceAgentRequest({
+        endpoint: "/sapi/v1/c2c/agent/ads/update",
+        method: "POST",
+        body: mergedPayload,
+      });
+
+      if (agentUpdateRes.ok) {
+        return {
+          ok: true,
+          code: "000000",
+          message: `Iklan #${advNo} berhasil diupdate via Binance Agent SAPI ke Rp ${newPrice.toLocaleString("id-ID")}`,
+          data: agentUpdateRes.data,
+          timestamp: Date.now(),
+        };
+      }
+
+      // Jika format tradeType (misal "BUY" vs 0) ditolak downstream, coba normalisasi tradeType
+      if (mergedPayload["tradeType"] === "BUY" || mergedPayload["tradeType"] === "SELL") {
+        const retryPayload = {
+          ...mergedPayload,
+          tradeType: mergedPayload["tradeType"] === "BUY" ? 0 : 1,
+        };
+        const retryRes = await binanceAgentRequest({
+          endpoint: "/sapi/v1/c2c/agent/ads/update",
+          method: "POST",
+          body: retryPayload,
+        });
+        if (retryRes.ok) {
+          return {
+            ok: true,
+            code: "000000",
+            message: `Iklan #${advNo} berhasil diupdate via Binance Agent SAPI ke Rp ${newPrice.toLocaleString("id-ID")}`,
+            data: retryRes.data,
+            timestamp: Date.now(),
+          };
+        }
+      }
+
+      // Coba juga payload terfilter hanya field valid update (membersihkan field read-only seperti surplusAmount)
+      const allowedUpdateKeys = [
+        "advNo", "tradeType", "asset", "fiatUnit", "priceType",
+        "priceFloatingRatio", "rateFloatingRatio", "price", "initAmount",
+        "maxSingleTransAmount", "minSingleTransAmount", "buyerKycLimit",
+        "buyerRegDaysLimit", "buyerBtcPositionLimit", "remarks", "autoReplyMsg",
+        "payTimeLimit", "tradeMethods", "advStatus", "takerAdditionalKycRequired",
+        "launchCountry"
+      ];
+      const cleanUpdatePayload: Record<string, unknown> = {};
+      for (const key of allowedUpdateKeys) {
+        if (mergedPayload[key] !== undefined) {
+          cleanUpdatePayload[key] = mergedPayload[key];
+        }
+      }
+      const cleanRes = await binanceAgentRequest({
+        endpoint: "/sapi/v1/c2c/agent/ads/update",
+        method: "POST",
+        body: cleanUpdatePayload,
+      });
+      if (cleanRes.ok) {
+        return {
+          ok: true,
+          code: "000000",
+          message: `Iklan #${advNo} berhasil diupdate via Binance Agent SAPI ke Rp ${newPrice.toLocaleString("id-ID")}`,
+          data: cleanRes.data,
+          timestamp: Date.now(),
+        };
+      }
+    }
+
+    // =========================================================================
+    // FALLBACK 1: Direct JSON update ke /sapi/v1/c2c/agent/ads/update
+    // =========================================================================
+    const directAgentPayload: Record<string, unknown> = {
+      advNo,
+      price: newPrice,
+      priceType: data.priceType ?? 1,
+    };
+    if (data.amount && data.amount > 0) {
+      directAgentPayload["initAmount"] = Math.floor(data.amount * 100) / 100;
+    }
+    if (data.minSingleTransAmount && data.minSingleTransAmount > 0) {
+      directAgentPayload["minSingleTransAmount"] = Math.round(data.minSingleTransAmount);
+    }
+    if (data.maxSingleTransAmount && data.maxSingleTransAmount > 0) {
+      directAgentPayload["maxSingleTransAmount"] = Math.round(data.maxSingleTransAmount);
+    }
+
+    const directAgentRes = await binanceAgentRequest({
+      endpoint: "/sapi/v1/c2c/agent/ads/update",
+      method: "POST",
+      body: directAgentPayload,
+    });
+
+    if (directAgentRes.ok) {
+      return {
+        ok: true,
+        code: "000000",
+        message: `Iklan #${advNo} berhasil diupdate via Binance Agent SAPI ke Rp ${newPrice.toLocaleString("id-ID")}`,
+        data: directAgentRes.data,
+        timestamp: Date.now(),
+      };
+    }
+
+    // =========================================================================
+    // FALLBACK 2: Standard Binance Merchant API (/sapi/v1/c2c/ads/update)
+    // =========================================================================
     const fullParams: Record<string, string | number> = {
-      advNo: data.advNo.trim(),
-      price: Math.round(data.price),
+      advNo,
+      price: newPrice,
       priceType: data.priceType ?? 1,
     };
 
@@ -320,33 +637,47 @@ export const updateMerchantAd = createServerFn({ method: "POST" })
       fullParams["payMethods"] = JSON.stringify(data.payMethods);
     }
 
-    // 1. Coba kirim update dengan seluruh parameter
-    const res = await binanceMerchantRequest({
+    const legacyRes = await binanceMerchantRequest({
       endpoint: "/sapi/v1/c2c/ads/update",
       method: "POST",
       params: fullParams,
     });
 
-    // 2. Jika gagal dan payload memiliki amount / limits, coba fallback update HANYA HARGA (advNo & price).
-    // Di Binance P2P, iklan yang sedang ONLINE sering menolak perubahan limit/stok, tapi mengizinkan perubahan harga real-time!
-    if (!res.ok && (data.amount || data.maxSingleTransAmount)) {
+    if (legacyRes.ok) {
+      return legacyRes;
+    }
+
+    // Fallback harga saja pada legacy
+    if (data.amount || data.maxSingleTransAmount) {
       const priceOnlyRes = await binanceMerchantRequest({
         endpoint: "/sapi/v1/c2c/ads/update",
         method: "POST",
         params: {
-          advNo: data.advNo.trim(),
-          price: Math.round(data.price),
+          advNo,
+          price: newPrice,
         },
       });
       if (priceOnlyRes.ok) {
         return {
           ...priceOnlyRes,
-          message: `Harga iklan #${data.advNo} berhasil diupdate ke Rp ${Math.round(data.price).toLocaleString("id-ID")}. (Catatan: Stok & limit iklan aktif perlu disesuaikan via Binance Web/App).`,
+          message: `Harga iklan #${advNo} berhasil diupdate ke Rp ${newPrice.toLocaleString("id-ID")}. (Catatan: Stok & limit disesuaikan via Binance Web/App).`,
         };
       }
     }
 
-    return res;
+    // Jika semua cara gagal, kembalikan pesan error yang paling informatif
+    const primaryError = detailRes.ok ? directAgentRes : detailRes;
+    return {
+      ok: false,
+      code: primaryError.code || legacyRes.code || "-1000",
+      error: primaryError.error || legacyRes.error,
+      message:
+        primaryError.message ||
+        legacyRes.message ||
+        "Gagal mengupdate iklan Binance. Pastikan nomor advNo benar dan izin API Key mencukupi.",
+      data: primaryError.data || legacyRes.data,
+      timestamp: Date.now(),
+    };
   });
 
 // ── 3. Update Status Iklan (Nyalakan / Jeda) ─────────────────────────────────
@@ -371,11 +702,28 @@ export const toggleMerchantAdStatus = createServerFn({ method: "POST" })
       };
     }
 
+    const advNo = data.advNo.trim();
+
+    // 1. Coba Agent SAPI updateStatus (1=Online, 3=Offline)
+    const agentRes = await binanceAgentRequest({
+      endpoint: "/sapi/v1/c2c/agent/ads/updateStatus",
+      method: "POST",
+      body: {
+        advNos: [advNo],
+        advStatus: data.advStatus === "ONLINE" ? 1 : 3,
+      },
+    });
+
+    if (agentRes.ok) {
+      return agentRes;
+    }
+
+    // 2. Fallback ke legacy
     return binanceMerchantRequest({
       endpoint: "/sapi/v1/c2c/ads/updateStatus",
       method: "POST",
       params: {
-        advNo: data.advNo.trim(),
+        advNo,
         advStatus: data.advStatus === "ONLINE" ? 1 : 2,
         status: data.advStatus,
       },
