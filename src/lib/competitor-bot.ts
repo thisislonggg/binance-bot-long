@@ -917,15 +917,12 @@ export function computeCompetitorPricing(input: {
 
   // 5. Hitung dan Terapkan Batas Pengaman BELI (Buy Ceiling & Floor Guard)
   // Ceiling Beli (Batas Atas): Mencegah beli kemahalan di pucuk yang mengikis spread minimal terhadap harga jual
-  const calculatedBuyCeiling = Math.round(
-    config.buyCeilingMode === "auto_fair"
-      ? (rawSellPrice > 0 ? rawSellPrice - config.minSpreadRp : (fairPrice > 0 ? fairPrice : liveMarketAnchor))
-      : (config.manualBuyCeilingRp > 0 ? config.manualBuyCeilingRp : 999_999),
-  );
-
-  const calculatedBuyFloor = Math.round(
-    config.manualBuyFloorRp && config.manualBuyFloorRp > 0 ? config.manualBuyFloorRp : 0
-  );
+  if (config.buyCeilingMode === "auto_fair") {
+    const dynamicCeiling = Math.round(
+      rawSellPrice > 0 ? rawSellPrice - config.minSpreadRp : (fairPrice > 0 ? fairPrice : liveMarketAnchor)
+    );
+    calculatedBuyCeiling = Math.min(calculatedBuyCeiling, dynamicCeiling);
+  }
 
   let activeBuyTargetMerchant = buyTargetMerchant;
   let activeBuyRankUsed = buyTargetMerchant ? buyRankIdx + 1 : 0;
