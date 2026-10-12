@@ -363,14 +363,21 @@ export function evaluateCompetitorAds(
     }
 
     // 5. Filter Tingkat Penyelesaian (Completion Rate)
+    const effectiveCompletionRate =
+      ad.completion_rate !== null && Number.isFinite(ad.completion_rate)
+        ? (ad.completion_rate <= 1.0 && ad.completion_rate > 0
+            ? ad.completion_rate * 100
+            : ad.completion_rate)
+        : null;
+
     if (
       config.minCompletionRate > 0 &&
-      ad.completion_rate !== null &&
-      ad.completion_rate < config.minCompletionRate
+      effectiveCompletionRate !== null &&
+      effectiveCompletionRate < config.minCompletionRate
     ) {
       reasons.push({
         code: "COMPLETION_RATE_LOW",
-        message: `Rate ${ad.completion_rate.toFixed(1)}% < min ${config.minCompletionRate}%`,
+        message: `Rate ${effectiveCompletionRate.toFixed(1)}% < min ${config.minCompletionRate}%`,
       });
     }
 

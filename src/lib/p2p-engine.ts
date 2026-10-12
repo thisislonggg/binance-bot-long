@@ -140,6 +140,21 @@ export function parseAds(rawAds: any[]): Ad[] {
     const surplus = Number(adv.surplusAmount ?? 0);
     if (!Number.isFinite(price) || !Number.isFinite(surplus)) continue;
 
+    // Normalisasi completion rate: Binance P2P API mengembalikan monthFinishRate sebagai desimal rasio 0.0 - 1.0 (misal: 0.985 = 98.5%)
+    let completionRate: number | null = null;
+    if (seller.monthFinishRate !== undefined && seller.monthFinishRate !== null) {
+      const rawRate = Number(seller.monthFinishRate);
+      if (Number.isFinite(rawRate)) {
+        if (rawRate <= 1.0 && rawRate > 0) {
+          // Desimal rasio dari Binance API (misal 0.985 -> 98.5, 1.0 -> 100)
+          completionRate = Math.round(rawRate * 1000) / 10;
+        } else {
+          // Jika sudah bernilai persentase 0 - 100
+          completionRate = Math.round(rawRate * 10) / 10;
+        }
+      }
+    }
+
     const availableIdr = maxLimit ? Math.min(surplus * price, maxLimit) : surplus * price;
     parsed.push({
       adv_no: adv.advNo ?? null,
@@ -154,8 +169,8 @@ export function parseAds(rawAds: any[]): Ad[] {
       merchant_name: seller.nickName ?? "unknown",
       user_type: seller.userType ?? "user",
       is_verified: Boolean(seller.userIdentity || seller.userGrade),
-      completion_rate: seller.monthFinishRate ?? null,
-      month_order_count: seller.monthOrderCount ?? null,
+      completion_rate: completionRate,
+      month_order_count: Number.isFinite(Number(seller.monthOrderCount)) ? Number(seller.monthOrderCount) : null,
     });
   }
   return parsed;
@@ -666,6 +681,12 @@ export const fmtRp2 = (x: number) =>
     : "—";
 
 export const fmtPct = (x: number, d = 2) => (Number.isFinite(x) ? `${x.toFixed(d)}%` : "—");
+
+export const fmtRate = (x: number | null | undefined, d = 1) => {
+  if (x === null || x === undefined || !Number.isFinite(x)) return "—";
+  const normalized = x <= 1.0 && x > 0 ? x * 100 : x;
+  return `${normalized.toFixed(d)}%`;
+};
 
 export const liquidityLabel = (c: string) =>
   ({ thin: "Tipis", normal: "Normal", deep: "Dalam" })[c] ?? c;

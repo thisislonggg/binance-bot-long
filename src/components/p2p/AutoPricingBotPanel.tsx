@@ -61,7 +61,7 @@ import {
   type EvaluatedAd,
   type StrategyPreset,
 } from "@/lib/competitor-bot";
-import { fmtPct, fmtRp, fmtRp2, type Ad } from "@/lib/p2p-engine";
+import { fmtPct, fmtRate, fmtRp, fmtRp2, type Ad } from "@/lib/p2p-engine";
 
 const POPULAR_PAYMENT_METHODS = [
   "Bank Transfer",
@@ -459,7 +459,7 @@ export function AutoPricingBotPanel({
                     Harga Mereka: <strong className="num text-foreground">{fmtRp2(buyTargetMerchant.price)}</strong>
                   </span>
                   <span>
-                    Rate: <strong className="text-foreground">{buyTargetMerchant.completion_rate ? `${buyTargetMerchant.completion_rate.toFixed(1)}%` : "—"}</strong>
+                    Rate: <strong className="text-foreground">{buyTargetMerchant ? fmtRate(buyTargetMerchant.completion_rate) : "—"}</strong>
                   </span>
                 </div>
               )}
@@ -553,7 +553,7 @@ export function AutoPricingBotPanel({
                     Harga Mereka: <strong className="num text-foreground">{fmtRp2(sellTargetMerchant.price)}</strong>
                   </span>
                   <span>
-                    Rate: <strong className="text-foreground">{sellTargetMerchant.completion_rate ? `${sellTargetMerchant.completion_rate.toFixed(1)}%` : "—"}</strong>
+                    Rate: <strong className="text-foreground">{sellTargetMerchant ? fmtRate(sellTargetMerchant.completion_rate) : "—"}</strong>
                   </span>
                 </div>
               )}
@@ -848,8 +848,8 @@ export function AutoPricingBotPanel({
                             {item.ad.pay_methods.length > 0 ? item.ad.pay_methods.slice(0, 2).join(", ") : "—"}
                             {item.ad.pay_methods.length > 2 && ` +${item.ad.pay_methods.length - 2}`}
                           </td>
-                          <td className="p-2 text-center text-muted-foreground text-[0.7rem]">
-                            {item.ad.completion_rate ? `${item.ad.completion_rate.toFixed(0)}%` : "—"}
+                          <td className="p-2 text-center text-muted-foreground text-[0.7rem] font-medium">
+                            {fmtRate(item.ad.completion_rate)}
                           </td>
                           <td className="p-2">
                             {item.isQualified ? (
