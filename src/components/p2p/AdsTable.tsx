@@ -79,9 +79,29 @@ export function AdsTable({
                     <span className="font-medium text-foreground/90 group-hover:text-foreground">
                       {a?.merchant_name ?? "—"}
                     </span>
-                    {a?.user_type === "merchant" ? (
+                    {a?.merchant_level === "gold" && (
+                      <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/20 border border-amber-500/50 px-1 py-0.2 text-[0.6rem] font-bold text-amber-300 shadow-xs" title="Gold Merchant (VIP 3 / Volume > 60 BTC)">
+                        🥇 Gold
+                      </span>
+                    )}
+                    {a?.merchant_level === "silver" && (
+                      <span className="inline-flex items-center gap-0.5 rounded bg-slate-400/20 border border-slate-300/50 px-1 py-0.2 text-[0.6rem] font-bold text-slate-200" title="Silver Merchant (VIP 2 / Volume > 6 BTC)">
+                        🥈 Silver
+                      </span>
+                    )}
+                    {a?.merchant_level === "bronze" && (
+                      <span className="inline-flex items-center gap-0.5 rounded bg-amber-800/20 border border-amber-700/50 px-1 py-0.2 text-[0.6rem] font-bold text-amber-500" title="Bronze Merchant (VIP 1 / Verified Merchant)">
+                        🥉 Bronze
+                      </span>
+                    )}
+                    {a?.merchant_level === "regular" && !a?.is_verified && (
+                      <span className="inline-flex items-center gap-0.5 rounded bg-surface-2 border border-border px-1 py-0.2 text-[0.58rem] font-medium text-muted-foreground" title="Regular User (Non-Merchant)">
+                        👤 User
+                      </span>
+                    )}
+                    {a?.user_type === "merchant" || a?.is_pro ? (
                       <span className="rounded bg-primary/20 px-1.5 py-0.5 text-[0.58rem] font-bold tracking-wider text-primary uppercase">
-                        PRO MERCHANT
+                        PRO
                       </span>
                     ) : null}
                   </div>

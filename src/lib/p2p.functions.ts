@@ -93,16 +93,16 @@ async function doFetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: numb
 }
 
 function generateFallbackAds(tradeType: "BUY" | "SELL", basePrice: number = 17650): Ad[] {
-  // Acuan harga USDT/IDR wajar pasar dinamis
+  // Acuan harga USDT/IDR wajar pasar dinamis dengan level merchant realistik
   const merchants = [
-    { name: "ProTrader_ID", verified: true, rate: 99.8, orders: 3420, banks: ["BCA", "Mandiri", "Bank Transfer"] },
-    { name: "FastPay_Crypto", verified: true, rate: 99.4, orders: 2180, banks: ["BRI", "BCA", "SeaBank"] },
-    { name: "NusantaraEx", verified: true, rate: 98.9, orders: 1850, banks: ["Bank Transfer", "Mandiri", "Permata"] },
-    { name: "Garuda_P2P", verified: true, rate: 99.1, orders: 4120, banks: ["BCA", "CIMB", "DANA"] },
-    { name: "IndoExchange", verified: false, rate: 98.5, orders: 940, banks: ["Bank Transfer", "BRI"] },
-    { name: "MasterCrypto_JKT", verified: true, rate: 99.7, orders: 5600, banks: ["BCA", "Mandiri", "BNI"] },
-    { name: "Sultan_USDT", verified: true, rate: 99.0, orders: 1430, banks: ["SeaBank", "BCA"] },
-    { name: "KriptoBerkah", verified: false, rate: 97.8, orders: 670, banks: ["Bank Transfer", "DANA", "Gopay"] },
+    { name: "ProTrader_ID", verified: true, level: "gold" as const, rate: 99.8, orders: 3420, banks: ["BCA", "Mandiri", "Bank Transfer"] },
+    { name: "FastPay_Crypto", verified: true, level: "silver" as const, rate: 99.4, orders: 2180, banks: ["BRI", "BCA", "SeaBank"] },
+    { name: "NusantaraEx", verified: true, level: "bronze" as const, rate: 98.9, orders: 1850, banks: ["Bank Transfer", "Mandiri", "Permata"] },
+    { name: "Garuda_P2P", verified: true, level: "silver" as const, rate: 99.1, orders: 4120, banks: ["BCA", "CIMB", "DANA"] },
+    { name: "IndoExchange", verified: false, level: "regular" as const, rate: 98.5, orders: 940, banks: ["Bank Transfer", "BRI"] },
+    { name: "MasterCrypto_JKT", verified: true, level: "gold" as const, rate: 99.7, orders: 5600, banks: ["BCA", "Mandiri", "BNI"] },
+    { name: "Sultan_USDT", verified: true, level: "bronze" as const, rate: 99.0, orders: 1430, banks: ["SeaBank", "BCA"] },
+    { name: "KriptoBerkah", verified: false, level: "regular" as const, rate: 97.8, orders: 670, banks: ["Bank Transfer", "DANA", "Gopay"] },
   ];
 
   return merchants.map((m, idx) => {
@@ -127,6 +127,8 @@ function generateFallbackAds(tradeType: "BUY" | "SELL", basePrice: number = 1765
       is_verified: m.verified,
       completion_rate: m.rate,
       month_order_count: m.orders,
+      merchant_level: m.level,
+      is_pro: m.level === "gold",
     };
   });
 }

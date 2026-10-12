@@ -14,6 +14,7 @@ export type CompetitorFilterConfig = {
   minMaxLimitIdr: number;         // Min Transaksi: kapasitas order merchant harus >= nominal ini (0 = Bebas)
   verifiedOnly: boolean;          // Hanya ikuti Verified Merchant (centang kuning)
   userTypeFilter: "all" | "merchant_only" | "user_only"; // Filter tipe user Binance
+  allowedMerchantLevels: ("gold" | "silver" | "bronze" | "regular")[]; // Filter level merchant: Gold, Silver, Bronze, Regular
   minCompletionRate: number;      // Minimal % penyelesaian 30 hari (misal: 95%)
   minMonthOrders: number;         // Minimal total order 30 hari (misal: 50)
 
@@ -88,6 +89,7 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   minMaxLimitIdr: 0,
   verifiedOnly: true,
   userTypeFilter: "all",
+  allowedMerchantLevels: ["gold", "silver", "bronze", "regular"],
   minCompletionRate: 95,
   minMonthOrders: 50,
 
@@ -247,6 +249,7 @@ export type DisqualificationReason = {
     | "MAX_LIMIT_TOO_LOW"
     | "UNVERIFIED"
     | "USER_TYPE_MISMATCH"
+    | "MERCHANT_LEVEL_FILTERED"
     | "COMPLETION_RATE_LOW"
     | "MONTH_ORDERS_LOW"
     | "PAYMENT_METHOD_MISMATCH"
@@ -447,6 +450,28 @@ export function evaluateCompetitorAds(
         code: "USER_TYPE_MISMATCH",
         message: "Akun PRO Merchant (Filter hanya target regular user)",
       });
+    }
+
+    // 4b. Filter Level Merchant (Gold, Silver, Bronze, Regular)
+    if (
+      config.allowedMerchantLevels &&
+      Array.isArray(config.allowedMerchantLevels) &&
+      config.allowedMerchantLevels.length > 0 &&
+      config.allowedMerchantLevels.length < 4
+    ) {
+      const adLevel = ad.merchant_level ?? (ad.is_verified ? "bronze" : "regular");
+      if (!config.allowedMerchantLevels.includes(adLevel)) {
+        const levelLabels: Record<string, string> = {
+          gold: "🥇 Gold",
+          silver: "🥈 Silver",
+          bronze: "🥉 Bronze",
+          regular: "👤 Regular User",
+        };
+        reasons.push({
+          code: "MERCHANT_LEVEL_FILTERED",
+          message: `Level ${levelLabels[adLevel] || adLevel} tidak diikutsertakan dalam filter level`,
+        });
+      }
     }
 
     // 5. Filter Tingkat Penyelesaian (Completion Rate)
@@ -1061,6 +1086,9 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (!merged.merchantFilterMode) merged.merchantFilterMode = "all_except_blacklist";
     if (!merged.paymentMatchMode) merged.paymentMatchMode = "any";
     if (typeof merged.excludeEwallets !== "boolean") merged.excludeEwallets = false;
+    if (!Array.isArray(merged.allowedMerchantLevels) || merged.allowedMerchantLevels.length === 0) {
+      merged.allowedMerchantLevels = ["gold", "silver", "bronze", "regular"];
+    }
     // Perbaikan: minOrderLimitIdr adalah batas toleransi filter kompetitor (0 = Bebas).
     // Jika sebelumnya terkena migrasi 50 Juta keliru, reset kembali ke 0 agar tidak mendiskualifikasi kompetitor
     const hasFixedMinOrderFilter = localStorage.getItem("binance_bot_fixed_min_order_filter_v3");

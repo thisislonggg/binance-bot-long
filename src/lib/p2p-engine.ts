@@ -32,6 +32,8 @@ export const CFG = {
   HISTORY_MAX_POINTS: 100,
 };
 
+export type MerchantLevel = "gold" | "silver" | "bronze" | "regular";
+
 export type Ad = {
   adv_no: string | null;
   price: number;
@@ -48,6 +50,10 @@ export type Ad = {
   completion_rate: number | null;
   month_order_count: number | null;
   is_tradable?: boolean;
+  merchant_level?: MerchantLevel;
+  user_grade?: number;
+  badges?: string[];
+  is_pro?: boolean;
 };
 
 export type HistoryPoint = { ts: string; fair_price: number };
@@ -175,6 +181,46 @@ export function parseAds(rawAds: any[]): Ad[] {
     const effectiveQty = tradableQty > 0 ? tradableQty : surplus;
     const availableIdr = effectiveMaxLimit > 0 ? Math.min(effectiveQty * price, effectiveMaxLimit) : effectiveQty * price;
 
+    // Deteksi Level Merchant: Gold, Silver, Bronze, atau Regular
+    const userGrade = Number(seller.userGrade ?? 0);
+    const badges: string[] = Array.isArray(seller.badges)
+      ? seller.badges.map(String)
+      : Array.isArray(seller.userBadges)
+      ? seller.userBadges.map(String)
+      : [];
+    const tagIconUrls: string[] = Array.isArray(seller.tagIconUrls)
+      ? seller.tagIconUrls.map(String)
+      : [];
+    const isPro = Boolean(seller.proMerchant || seller.isPro || seller.userType === "pro");
+
+    let merchantLevel: MerchantLevel = "regular";
+    const allBadgeText = [...badges, ...tagIconUrls].join(" ").toLowerCase();
+
+    if (
+      userGrade >= 3 ||
+      allBadgeText.includes("gold") ||
+      isPro ||
+      (Number(seller.monthOrderCount) >= 1500 && completionRate !== null && completionRate >= 98)
+    ) {
+      merchantLevel = "gold";
+    } else if (
+      userGrade === 2 ||
+      allBadgeText.includes("silver") ||
+      (Number(seller.monthOrderCount) >= 400 && completionRate !== null && completionRate >= 97)
+    ) {
+      merchantLevel = "silver";
+    } else if (
+      userGrade === 1 ||
+      allBadgeText.includes("bronze") ||
+      seller.userType === "merchant" ||
+      Boolean(seller.userIdentity) ||
+      Boolean(seller.userGrade)
+    ) {
+      merchantLevel = "bronze";
+    } else {
+      merchantLevel = "regular";
+    }
+
     parsed.push({
       adv_no: adv.advNo ?? null,
       price,
@@ -193,6 +239,10 @@ export function parseAds(rawAds: any[]): Ad[] {
       completion_rate: completionRate,
       month_order_count: Number.isFinite(Number(seller.monthOrderCount)) ? Number(seller.monthOrderCount) : null,
       is_tradable: adv.isTradable ?? true,
+      merchant_level: merchantLevel,
+      user_grade: userGrade > 0 ? userGrade : undefined,
+      badges: badges.length > 0 ? badges : undefined,
+      is_pro: isPro,
     });
   }
   return parsed;

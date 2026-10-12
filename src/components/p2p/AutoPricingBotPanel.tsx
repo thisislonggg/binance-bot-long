@@ -144,6 +144,7 @@ export function AutoPricingBotPanel({
   const [radarTab, setRadarTab] = useState<"sell" | "buy">("sell");
   const [radarSearch, setRadarSearch] = useState("");
   const [radarFilterStatus, setRadarFilterStatus] = useState<"all" | "qualified" | "disqualified">("all");
+  const [radarLevelFilter, setRadarLevelFilter] = useState<"all" | "gold" | "silver" | "bronze" | "regular">("all");
 
   const [blacklistInput, setBlacklistInput] = useState("");
   const [whitelistInput, setWhitelistInput] = useState("");
@@ -714,16 +715,22 @@ export function AutoPricingBotPanel({
       if (radarFilterStatus === "qualified" && !item.isQualified) return false;
       if (radarFilterStatus === "disqualified" && item.isQualified) return false;
 
+      if (radarLevelFilter !== "all") {
+        const adLevel = item.ad.merchant_level ?? (item.ad.is_verified ? "bronze" : "regular");
+        if (adLevel !== radarLevelFilter) return false;
+      }
+
       if (radarSearch.trim()) {
         const q = radarSearch.toLowerCase().trim();
         const matchName = item.ad.merchant_name.toLowerCase().includes(q);
         const matchPay = item.ad.pay_methods.some((p) => p.toLowerCase().includes(q));
         const matchPrice = String(item.ad.price).includes(q);
-        if (!matchName && !matchPay && !matchPrice) return false;
+        const matchLevel = (item.ad.merchant_level || "").toLowerCase().includes(q);
+        if (!matchName && !matchPay && !matchPrice && !matchLevel) return false;
       }
       return true;
     });
-  }, [currentRadarAds, radarFilterStatus, radarSearch]);
+  }, [currentRadarAds, radarFilterStatus, radarLevelFilter, radarSearch]);
 
   // Statistik Diskualifikasi untuk Radar Banner
   const disqualificationStats = useMemo(() => {
@@ -1454,41 +1461,67 @@ export function AutoPricingBotPanel({
                 </div>
               </div>
 
-              <div className="flex items-center gap-1.5 text-xs">
-                <span className="text-muted-foreground text-[0.7rem]">Filter Status:</span>
-                <button
-                  type="button"
-                  onClick={() => setRadarFilterStatus("all")}
-                  className={`rounded px-2 py-0.5 text-[0.68rem] font-semibold transition-colors ${
-                    radarFilterStatus === "all"
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-surface-2 text-muted-foreground hover:bg-surface-3"
-                  }`}
-                >
-                  Semua ({currentRadarAds.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRadarFilterStatus("qualified")}
-                  className={`rounded px-2 py-0.5 text-[0.68rem] font-semibold transition-colors ${
-                    radarFilterStatus === "qualified"
-                      ? "bg-bid text-white"
-                      : "bg-surface-2 text-muted-foreground hover:bg-surface-3"
-                  }`}
-                >
-                  ✅ Lolos ({(radarTab === "sell" ? qualifiedSellAds : qualifiedBuyAds).length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRadarFilterStatus("disqualified")}
-                  className={`rounded px-2 py-0.5 text-[0.68rem] font-semibold transition-colors ${
-                    radarFilterStatus === "disqualified"
-                      ? "bg-destructive text-destructive-foreground"
-                      : "bg-surface-2 text-muted-foreground hover:bg-surface-3"
-                  }`}
-                >
-                  ❌ Tereliminasi ({currentRadarAds.length - (radarTab === "sell" ? qualifiedSellAds : qualifiedBuyAds).length})
-                </button>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <div className="flex items-center gap-1">
+                  <span className="text-muted-foreground text-[0.7rem]">Status:</span>
+                  <button
+                    type="button"
+                    onClick={() => setRadarFilterStatus("all")}
+                    className={`rounded px-2 py-0.5 text-[0.68rem] font-semibold transition-colors ${
+                      radarFilterStatus === "all"
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-surface-2 text-muted-foreground hover:bg-surface-3"
+                    }`}
+                  >
+                    Semua ({currentRadarAds.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRadarFilterStatus("qualified")}
+                    className={`rounded px-2 py-0.5 text-[0.68rem] font-semibold transition-colors ${
+                      radarFilterStatus === "qualified"
+                        ? "bg-bid text-white"
+                        : "bg-surface-2 text-muted-foreground hover:bg-surface-3"
+                    }`}
+                  >
+                    ✅ Lolos ({(radarTab === "sell" ? qualifiedSellAds : qualifiedBuyAds).length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRadarFilterStatus("disqualified")}
+                    className={`rounded px-2 py-0.5 text-[0.68rem] font-semibold transition-colors ${
+                      radarFilterStatus === "disqualified"
+                        ? "bg-destructive text-destructive-foreground"
+                        : "bg-surface-2 text-muted-foreground hover:bg-surface-3"
+                    }`}
+                  >
+                    ❌ Tereliminasi ({currentRadarAds.length - (radarTab === "sell" ? qualifiedSellAds : qualifiedBuyAds).length})
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-1 border-l border-border/60 pl-2">
+                  <span className="text-muted-foreground text-[0.7rem]">Level:</span>
+                  {[
+                    { id: "all" as const, label: "Semua Tier" },
+                    { id: "gold" as const, label: "🥇 Gold" },
+                    { id: "silver" as const, label: "🥈 Silver" },
+                    { id: "bronze" as const, label: "🥉 Bronze" },
+                    { id: "regular" as const, label: "👤 User" },
+                  ].map((tier) => (
+                    <button
+                      key={tier.id}
+                      type="button"
+                      onClick={() => setRadarLevelFilter(tier.id)}
+                      className={`rounded px-1.5 py-0.5 text-[0.65rem] font-semibold transition-colors ${
+                        radarLevelFilter === tier.id
+                          ? "bg-primary text-primary-foreground font-bold shadow-xs"
+                          : "bg-surface-2 text-muted-foreground hover:bg-surface-3 hover:text-foreground"
+                      }`}
+                    >
+                      {tier.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -1496,6 +1529,11 @@ export function AutoPricingBotPanel({
             {Object.keys(disqualificationStats).length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[0.68rem]">
                 <span className="text-muted-foreground font-medium">Alasan Eliminasi:</span>
+                {disqualificationStats.MERCHANT_LEVEL_FILTERED && (
+                  <Badge variant="outline" className="h-5 px-1.5 text-[0.62rem] border-amber-500/40 text-amber-500 bg-amber-500/10 font-semibold">
+                    Level Terfilter ({disqualificationStats.MERCHANT_LEVEL_FILTERED})
+                  </Badge>
+                )}
                 {disqualificationStats.USDT_TOO_LOW && (
                   <Badge variant="outline" className="h-5 px-1.5 text-[0.62rem] border-amber-500/30 text-amber-500">
                     Stok &lt; Min ({disqualificationStats.USDT_TOO_LOW})
@@ -1601,8 +1639,30 @@ export function AutoPricingBotPanel({
                           <td className="p-2">
                             <div className="flex items-center gap-1.5 flex-wrap">
                               <span className="font-semibold text-foreground">{item.ad.merchant_name}</span>
-                              {item.ad.is_verified && (
-                                <span className="size-1.5 rounded-full bg-amber-400" title="Verified Merchant" />
+                              {item.ad.merchant_level === "gold" && (
+                                <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/20 border border-amber-500/50 px-1 py-0.2 text-[0.6rem] font-bold text-amber-300 shadow-xs" title="Gold Merchant (VIP 3 / Volume > 60 BTC)">
+                                  🥇 Gold
+                                </span>
+                              )}
+                              {item.ad.merchant_level === "silver" && (
+                                <span className="inline-flex items-center gap-0.5 rounded bg-slate-400/20 border border-slate-300/50 px-1 py-0.2 text-[0.6rem] font-bold text-slate-200" title="Silver Merchant (VIP 2 / Volume > 6 BTC)">
+                                  🥈 Silver
+                                </span>
+                              )}
+                              {item.ad.merchant_level === "bronze" && (
+                                <span className="inline-flex items-center gap-0.5 rounded bg-amber-800/20 border border-amber-700/50 px-1 py-0.2 text-[0.6rem] font-bold text-amber-500" title="Bronze Merchant (VIP 1 / Verified Merchant)">
+                                  🥉 Bronze
+                                </span>
+                              )}
+                              {item.ad.merchant_level === "regular" && !item.ad.is_verified && (
+                                <span className="inline-flex items-center gap-0.5 rounded bg-surface-2 border border-border px-1 py-0.2 text-[0.58rem] font-medium text-muted-foreground" title="Regular User (Non-Merchant)">
+                                  👤 User
+                                </span>
+                              )}
+                              {item.ad.is_pro && (
+                                <span className="rounded bg-primary/20 border border-primary/40 px-1 py-0.2 text-[0.55rem] font-bold tracking-wider text-primary uppercase">
+                                  PRO
+                                </span>
                               )}
                               {isTarget && (
                                 <Badge variant="default" className="text-[0.62rem] h-4 px-1 bg-primary text-primary-foreground font-bold">
@@ -2080,6 +2140,137 @@ export function AutoPricingBotPanel({
                       ))}
                     </div>
                   </div>
+                </div>
+              </div>
+
+              {/* Filter Level Merchant (Gold, Silver, Bronze, Regular) */}
+              <div className="rounded-lg border border-border/70 bg-surface-2/40 p-3 space-y-2.5">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <Label className="text-xs font-semibold text-foreground">
+                        Filter Level Merchant (Tier)
+                      </Label>
+                      <span className="text-[0.65rem] text-primary font-medium">
+                        ({(config.allowedMerchantLevels ?? ["gold", "silver", "bronze", "regular"]).length} dari 4 aktif)
+                      </span>
+                    </div>
+                    <p className="text-[0.68rem] text-muted-foreground">
+                      Pilih level merchant yang diperbolehkan menjadi acuan bot. Iklan dari level yang dimatikan akan otomatis diabaikan.
+                    </p>
+                  </div>
+
+                  {/* Preset Cepat */}
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <span className="text-[0.65rem] text-muted-foreground mr-1">Preset:</span>
+                    <button
+                      type="button"
+                      onClick={() => updateConfig({ allowedMerchantLevels: ["gold", "silver", "bronze", "regular"] })}
+                      className="rounded border border-border/60 bg-surface-2 px-1.5 py-0.5 text-[0.62rem] font-semibold text-muted-foreground hover:text-foreground hover:bg-surface-3 transition-colors"
+                    >
+                      Semua
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateConfig({ allowedMerchantLevels: ["gold", "silver", "bronze"] })}
+                      className="rounded border border-border/60 bg-surface-2 px-1.5 py-0.5 text-[0.62rem] font-semibold text-amber-500 hover:bg-surface-3 transition-colors"
+                    >
+                      Merchant Saja
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateConfig({ allowedMerchantLevels: ["gold", "silver"] })}
+                      className="rounded border border-border/60 bg-surface-2 px-1.5 py-0.5 text-[0.62rem] font-semibold text-primary hover:bg-surface-3 transition-colors"
+                    >
+                      Gold & Silver
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateConfig({ allowedMerchantLevels: ["gold"] })}
+                      className="rounded border border-border/60 bg-surface-2 px-1.5 py-0.5 text-[0.62rem] font-semibold text-amber-400 hover:bg-surface-3 transition-colors"
+                    >
+                      Gold Saja
+                    </button>
+                  </div>
+                </div>
+
+                {/* Grid 4 Level Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {[
+                    {
+                      id: "gold" as const,
+                      name: "Gold Merchant",
+                      badge: "🥇 Gold",
+                      desc: "VIP 3 / Vol >60 BTC / 98%+",
+                      activeBorder: "border-amber-500 bg-amber-500/15",
+                    },
+                    {
+                      id: "silver" as const,
+                      name: "Silver Merchant",
+                      badge: "🥈 Silver",
+                      desc: "VIP 2 / Vol >6 BTC / 98%+",
+                      activeBorder: "border-slate-300 bg-slate-300/15",
+                    },
+                    {
+                      id: "bronze" as const,
+                      name: "Bronze Merchant",
+                      badge: "🥉 Bronze",
+                      desc: "VIP 1 / Verified Merchant",
+                      activeBorder: "border-amber-600 bg-amber-600/15",
+                    },
+                    {
+                      id: "regular" as const,
+                      name: "Regular User",
+                      badge: "👤 Regular",
+                      desc: "Retail / User tanpa badge",
+                      activeBorder: "border-foreground/50 bg-surface-3",
+                    },
+                  ].map((tier) => {
+                    const currentLevels = config.allowedMerchantLevels ?? ["gold", "silver", "bronze", "regular"];
+                    const isSelected = currentLevels.includes(tier.id);
+                    return (
+                      <button
+                        key={tier.id}
+                        type="button"
+                        onClick={() => {
+                          let nextLevels: ("gold" | "silver" | "bronze" | "regular")[];
+                          if (isSelected) {
+                            if (currentLevels.length === 1) return;
+                            nextLevels = currentLevels.filter((lvl) => lvl !== tier.id);
+                          } else {
+                            nextLevels = [...currentLevels, tier.id];
+                          }
+                          updateConfig({ allowedMerchantLevels: nextLevels });
+                        }}
+                        className={`flex flex-col text-left p-2 rounded-md border transition-all ${
+                          isSelected
+                            ? `${tier.activeBorder} ring-1 ring-primary/40`
+                            : "border-border/50 bg-surface-1/50 opacity-50 hover:opacity-80"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between w-full mb-1">
+                          <span className="font-semibold text-xs text-foreground flex items-center gap-1">
+                            {tier.badge}
+                          </span>
+                          <span
+                            className={`size-3 rounded-full border flex items-center justify-center text-[0.55rem] ${
+                              isSelected
+                                ? "bg-primary border-primary text-primary-foreground font-bold"
+                                : "border-border bg-surface-2"
+                            }`}
+                          >
+                            {isSelected ? "✓" : ""}
+                          </span>
+                        </div>
+                        <span className="text-[0.65rem] text-muted-foreground font-medium leading-tight">
+                          {tier.name}
+                        </span>
+                        <span className="text-[0.58rem] text-muted-foreground/80 mt-0.5">
+                          {tier.desc}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </TabsContent>
