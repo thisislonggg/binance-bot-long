@@ -319,13 +319,13 @@ export async function binanceAgentRequest<T = unknown>(options: {
       );
       let friendlyMsg = errMsg;
       if (code === "-1002") {
-        friendlyMsg = "Iklan tidak ditemukan atau bukan milik akun API Key Anda (-1002).";
+        friendlyMsg = `Iklan tidak ditemukan atau bukan milik akun API Key Anda (-1002): ${errMsg}`;
       } else if (code === "-2015" || errMsg.includes("API-key")) {
-        friendlyMsg = "API Key tidak valid, IP belum terdaftar di whitelist, atau izin C2C belum aktif (-2015).";
+        friendlyMsg = `API Key tidak valid, IP belum terdaftar di whitelist, atau izin C2C belum aktif (-2015): ${errMsg}`;
       } else if (code === "-1022") {
-        friendlyMsg = "Signature verification failed (-1022). Pastikan Secret Key benar dan jam tersinkron.";
+        friendlyMsg = `Signature verification failed (-1022). Pastikan Secret Key benar dan jam tersinkron: ${errMsg}`;
       } else if (code === "-9000") {
-        friendlyMsg = "Parameter iklan tidak valid (-9000). Binance mengharuskan update objek lengkap (full-object).";
+        friendlyMsg = `Parameter iklan tidak valid (-9000): ${errMsg}`;
       }
 
       return {
@@ -442,6 +442,111 @@ export const getMerchantAdsList = createServerFn({ method: "POST" })
     return res;
   });
 
+// ── Helper Pengambilan Objek Iklan Multi-Tier ────────────────────────────────
+
+/**
+ * Mengambil objek iklan lengkap dari Binance melalui beberapa jalur endpoint resmi.
+ * Diperlukan agar update iklan memiliki seluruh parameter valid (full-object).
+ */
+async function fetchAdDetailRobustly(
+  advNo: string,
+  credentials?: { apiKeyOverride?: string; apiSecretOverride?: string }
+): Promise<Record<string, unknown> | null> {
+  const cleanAdvNo = advNo.trim();
+
+  // Jalur 1: POST /sapi/v1/c2c/agent/ads/getDetailByNo dengan query param advNo (tanpa body)
+  try {
+    const res1 = await binanceAgentRequest<Record<string, unknown>>({
+      endpoint: "/sapi/v1/c2c/agent/ads/getDetailByNo",
+      method: "POST",
+      queryParams: { advNo: cleanAdvNo },
+      ...credentials,
+    });
+    if (res1.ok && res1.data && typeof res1.data === "object" && !Array.isArray(res1.data)) {
+      return res1.data;
+    }
+  } catch {
+    // Lanjut ke jalur berikutnya
+  }
+
+  // Jalur 2: POST /sapi/v1/c2c/agent/ads/getDetailByNo dengan JSON body { advNo }
+  try {
+    const res2 = await binanceAgentRequest<Record<string, unknown>>({
+      endpoint: "/sapi/v1/c2c/agent/ads/getDetailByNo",
+      method: "POST",
+      body: { advNo: cleanAdvNo },
+      ...credentials,
+    });
+    if (res2.ok && res2.data && typeof res2.data === "object" && !Array.isArray(res2.data)) {
+      return res2.data;
+    }
+  } catch {
+    // Lanjut ke jalur berikutnya
+  }
+
+  // Jalur 3: POST /sapi/v1/c2c/agent/ads/listWithPagination (cari iklan di daftar akun)
+  try {
+    const res3 = await binanceAgentRequest<{ data?: unknown[]; total?: number } | unknown[]>({
+      endpoint: "/sapi/v1/c2c/agent/ads/listWithPagination",
+      method: "POST",
+      body: { page: 1, rows: 50 },
+      ...credentials,
+    });
+    if (res3.ok && res3.data) {
+      const list = Array.isArray(res3.data)
+        ? res3.data
+        : Array.isArray((res3.data as Record<string, unknown>)["data"])
+        ? ((res3.data as Record<string, unknown>)["data"] as unknown[])
+        : [];
+      const found = list.find(
+        (item: unknown) =>
+          typeof item === "object" && item !== null && String((item as Record<string, unknown>)["advNo"]) === cleanAdvNo
+      );
+      if (found) return found as Record<string, unknown>;
+    }
+  } catch {
+    // Lanjut ke jalur berikutnya
+  }
+
+  // Jalur 4: GET /sapi/v1/c2c/ads/list
+  try {
+    const res4 = await binanceMerchantRequest<Record<string, unknown>[]>({
+      endpoint: "/sapi/v1/c2c/ads/list",
+      method: "GET",
+      params: { page: 1, rows: 50 },
+      ...credentials,
+    });
+    if (res4.ok && Array.isArray(res4.data)) {
+      const found = res4.data.find(
+        (item) => item && typeof item === "object" && String(item["advNo"]) === cleanAdvNo
+      );
+      if (found) return found;
+    }
+  } catch {
+    // Lanjut ke jalur berikutnya
+  }
+
+  // Jalur 5: GET /sapi/v1/c2c/orderMatch/getUserAdvList
+  try {
+    const res5 = await binanceMerchantRequest<Record<string, unknown>[]>({
+      endpoint: "/sapi/v1/c2c/orderMatch/getUserAdvList",
+      method: "GET",
+      params: { page: 1, rows: 50 },
+      ...credentials,
+    });
+    if (res5.ok && Array.isArray(res5.data)) {
+      const found = res5.data.find(
+        (item) => item && typeof item === "object" && String(item["advNo"]) === cleanAdvNo
+      );
+      if (found) return found;
+    }
+  } catch {
+    // Abaikan jika tidak ditemukan
+  }
+
+  return null;
+}
+
 // ── 2. Update Harga, Stok, & Limit Iklan (Protokol Binance Skill 2-Step) ─────
 
 const updateAdInputSchema = z.object({
@@ -475,207 +580,224 @@ export const updateMerchantAd = createServerFn({ method: "POST" })
     // =========================================================================
     // PROTOKOL UTAMA: Binance P2P Skill Agent SAPI (Full-Object Update)
     // Sesuai dokumentasi https://www.binance.com/en/skills/detail/binance/p2p
-    // Step 1: POST /sapi/v1/c2c/agent/ads/getDetailByNo?advNo={advNo}
-    // Step 2: Merge perubahan (harga, stok, max limit) ke objek iklan utuh
-    // Step 3: POST /sapi/v1/c2c/agent/ads/update dengan full object JSON
+    // Step 1: Ambil data iklan utuh via fetchAdDetailRobustly
+    // Step 2: Hitung cap limit & sanitasi tradeMethods (hapus field non-standar)
+    // Step 3: Kirim update via POST /sapi/v1/c2c/agent/ads/update (JSON body)
     // =========================================================================
 
-    const detailRes = await binanceAgentRequest<Record<string, unknown>>({
-      endpoint: "/sapi/v1/c2c/agent/ads/getDetailByNo",
-      method: "POST",
-      queryParams: { advNo },
-      body: { advNo },
-    });
+    const existingAd = await fetchAdDetailRobustly(advNo);
 
-    if (detailRes.ok && detailRes.data && typeof detailRes.data === "object" && !Array.isArray(detailRes.data)) {
-      const existingAd = detailRes.data;
+    // Tentukan tradeType: 0 = BUY, 1 = SELL
+    let isBuy = true;
+    if (existingAd) {
+      const tt = existingAd["tradeType"];
+      if (tt === "SELL" || tt === 1 || tt === "1") {
+        isBuy = false;
+      }
+    }
 
-      // Merge perubahan ke objek utuh yang dikembalikan Binance
-      const mergedPayload: Record<string, unknown> = {
-        ...existingAd,
+    // Hitung initAmount (stok USDT)
+    let initAmount: number | undefined = undefined;
+    if (data.amount && data.amount > 0) {
+      initAmount = Math.floor(data.amount * 100) / 100;
+    } else if (existingAd) {
+      const rawAmt = existingAd["initAmount"] ?? existingAd["amount"] ?? existingAd["surplusAmount"];
+      if (rawAmt !== undefined && rawAmt !== null && Number(rawAmt) > 0) {
+        initAmount = Math.floor(Number(rawAmt) * 100) / 100;
+      }
+    }
+
+    // Hitung limit transaksi min & max IDR
+    let minLimit: number | undefined =
+      data.minSingleTransAmount && data.minSingleTransAmount > 0
+        ? Math.round(data.minSingleTransAmount)
+        : existingAd?.["minSingleTransAmount"]
+        ? Math.round(Number(existingAd["minSingleTransAmount"]))
+        : undefined;
+
+    let maxLimit: number | undefined =
+      data.maxSingleTransAmount && data.maxSingleTransAmount > 0
+        ? Math.round(data.maxSingleTransAmount)
+        : existingAd?.["maxSingleTransAmount"]
+        ? Math.round(Number(existingAd["maxSingleTransAmount"]))
+        : undefined;
+
+    // VALIDASI KRUSIAL BINANCE:
+    // maxSingleTransAmount TIDAK BOLEH melebihi total kapasitas fiat iklan (initAmount * price)!
+    // Jika melebihi, Binance backend akan otomatis melempar error -9000 (ILLEGAL_PARAMETERS)!
+    if (initAmount && initAmount > 0 && newPrice > 0) {
+      const totalFiatCap = Math.floor(initAmount * newPrice);
+      if (maxLimit !== undefined && maxLimit > totalFiatCap) {
+        maxLimit = totalFiatCap;
+      }
+      if (minLimit !== undefined && maxLimit !== undefined && minLimit > maxLimit) {
+        minLimit = Math.min(minLimit, maxLimit);
+      }
+    }
+
+    // Sanitasi tradeMethods: HANYA kirim identifier (untuk BUY) atau payId (untuk SELL)
+    // HAPUS properti non-standar seperti tradeMethodName / iconUrlColor yang ditolak serializer Binance!
+    let sanitizedTradeMethods: Record<string, unknown>[] | undefined = undefined;
+    if (existingAd?.["tradeMethods"] && Array.isArray(existingAd["tradeMethods"])) {
+      sanitizedTradeMethods = existingAd["tradeMethods"]
+        .map((m: unknown) => {
+          if (!m || typeof m !== "object") return null;
+          const raw = m as Record<string, unknown>;
+          const item: Record<string, unknown> = {};
+          if (raw["identifier"]) item["identifier"] = String(raw["identifier"]);
+          if (raw["payId"]) item["payId"] = Number(raw["payId"]);
+          if (raw["payType"]) item["payType"] = String(raw["payType"]);
+          return item;
+        })
+        .filter(
+          (item): item is Record<string, unknown> =>
+            item !== null && (item["identifier"] !== undefined || item["payId"] !== undefined)
+        );
+    }
+
+    // Fungsi pembuat payload Agent SAPI yang terstandarisasi tanpa field read-only
+    const buildAgentPayload = (tradeTypeVal: string | number, includeLimits: boolean) => {
+      const p: Record<string, unknown> = {
         advNo,
+        tradeType: tradeTypeVal,
+        asset: existingAd?.["asset"] ? String(existingAd["asset"]) : "USDT",
+        fiatUnit: existingAd?.["fiatUnit"] ? String(existingAd["fiatUnit"]) : "IDR",
+        priceType: existingAd?.["priceType"] ? Number(existingAd["priceType"]) : 1,
         price: newPrice,
       };
 
-      if (data.amount && data.amount > 0) {
-        mergedPayload["initAmount"] = Math.floor(data.amount * 100) / 100;
-      }
-      if (data.minSingleTransAmount && data.minSingleTransAmount > 0) {
-        mergedPayload["minSingleTransAmount"] = Math.round(data.minSingleTransAmount);
-      }
-      if (data.maxSingleTransAmount && data.maxSingleTransAmount > 0) {
-        mergedPayload["maxSingleTransAmount"] = Math.round(data.maxSingleTransAmount);
-      }
-
-      // Step 3: Kirim full-object update ke Agent SAPI
-      const agentUpdateRes = await binanceAgentRequest({
-        endpoint: "/sapi/v1/c2c/agent/ads/update",
-        method: "POST",
-        body: mergedPayload,
-      });
-
-      if (agentUpdateRes.ok) {
-        return {
-          ok: true,
-          code: "000000",
-          message: `Iklan #${advNo} berhasil diupdate via Binance Agent SAPI ke Rp ${newPrice.toLocaleString("id-ID")}`,
-          data: agentUpdateRes.data,
-          timestamp: Date.now(),
-        };
+      if (includeLimits) {
+        if (initAmount && initAmount > 0) p["initAmount"] = initAmount;
+        if (minLimit && minLimit > 0) p["minSingleTransAmount"] = minLimit;
+        if (maxLimit && maxLimit > 0) p["maxSingleTransAmount"] = maxLimit;
+      } else if (existingAd) {
+        // Pertahankan nilai limit aktif asli dari Binance
+        if (existingAd["initAmount"]) p["initAmount"] = Number(existingAd["initAmount"]);
+        if (existingAd["minSingleTransAmount"]) p["minSingleTransAmount"] = Number(existingAd["minSingleTransAmount"]);
+        if (existingAd["maxSingleTransAmount"]) p["maxSingleTransAmount"] = Number(existingAd["maxSingleTransAmount"]);
       }
 
-      // Jika format tradeType (misal "BUY" vs 0) ditolak downstream, coba normalisasi tradeType
-      if (mergedPayload["tradeType"] === "BUY" || mergedPayload["tradeType"] === "SELL") {
-        const retryPayload = {
-          ...mergedPayload,
-          tradeType: mergedPayload["tradeType"] === "BUY" ? 0 : 1,
-        };
-        const retryRes = await binanceAgentRequest({
-          endpoint: "/sapi/v1/c2c/agent/ads/update",
-          method: "POST",
-          body: retryPayload,
-        });
-        if (retryRes.ok) {
-          return {
-            ok: true,
-            code: "000000",
-            message: `Iklan #${advNo} berhasil diupdate via Binance Agent SAPI ke Rp ${newPrice.toLocaleString("id-ID")}`,
-            data: retryRes.data,
-            timestamp: Date.now(),
-          };
-        }
+      if (sanitizedTradeMethods && sanitizedTradeMethods.length > 0) {
+        p["tradeMethods"] = sanitizedTradeMethods;
       }
 
-      // Coba juga payload terfilter hanya field valid update (membersihkan field read-only seperti surplusAmount)
-      const allowedUpdateKeys = [
-        "advNo", "tradeType", "asset", "fiatUnit", "priceType",
-        "priceFloatingRatio", "rateFloatingRatio", "price", "initAmount",
-        "maxSingleTransAmount", "minSingleTransAmount", "buyerKycLimit",
-        "buyerRegDaysLimit", "buyerBtcPositionLimit", "remarks", "autoReplyMsg",
-        "payTimeLimit", "tradeMethods", "advStatus", "takerAdditionalKycRequired",
-        "launchCountry"
-      ];
-      const cleanUpdatePayload: Record<string, unknown> = {};
-      for (const key of allowedUpdateKeys) {
-        if (mergedPayload[key] !== undefined) {
-          cleanUpdatePayload[key] = mergedPayload[key];
-        }
-      }
-      const cleanRes = await binanceAgentRequest({
-        endpoint: "/sapi/v1/c2c/agent/ads/update",
-        method: "POST",
-        body: cleanUpdatePayload,
-      });
-      if (cleanRes.ok) {
-        return {
-          ok: true,
-          code: "000000",
-          message: `Iklan #${advNo} berhasil diupdate via Binance Agent SAPI ke Rp ${newPrice.toLocaleString("id-ID")}`,
-          data: cleanRes.data,
-          timestamp: Date.now(),
-        };
-      }
-    }
+      if (existingAd?.["payTimeLimit"]) p["payTimeLimit"] = Number(existingAd["payTimeLimit"]);
+      if (existingAd?.["remarks"]) p["remarks"] = String(existingAd["remarks"]);
+      if (existingAd?.["autoReplyMsg"]) p["autoReplyMsg"] = String(existingAd["autoReplyMsg"]);
+      if (existingAd?.["buyerKycLimit"] !== undefined) p["buyerKycLimit"] = Number(existingAd["buyerKycLimit"]);
+      if (existingAd?.["buyerRegDaysLimit"] !== undefined) p["buyerRegDaysLimit"] = Number(existingAd["buyerRegDaysLimit"]);
+      if (existingAd?.["buyerBtcPositionLimit"] !== undefined) p["buyerBtcPositionLimit"] = Number(existingAd["buyerBtcPositionLimit"]);
+      if (existingAd?.["takerAdditionalKycRequired"] !== undefined) p["takerAdditionalKycRequired"] = Number(existingAd["takerAdditionalKycRequired"]);
+      if (existingAd?.["advStatus"] !== undefined) p["advStatus"] = Number(existingAd["advStatus"]);
 
-    // =========================================================================
-    // FALLBACK 1: Direct JSON update ke /sapi/v1/c2c/agent/ads/update
-    // =========================================================================
-    const directAgentPayload: Record<string, unknown> = {
-      advNo,
-      price: newPrice,
-      priceType: data.priceType ?? 1,
+      return p;
     };
-    if (data.amount && data.amount > 0) {
-      directAgentPayload["initAmount"] = Math.floor(data.amount * 100) / 100;
-    }
-    if (data.minSingleTransAmount && data.minSingleTransAmount > 0) {
-      directAgentPayload["minSingleTransAmount"] = Math.round(data.minSingleTransAmount);
-    }
-    if (data.maxSingleTransAmount && data.maxSingleTransAmount > 0) {
-      directAgentPayload["maxSingleTransAmount"] = Math.round(data.maxSingleTransAmount);
-    }
 
-    const directAgentRes = await binanceAgentRequest({
+    let lastError: MerchantApiResponse | null = null;
+
+    // Percobaan 1: Agent SAPI Full Object dengan tradeType enum numerik 0 / 1 (Rekomendasi spesifikasi Binance)
+    const payload1 = buildAgentPayload(isBuy ? 0 : 1, true);
+    const res1 = await binanceAgentRequest({
       endpoint: "/sapi/v1/c2c/agent/ads/update",
       method: "POST",
-      body: directAgentPayload,
+      body: payload1,
     });
-
-    if (directAgentRes.ok) {
+    if (res1.ok) {
       return {
         ok: true,
         code: "000000",
-        message: `Iklan #${advNo} berhasil diupdate via Binance Agent SAPI ke Rp ${newPrice.toLocaleString("id-ID")}`,
-        data: directAgentRes.data,
+        message: `Iklan #${advNo} berhasil diupdate ke Rp ${newPrice.toLocaleString("id-ID")}${initAmount ? ` | Stok: ${initAmount} USDT` : ""}${maxLimit ? ` | Max: Rp ${maxLimit.toLocaleString("id-ID")}` : ""}`,
+        data: res1.data,
         timestamp: Date.now(),
       };
     }
+    lastError = res1;
 
-    // =========================================================================
-    // FALLBACK 2: Standard Binance Merchant API (/sapi/v1/c2c/ads/update)
-    // =========================================================================
-    const fullParams: Record<string, string | number> = {
+    // Percobaan 2: Agent SAPI Full Object dengan tradeType string 'BUY' / 'SELL'
+    const payload2 = buildAgentPayload(isBuy ? "BUY" : "SELL", true);
+    const res2 = await binanceAgentRequest({
+      endpoint: "/sapi/v1/c2c/agent/ads/update",
+      method: "POST",
+      body: payload2,
+    });
+    if (res2.ok) {
+      return {
+        ok: true,
+        code: "000000",
+        message: `Iklan #${advNo} berhasil diupdate ke Rp ${newPrice.toLocaleString("id-ID")}${initAmount ? ` | Stok: ${initAmount} USDT` : ""}${maxLimit ? ` | Max: Rp ${maxLimit.toLocaleString("id-ID")}` : ""}`,
+        data: res2.data,
+        timestamp: Date.now(),
+      };
+    }
+    lastError = res2;
+
+    // Percobaan 3: Agent SAPI - HANYA UBAH HARGA (mempertahankan limit & stok aktif Binance)
+    // Di Binance P2P, jika iklan sedang aktif ada pesanan masuk, Binance menolak perubahan stok/limit tapi mengizinkan perubahan harga!
+    const payload3 = buildAgentPayload(isBuy ? 0 : 1, false);
+    const res3 = await binanceAgentRequest({
+      endpoint: "/sapi/v1/c2c/agent/ads/update",
+      method: "POST",
+      body: payload3,
+    });
+    if (res3.ok) {
+      return {
+        ok: true,
+        code: "000000",
+        message: `Harga iklan #${advNo} berhasil diupdate ke Rp ${newPrice.toLocaleString("id-ID")} via Binance Agent SAPI! (Stok & limit aktif iklan dipertahankan).`,
+        data: res3.data,
+        timestamp: Date.now(),
+      };
+    }
+    lastError = res3;
+
+    // Percobaan 4: Fallback ke Legacy SAPI (/sapi/v1/c2c/ads/update)
+    const legacyParams: Record<string, string | number> = {
       advNo,
       price: newPrice,
-      priceType: data.priceType ?? 1,
+      priceType: 1,
     };
-
-    if (data.amount && data.amount > 0) {
-      fullParams["initAmount"] = Math.floor(data.amount * 100) / 100;
-      fullParams["amount"] = Math.floor(data.amount * 100) / 100;
+    if (initAmount && initAmount > 0) {
+      legacyParams["initAmount"] = initAmount;
+      legacyParams["amount"] = initAmount;
     }
-
-    if (data.minSingleTransAmount && data.minSingleTransAmount > 0) {
-      fullParams["minSingleTransAmount"] = Math.round(data.minSingleTransAmount);
-    }
-
-    if (data.maxSingleTransAmount && data.maxSingleTransAmount > 0) {
-      fullParams["maxSingleTransAmount"] = Math.round(data.maxSingleTransAmount);
-    }
-
-    if (data.payMethods && data.payMethods.length > 0) {
-      fullParams["payMethods"] = JSON.stringify(data.payMethods);
-    }
+    if (minLimit && minLimit > 0) legacyParams["minSingleTransAmount"] = minLimit;
+    if (maxLimit && maxLimit > 0) legacyParams["maxSingleTransAmount"] = maxLimit;
 
     const legacyRes = await binanceMerchantRequest({
       endpoint: "/sapi/v1/c2c/ads/update",
       method: "POST",
-      params: fullParams,
+      params: legacyParams,
     });
-
     if (legacyRes.ok) {
       return legacyRes;
     }
 
-    // Fallback harga saja pada legacy
-    if (data.amount || data.maxSingleTransAmount) {
-      const priceOnlyRes = await binanceMerchantRequest({
-        endpoint: "/sapi/v1/c2c/ads/update",
-        method: "POST",
-        params: {
-          advNo,
-          price: newPrice,
-        },
-      });
-      if (priceOnlyRes.ok) {
-        return {
-          ...priceOnlyRes,
-          message: `Harga iklan #${advNo} berhasil diupdate ke Rp ${newPrice.toLocaleString("id-ID")}. (Catatan: Stok & limit disesuaikan via Binance Web/App).`,
-        };
-      }
+    // Percobaan 5: Fallback Legacy Harga Saja
+    const legacyPriceOnly = await binanceMerchantRequest({
+      endpoint: "/sapi/v1/c2c/ads/update",
+      method: "POST",
+      params: {
+        advNo,
+        price: newPrice,
+      },
+    });
+    if (legacyPriceOnly.ok) {
+      return {
+        ...legacyPriceOnly,
+        message: `Harga iklan #${advNo} berhasil diupdate ke Rp ${newPrice.toLocaleString("id-ID")}.`,
+      };
     }
 
-    // Jika semua cara gagal, kembalikan pesan error yang paling informatif
-    const primaryError = detailRes.ok ? directAgentRes : detailRes;
+    // Kembalikan error terperinci dari Binance
     return {
       ok: false,
-      code: primaryError.code || legacyRes.code || "-1000",
-      error: primaryError.error || legacyRes.error,
+      code: lastError?.code || legacyRes.code || "-9000",
+      error: lastError?.error || legacyRes.error,
       message:
-        primaryError.message ||
+        lastError?.message ||
         legacyRes.message ||
-        "Gagal mengupdate iklan Binance. Pastikan nomor advNo benar dan izin API Key mencukupi.",
-      data: primaryError.data || legacyRes.data,
+        "Gagal mengupdate iklan Binance. Periksa pengaturan advNo dan batas limit iklan.",
+      data: lastError?.data || legacyRes.data,
       timestamp: Date.now(),
     };
   });
