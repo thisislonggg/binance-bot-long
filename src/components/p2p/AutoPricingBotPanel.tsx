@@ -43,6 +43,9 @@ import {
   Key,
   Send,
   Terminal,
+  Wallet,
+  PiggyBank,
+  Coins,
 } from "lucide-react";
 import { useServerFn } from "@tanstack/react-start";
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -92,6 +95,9 @@ interface AutoPricingBotPanelProps {
   fairPrice: number;
   stockHpp?: number;
   bankBalanceIdr?: number;
+  initialCapitalIdr?: number;
+  liveStockUsdt?: number;
+  stockCapitalIdr?: number;
   sessionToken?: string | null;
   onApplyPrice?: (payload: {
     buyPrice: number;
@@ -110,6 +116,9 @@ export function AutoPricingBotPanel({
   fairPrice,
   stockHpp = 0,
   bankBalanceIdr = 0,
+  initialCapitalIdr = 0,
+  liveStockUsdt = 0,
+  stockCapitalIdr = 0,
   sessionToken,
   onApplyPrice,
   onRefresh,
@@ -250,8 +259,21 @@ export function AutoPricingBotPanel({
       stockHpp,
       fairPrice,
       bankBalanceIdr,
+      initialCapitalIdr,
+      liveStockUsdt,
+      stockCapitalIdr,
     });
-  }, [sellRefAds, buyRefAds, config, stockHpp, fairPrice, bankBalanceIdr]);
+  }, [
+    sellRefAds,
+    buyRefAds,
+    config,
+    stockHpp,
+    fairPrice,
+    bankBalanceIdr,
+    initialCapitalIdr,
+    liveStockUsdt,
+    stockCapitalIdr,
+  ]);
 
   const {
     recommendedSellPrice,
@@ -639,24 +661,71 @@ export function AutoPricingBotPanel({
                 </div>
               </div>
 
+              {/* Pantauan Live Stock USDT & Pengurangan Modal */}
+              {bankAllocation.liveStockUsdt > 0 && (
+                <div className="rounded-md border border-amber-500/35 bg-amber-500/10 p-2.5 space-y-1.5 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-amber-500 flex items-center gap-1.5 text-[0.72rem]">
+                      <Wallet className="size-3.5" /> Live Stock USDT Terpantau
+                    </span>
+                    <Badge variant="outline" className="border-amber-500/40 bg-amber-500/20 text-amber-400 font-bold text-[0.62rem]">
+                      {bankAllocation.liveStockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT
+                    </Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[0.68rem] pt-0.5">
+                    <div className="text-muted-foreground">
+                      Nilai Terikat: <strong className="text-foreground">{fmtRp(bankAllocation.stockCapitalValuationIdr)}</strong>
+                    </div>
+                    <div className="text-right text-muted-foreground">
+                      Total Modal: <strong className="text-foreground">{fmtRp(bankAllocation.totalBudgetIdr)}</strong>
+                    </div>
+                  </div>
+                  <div className="text-[0.62rem] text-amber-600 dark:text-amber-400 border-t border-amber-500/20 pt-1 flex items-center justify-between">
+                    <span>
+                      {config.deductLiveStockFromBudget !== false
+                        ? `✓ Modal beli otomatis dipotong Rp ${bankAllocation.stockCapitalValuationIdr.toLocaleString("id-ID")}`
+                        : "✕ Pemotongan modal dari stok dinonaktifkan"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => updateConfig({ deductLiveStockFromBudget: !config.deductLiveStockFromBudget })}
+                      className="underline font-semibold hover:text-foreground text-[0.6rem]"
+                    >
+                      {config.deductLiveStockFromBudget !== false ? "Nonaktifkan" : "Aktifkan"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Alert jika seluruh modal terserap di stok */}
+              {bankAllocation.usableBankIdr === 0 && bankAllocation.liveStockUsdt > 0 && (
+                <div className="rounded-md border border-amber-500/40 bg-amber-500/15 p-2 space-y-1 text-[0.7rem]">
+                  <div className="flex items-center gap-1 text-amber-500 font-semibold">
+                    <AlertTriangle className="size-3 shrink-0" />
+                    <span>Modal Beli Terserap di Stok USDT</span>
+                  </div>
+                  <p className="text-[0.65rem] text-muted-foreground leading-relaxed">
+                    Seluruh modal Anda ({fmtRp(bankAllocation.totalBudgetIdr)}) saat ini terikat di {bankAllocation.liveStockUsdt.toLocaleString("id-ID")} USDT. Jual stok via Iklan Jual (Maker Sell) sebelum menambah pembelian baru.
+                  </p>
+                </div>
+              )}
+
               {/* Detail Sisa Saldo & Kalkulasi Stok */}
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="rounded-md border border-border/60 bg-surface-2/80 p-2 space-y-0.5">
-                  <div className="text-[0.65rem] text-muted-foreground">Sisa Uang di Bank:</div>
+                  <div className="text-[0.65rem] text-muted-foreground">Sisa Modal Siap Beli:</div>
                   <div className="num font-bold text-foreground truncate" title={fmtRp(bankAllocation.usableBankIdr)}>
-                    {bankAllocation.effectiveBankBalance > 0
+                    {bankAllocation.usableBankIdr > 0
                       ? fmtRp(bankAllocation.usableBankIdr)
                       : "Rp 0"}
                   </div>
-                  {config.bankReserveBufferIdr > 0 && (
-                    <div className="text-[0.6rem] text-muted-foreground truncate">
-                      Buffer simpanan: {fmtRp(config.bankReserveBufferIdr)}
-                    </div>
-                  )}
+                  <div className="text-[0.6rem] text-muted-foreground truncate">
+                    {bankAllocation.totalBudgetIdr > 0 ? `Dari modal ${fmtRp(bankAllocation.totalBudgetIdr)}` : "Sesuai saldo"}
+                  </div>
                 </div>
 
                 <div className="rounded-md border border-bid/40 bg-bid/10 p-2 space-y-0.5">
-                  <div className="text-[0.65rem] text-bid font-medium">Stok USDT Yang Dibeli:</div>
+                  <div className="text-[0.65rem] text-bid font-medium">Stok Iklan Beli:</div>
                   <div className="num font-extrabold text-bid text-sm truncate">
                     {bankAllocation.autoBuyStockUsdt > 0
                       ? `${bankAllocation.autoBuyStockUsdt.toLocaleString("id-ID")} USDT`
@@ -2015,6 +2084,56 @@ export function AutoPricingBotPanel({
                         <p className="text-[0.62rem] text-muted-foreground">
                           Uang minimal yang disisakan di rekening dan tidak dipakai pasang stok beli.
                         </p>
+                      </div>
+                    </div>
+
+                    {/* Pemotongan Modal dari Live Stok USDT */}
+                    <div className="rounded-lg border border-border/70 bg-surface p-3 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="space-y-0.5">
+                          <Label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                            <Wallet className="size-3.5 text-amber-500" />
+                            Otomatis Kurangi Modal dengan Live Stok USDT
+                          </Label>
+                          <p className="text-[0.65rem] text-muted-foreground">
+                            Memotong alokasi uang kas beli jika di akun Anda sudah ada stok USDT berjalan (Funding Wallet / PnL).
+                          </p>
+                        </div>
+                        <Switch
+                          checked={config.deductLiveStockFromBudget !== false}
+                          onCheckedChange={(val) => updateConfig({ deductLiveStockFromBudget: val })}
+                          className="scale-90 data-[state=checked]:bg-bid"
+                        />
+                      </div>
+
+                      {/* Info Live Stok Terpantau */}
+                      <div className="rounded-md border border-border/60 bg-surface-2/80 p-2.5 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                        <div>
+                          <div className="text-[0.65rem] text-muted-foreground">Live Stok USDT:</div>
+                          <div className="num font-bold text-foreground">
+                            {bankAllocation.liveStockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[0.65rem] text-muted-foreground">Nilai Modal Terikat:</div>
+                          <div className="num font-bold text-amber-500">
+                            {fmtRp(bankAllocation.stockCapitalValuationIdr)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[0.65rem] text-muted-foreground">Status Pemotongan:</div>
+                          <div className="font-semibold text-[0.7rem] text-foreground">
+                            {config.deductLiveStockFromBudget !== false && bankAllocation.stockCapitalValuationIdr > 0 ? (
+                              <span className="text-bid flex items-center gap-1">
+                                <CheckCircle2 className="size-3" /> Memotong Kas Beli
+                              </span>
+                            ) : bankAllocation.liveStockUsdt === 0 ? (
+                              <span className="text-muted-foreground">Stok Kosong (0 USDT)</span>
+                            ) : (
+                              <span className="text-muted-foreground">Non-Aktif</span>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     </div>
 

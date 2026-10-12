@@ -59,6 +59,7 @@ export type CompetitorFilterConfig = {
   manualBankBalanceIdr: number;           // Saldo bank manual jika mode manual atau override (misal: 25.000.000)
   bankAllocationPct: number;              // Persentase alokasi saldo bank untuk beli (misal: 100%)
   bankReserveBufferIdr: number;           // Cadangan uang minimal di bank yang tidak boleh dibelanjakan (Rp)
+  deductLiveStockFromBudget: boolean;     // Otomatis kurangi modal beli dengan nilai stok USDT yang sedang dimiliki
 
   // ── Integrasi C2C Merchant API Binance ─────────────────────────────────────
   merchantBuyAdvNo: string;               // Nomor iklan beli di Binance (advNo)
@@ -113,6 +114,7 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   manualBankBalanceIdr: 0,
   bankAllocationPct: 100,
   bankReserveBufferIdr: 0,
+  deductLiveStockFromBudget: true,
 
   merchantBuyAdvNo: "",
   merchantSellAdvNo: "",
@@ -272,6 +274,9 @@ export type CompetitorPricingResult = {
   effectiveHpp: number;
   estimatedNetProfitPerUsdt: number;
   bankAllocation: {
+    totalBudgetIdr: number;
+    liveStockUsdt: number;
+    stockCapitalValuationIdr: number;
     effectiveBankBalance: number;
     usableBankIdr: number;
     autoBuyStockUsdt: number;
@@ -526,6 +531,9 @@ export function computeCompetitorPricing(input: {
   stockHpp: number; // Harga modal stok riil dari PnL / portfolio
   fairPrice: number; // Nilai wajar pasar P2P saat ini
   bankBalanceIdr?: number; // Sisa uang di bank (kas modal PnL atau saldo verifier)
+  initialCapitalIdr?: number; // Total modal awal yang dimasukkan pengguna
+  liveStockUsdt?: number;     // Jumlah stok USDT live saat ini di akun (Funding Wallet / open position)
+  stockCapitalIdr?: number;   // Nilai modal yang sedang terikat di stok USDT
   fallbackSellPrice?: number;
   fallbackBuyPrice?: number;
 }): CompetitorPricingResult {
@@ -536,6 +544,9 @@ export function computeCompetitorPricing(input: {
     stockHpp,
     fairPrice,
     bankBalanceIdr = 0,
+    initialCapitalIdr = 0,
+    liveStockUsdt = 0,
+    stockCapitalIdr,
     fallbackSellPrice = 16_250,
     fallbackBuyPrice = 16_200,
   } = input;
@@ -671,18 +682,43 @@ export function computeCompetitorPricing(input: {
   const spreadPct = recommendedBuyPrice > 0 ? (spreadAbs / recommendedBuyPrice) * 100 : 0;
   const estimatedNetProfitPerUsdt = Math.round((netSellProceeds - netBuyCost) * 100) / 100;
 
-  // 8. Kalkulasi Alokasi Stok Beli Otomatis Sesuai Sisa Uang di Bank
-  const effectiveBankBalance =
-    config.bankBalanceSource === "manual" && config.manualBankBalanceIdr > 0
-      ? config.manualBankBalanceIdr
-      : (bankBalanceIdr > 0
-          ? bankBalanceIdr
-          : config.manualBankBalanceIdr);
+  // 8. Kalkulasi Alokasi Stok Beli Otomatis Sesuai Sisa Uang di Bank & Live Stock USDT
+  const liveStock = Math.max(0, liveStockUsdt);
+  const effectiveValuationPerUsdt =
+    stockHpp > 0
+      ? stockHpp
+      : (fairPrice > 0 ? fairPrice : (recommendedBuyPrice > 0 ? recommendedBuyPrice : 16_850));
+
+  const stockCapitalValuationIdr =
+    stockCapitalIdr !== undefined && stockCapitalIdr > 0
+      ? stockCapitalIdr
+      : Math.round(liveStock * effectiveValuationPerUsdt);
+
+  // Tentukan Total Modal Awal / Budget
+  let baseBudgetIdr = 0;
+  if (config.bankBalanceSource === "manual" && config.manualBankBalanceIdr > 0) {
+    baseBudgetIdr = config.manualBankBalanceIdr;
+  } else if (initialCapitalIdr > 0) {
+    baseBudgetIdr = initialCapitalIdr;
+  } else if (bankBalanceIdr > 0) {
+    baseBudgetIdr = bankBalanceIdr;
+  } else if (config.manualBankBalanceIdr > 0) {
+    baseBudgetIdr = config.manualBankBalanceIdr;
+  }
+
+  // Jika deductLiveStockFromBudget aktif (default true):
+  // Modal Siap Beli = Base Budget - Nilai Modal yang sudah terikat di live stok USDT!
+  let remainingBudgetBeforeAllocation = baseBudgetIdr;
+  if (config.deductLiveStockFromBudget !== false && stockCapitalValuationIdr > 0) {
+    remainingBudgetBeforeAllocation = Math.max(0, baseBudgetIdr - stockCapitalValuationIdr);
+  } else if (config.bankBalanceSource === "auto" && bankBalanceIdr > 0) {
+    remainingBudgetBeforeAllocation = bankBalanceIdr;
+  }
 
   const bankAllocationFraction = Math.min(100, Math.max(1, config.bankAllocationPct || 100)) / 100;
   const usableBankIdr = Math.max(
     0,
-    (effectiveBankBalance - (config.bankReserveBufferIdr || 0)) * bankAllocationFraction,
+    (remainingBudgetBeforeAllocation - (config.bankReserveBufferIdr || 0)) * bankAllocationFraction,
   );
 
   const autoBuyStockUsdt =
@@ -693,7 +729,10 @@ export function computeCompetitorPricing(input: {
   const autoBuyMaxLimitIdr = Math.round(usableBankIdr);
 
   const bankAllocation = {
-    effectiveBankBalance,
+    totalBudgetIdr: baseBudgetIdr,
+    liveStockUsdt: liveStock,
+    stockCapitalValuationIdr,
+    effectiveBankBalance: remainingBudgetBeforeAllocation,
     usableBankIdr,
     autoBuyStockUsdt,
     autoBuyMaxLimitIdr,
@@ -760,6 +799,7 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (typeof merged.manualBankBalanceIdr !== "number") merged.manualBankBalanceIdr = 0;
     if (typeof merged.bankAllocationPct !== "number") merged.bankAllocationPct = 100;
     if (typeof merged.bankReserveBufferIdr !== "number") merged.bankReserveBufferIdr = 0;
+    if (typeof merged.deductLiveStockFromBudget !== "boolean") merged.deductLiveStockFromBudget = true;
     if (typeof merged.merchantBuyAdvNo !== "string") merged.merchantBuyAdvNo = "";
     if (typeof merged.merchantSellAdvNo !== "string") merged.merchantSellAdvNo = "";
     if (typeof merged.autoPushToBinance !== "boolean") merged.autoPushToBinance = false;

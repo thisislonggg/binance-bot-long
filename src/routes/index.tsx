@@ -829,9 +829,12 @@ function Dashboard() {
   const initialCapital = pnl?.initial_capital_idr ?? 0;
   const fb = fundingBalanceQuery.data;
   const isFundingLive = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
-  const stockUsdt = isFundingLive ? fb!.usdt! : (pnl?.open_position_usdt ?? 0);
-  const avgCost = pnl && pnl.open_position_avg_cost_idr > 0 ? pnl.open_position_avg_cost_idr : 0;
-  const stockCapitalIdr = stockUsdt > 0 && avgCost > 0 ? stockUsdt * avgCost : 0;
+  const stockUsdt = isFundingLive ? (fb!.usdt ?? 0) : (pnl?.open_position_usdt ?? 0);
+  const effectiveCost =
+    pnl && pnl.open_position_avg_cost_idr > 0
+      ? pnl.open_position_avg_cost_idr
+      : (s?.fair_price && s.fair_price > 0 ? s.fair_price : 16_850);
+  const stockCapitalIdr = stockUsdt > 0 ? Math.round(stockUsdt * effectiveCost) : 0;
   const allTimeProfit = pnl?.all_time_profit_idr ?? 0;
   const freeCashIdr = initialCapital > 0
     ? Math.max(0, initialCapital - stockCapitalIdr + allTimeProfit)
@@ -918,8 +921,11 @@ function Dashboard() {
             sellRefAds={s.all_sell_ads || s.top_sell_ref_ads || []}
             buyRefAds={s.all_buy_ads || s.top_buy_ref_ads || []}
             fairPrice={s.fair_price || 0}
-            stockHpp={pnl?.open_position_avg_cost_idr || 0}
+            stockHpp={effectiveCost}
             bankBalanceIdr={freeCashIdr}
+            initialCapitalIdr={initialCapital}
+            liveStockUsdt={stockUsdt}
+            stockCapitalIdr={stockCapitalIdr}
             sessionToken={sessionToken ?? undefined}
             onApplyPrice={(payload) => {
               const side = payload.targetSide || tradeSide;
@@ -1120,11 +1126,12 @@ function Dashboard() {
                 const initialCapital = pnl?.initial_capital_idr ?? 0;
                 const fb = fundingBalanceQuery.data;
                 const isFundingLive = fb && fb.usdt !== null && !fb.error && !fb.not_configured;
-                const stockUsdt = isFundingLive ? fb!.usdt! : (pnl?.open_position_usdt ?? 0);
+                const stockUsdt = isFundingLive ? (fb!.usdt ?? 0) : (pnl?.open_position_usdt ?? 0);
                 const avgCost = pnl && pnl.open_position_avg_cost_idr > 0 ? pnl.open_position_avg_cost_idr : 0;
+                const effectiveCost = avgCost > 0 ? avgCost : (s?.fair_price && s.fair_price > 0 ? s.fair_price : 16_850);
 
-                // Modal terikat di stok = saldo funding live (atau akumulasi) * HPP modal rata-rata
-                const stockCapitalIdr = stockUsdt > 0 && avgCost > 0 ? stockUsdt * avgCost : 0;
+                // Modal terikat di stok = saldo funding live (atau akumulasi) * HPP modal rata-rata / taksiran pasar
+                const stockCapitalIdr = stockUsdt > 0 ? Math.round(stockUsdt * effectiveCost) : 0;
                 const allTimeProfit = pnl?.all_time_profit_idr ?? 0;
 
                 // Sisa Kas Bebas = Modal Awal - Modal di Stok + Keuntungan Realisasi
@@ -1246,7 +1253,9 @@ function Dashboard() {
                           {fmtRp(stockCapitalIdr)}
                         </div>
                         <div className="text-[0.68rem] text-muted-foreground">
-                          {stockUsdt > 0 ? `${stockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT @ ${fmtRp2(avgCost)}` : "Stok kosong"}
+                          {stockUsdt > 0
+                            ? `${stockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT @ ${fmtRp2(effectiveCost)}${avgCost === 0 ? " (Pasar)" : ""}`
+                            : "Stok kosong"}
                         </div>
                       </div>
 
