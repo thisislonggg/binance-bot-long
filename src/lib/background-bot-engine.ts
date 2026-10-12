@@ -38,12 +38,14 @@ let inMemoryLastPushed: {
   sellStatus?: string;
 } = {};
 
+let inMemoryBotConfig: CompetitorFilterConfig | null = null;
+
 /**
- * Mengambil konfigurasi bot P2P dari Supabase user_settings atau fallback default/env.
+ * Mengambil konfigurasi bot P2P dari Supabase user_settings atau fallback in-memory/default/env.
  */
 export async function getBotConfigServer(): Promise<CompetitorFilterConfig> {
   const db = getSupabase();
-  let cfg = { ...DEFAULT_BOT_CONFIG };
+  let cfg = inMemoryBotConfig ? { ...inMemoryBotConfig } : { ...DEFAULT_BOT_CONFIG };
 
   if (db) {
     try {
@@ -56,6 +58,7 @@ export async function getBotConfigServer(): Promise<CompetitorFilterConfig> {
       if (data?.value) {
         const parsed = JSON.parse(data.value);
         cfg = { ...cfg, ...parsed };
+        inMemoryBotConfig = { ...cfg };
       }
     } catch {
       // Abaikan jika database belum siap
@@ -77,12 +80,14 @@ export async function getBotConfigServer(): Promise<CompetitorFilterConfig> {
  * Menyimpan konfigurasi bot ke Supabase user_settings agar bisa dibaca background runner.
  */
 export async function saveBotConfigServer(config: Partial<CompetitorFilterConfig>): Promise<boolean> {
+  const existing = inMemoryBotConfig || (await getBotConfigServer());
+  const merged = { ...existing, ...config };
+  inMemoryBotConfig = merged;
+
   const db = getSupabase();
-  if (!db) return false;
+  if (!db) return true;
 
   try {
-    const existing = await getBotConfigServer();
-    const merged = { ...existing, ...config };
     await db.from("user_settings").upsert({
       key: "p2p_bot_config",
       value: JSON.stringify(merged),
@@ -201,11 +206,19 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
     const activeBuyOrdersIdr =
       Math.round(activeBuyOrders.reduce((s, o) => s + (o.totalPriceIdr || 0), 0));
 
+    // 4. Hitung harga pasar wajar (fair price) live dari orderbook P2P
+    const bestSellPrice = sellRefAds.length > 0 ? sellRefAds[0].price : 0;
+    const bestBuyPrice = buyRefAds.length > 0 ? buyRefAds[0].price : 0;
+    const fairPrice =
+      bestSellPrice > 0 && bestBuyPrice > 0
+        ? Math.round((bestSellPrice + bestBuyPrice) / 2)
+        : (bestSellPrice || bestBuyPrice || 17_850);
+
     // 5. Jalankan kalkulator strategi kompetitor
     const pricing = computeCompetitorPricing({
       sellRefAds,
       buyRefAds,
-      fairPrice: 0,
+      fairPrice,
       config,
       stockHpp,
       bankBalanceIdr,
@@ -239,7 +252,31 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
     let sellResult: Record<string, unknown> | undefined = undefined;
 
     // ── Eksekusi Push Iklan Beli (BUY) ───────────────────────────────────────
-    const roundedBuyPrice = Math.round(pricing.recommendedBuyPrice);
+    let roundedBuyPrice = Math.round(pricing.recommendedBuyPrice);
+
+    // Proteksi Batas Bawah Beli (Buy Floor): JANGAN PERNAH pasang di bawah Floor yang di-set user!
+    const effectiveBuyFloor = Math.max(
+      pricing.buyGuard.floorPrice || 0,
+      config.manualBuyFloorRp || 0,
+      config.minPriceBoundRp || 0
+    );
+    if (effectiveBuyFloor > 0 && roundedBuyPrice < effectiveBuyFloor) {
+      roundedBuyPrice = effectiveBuyFloor;
+    }
+
+    // Proteksi Batas Atas Beli (Buy Ceiling): JANGAN PERNAH pasang di atas Ceiling yang di-set user!
+    const effectiveBuyCeiling = config.manualBuyCeilingRp > 0 && config.manualBuyCeilingRp < 999_999
+      ? config.manualBuyCeilingRp
+      : (pricing.buyGuard.ceilingPrice || 0);
+    if (effectiveBuyCeiling > 0 && roundedBuyPrice > effectiveBuyCeiling) {
+      roundedBuyPrice = effectiveBuyCeiling;
+    }
+
+    // Proteksi Batas Maksimum Absolut Pasar:
+    if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0 && roundedBuyPrice > config.maxPriceBoundRp) {
+      roundedBuyPrice = config.maxPriceBoundRp;
+    }
+
     if (config.merchantBuyAdvNo && roundedBuyPrice > 0) {
       const isBuyBlocked =
         (!config.manualBuyStockUsdt || config.manualBuyStockUsdt <= 0) &&
@@ -295,8 +332,15 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
     }
 
     // ── Eksekusi Push Iklan Jual (SELL) ──────────────────────────────────────
-    const minSellFloor = pricing.sellGuard.floorPrice > 0 ? pricing.sellGuard.floorPrice : 0;
-    const roundedSellPrice = Math.round(Math.max(minSellFloor, pricing.recommendedSellPrice));
+    const minSellFloor = Math.max(
+      pricing.sellGuard.floorPrice || 0,
+      config.manualSellFloorRp || 0,
+      config.minPriceBoundRp || 0
+    );
+    let roundedSellPrice = Math.round(Math.max(minSellFloor, pricing.recommendedSellPrice));
+    if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0 && roundedSellPrice > config.maxPriceBoundRp) {
+      roundedSellPrice = config.maxPriceBoundRp;
+    }
     if (config.merchantSellAdvNo && roundedSellPrice > 0) {
       const maxAvailableSellStockUsdt =
         liveStockUsdt > 0 ? Math.max(0, Math.floor((liveStockUsdt / 1.0005) * 100) / 100) : 0;

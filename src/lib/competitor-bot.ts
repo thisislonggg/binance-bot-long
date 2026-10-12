@@ -711,21 +711,36 @@ export function computeCompetitorPricing(input: {
     (effectiveHpp + (config.minProfitMarginRp || 10)) / (1 - MAKER_FEE_RATE)
   );
 
-  const calculatedSellFloor = Math.round(
-    config.sellFloorMode === "manual" && config.manualSellFloorRp > 0
-      ? config.manualSellFloorRp
-      : autoSellFloor
-  );
+  // Jika user menginput manualSellFloorRp atau minPriceBoundRp, jadikan itu batas bawah minimum mutlak!
+  let calculatedSellFloor = autoSellFloor;
+  if (config.sellFloorMode === "manual" && config.manualSellFloorRp > 0) {
+    calculatedSellFloor = config.manualSellFloorRp;
+  } else if (config.manualSellFloorRp > 0) {
+    calculatedSellFloor = Math.max(autoSellFloor, config.manualSellFloorRp);
+  }
+  if (config.minPriceBoundRp && config.minPriceBoundRp > 0) {
+    calculatedSellFloor = Math.max(calculatedSellFloor, config.minPriceBoundRp);
+  }
+  calculatedSellFloor = Math.round(calculatedSellFloor);
 
-  const calculatedBuyCeiling = Math.round(
+  let calculatedBuyCeiling = Math.round(
     config.buyCeilingMode === "auto_fair"
       ? (fairPrice > 0 ? fairPrice - config.minSpreadRp : liveMarketAnchor - config.minSpreadRp)
       : (config.manualBuyCeilingRp > 0 ? config.manualBuyCeilingRp : 999_999)
   );
+  if (config.manualBuyCeilingRp > 0 && config.manualBuyCeilingRp < 999_999) {
+    calculatedBuyCeiling = Math.min(calculatedBuyCeiling, config.manualBuyCeilingRp);
+  }
+  if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) {
+    calculatedBuyCeiling = Math.min(calculatedBuyCeiling, config.maxPriceBoundRp);
+  }
 
-  const calculatedBuyFloor = Math.round(
+  let calculatedBuyFloor = Math.round(
     config.manualBuyFloorRp && config.manualBuyFloorRp > 0 ? config.manualBuyFloorRp : 0
   );
+  if (config.minPriceBoundRp && config.minPriceBoundRp > 0) {
+    calculatedBuyFloor = Math.max(calculatedBuyFloor, config.minPriceBoundRp);
+  }
 
   // Helper kalkulasi harga acuan dasar berdasarkan targetMode
   const computeBasePrice = (
@@ -765,9 +780,12 @@ export function computeCompetitorPricing(input: {
       } else {
         // Pada sisi BELI: Jika tidak ada yang lolos filter:
         // JANGAN PERNAH mengambil iklan paling mahal di pucuk!
-        // Cari iklan non-milik sendiri yang harganya <= Batas Atas Ceiling beli:
+        // Cari iklan non-milik sendiri yang harganya <= Batas Atas Ceiling beli DAN >= Batas Bawah Buy Floor:
         const nonOwnSafeAds = (allRawAds || []).filter(
-          (a) => !isOwnAd(a) && (calculatedBuyCeiling <= 0 || a.price <= calculatedBuyCeiling)
+          (a) =>
+            !isOwnAd(a) &&
+            (calculatedBuyCeiling <= 0 || a.price <= calculatedBuyCeiling) &&
+            (calculatedBuyFloor <= 0 || a.price >= calculatedBuyFloor)
         );
 
         if (nonOwnSafeAds.length > 0) {
@@ -775,15 +793,18 @@ export function computeCompetitorPricing(input: {
           const rawIndex = allRawAds.indexOf(safeTarget) + 1;
           return {
             basePrice: safeTarget.price,
-            desc: `Relaksasi Aman (≤ Ceiling): #${rawIndex} (${safeTarget.merchant_name} @ Rp ${safeTarget.price.toLocaleString("id-ID")})`,
+            desc: `Relaksasi Aman (Batas Aman): #${rawIndex} (${safeTarget.merchant_name} @ Rp ${safeTarget.price.toLocaleString("id-ID")})`,
             isFallback: false,
           };
         }
 
-        const safeCeilingPrice = calculatedBuyCeiling > 0 ? Math.min(calculatedBuyCeiling, fallback) : fallback;
+        let safeCeilingPrice = calculatedBuyCeiling > 0 ? Math.min(calculatedBuyCeiling, fallback) : fallback;
+        if (calculatedBuyFloor > 0 && safeCeilingPrice < calculatedBuyFloor) {
+          safeCeilingPrice = calculatedBuyFloor;
+        }
         return {
           basePrice: safeCeilingPrice,
-          desc: `Terkunci Aman di Batas Atas Ceiling (Rp ${safeCeilingPrice.toLocaleString("id-ID")}) [Tidak ada kompetitor lolos filter]`,
+          desc: `Terkunci Aman di Batas Aman Beli (Rp ${safeCeilingPrice.toLocaleString("id-ID")}) [Tidak ada kompetitor lolos filter]`,
           isFallback: true,
         };
       }
@@ -833,6 +854,12 @@ export function computeCompetitorPricing(input: {
 
   // Untuk BELI: base price + buyOffsetRp (misal +1 overcut)
   let rawBuyPrice = buyBase.basePrice + config.buyOffsetRp;
+  if (calculatedBuyFloor > 0) {
+    rawBuyPrice = Math.max(calculatedBuyFloor, rawBuyPrice);
+  }
+  if (calculatedBuyCeiling > 0) {
+    rawBuyPrice = Math.min(calculatedBuyCeiling, rawBuyPrice);
+  }
 
   const autoFollow = config.autoFollowNextWhenLimitReached !== false;
 
@@ -1006,11 +1033,46 @@ export function computeCompetitorPricing(input: {
     }
   }
 
-  // ── FINAL SAFEGUARD: HARGA JUAL MUTLAK TIDAK BOLEH DI BAWAH BATAS BAWAH (FLOOR HPP) ──
+  // ── FINAL SAFEGUARDS: PENGAMAN MUTLAK SEMUA BATAS HARGA YANG DI-SET PENGGUNA ──
+  // 1. Batas Bawah Jual (Sell Floor): Harga jual TIDAK BOLEH PERNAH di bawah floor yang ditentukan
   if (calculatedSellFloor > 0 && recommendedSellPrice < calculatedSellFloor) {
     recommendedSellPrice = calculatedSellFloor;
     sellGuard.triggered = true;
-    sellGuard.reason = `Proteksi Mutlak Batas Bawah: Harga terkunci di Batas Bawah Floor HPP (Rp ${calculatedSellFloor.toLocaleString("id-ID")}) agar bot tidak menjual di bawah modal.`;
+    sellGuard.reason = `Proteksi Mutlak Batas Bawah Jual: Harga jual terkunci di Batas Bawah (Rp ${calculatedSellFloor.toLocaleString("id-ID")}) agar bot tidak menjual di bawah batas yang Anda tentukan.`;
+  }
+
+  // 2. Batas Bawah Beli (Buy Floor): Harga beli TIDAK BOLEH PERNAH di bawah floor beli yang di-set user
+  if (calculatedBuyFloor > 0 && recommendedBuyPrice < calculatedBuyFloor) {
+    recommendedBuyPrice = calculatedBuyFloor;
+    buyGuard.triggered = true;
+    buyGuard.reason = `Proteksi Mutlak Batas Bawah Beli: Harga beli terkunci di Batas Bawah (Rp ${calculatedBuyFloor.toLocaleString("id-ID")}) agar bot tidak memasang harga di bawah batas yang Anda tentukan.`;
+  }
+
+  // 3. Batas Atas Beli (Buy Ceiling): Harga beli TIDAK BOLEH PERNAH melebihi ceiling beli
+  if (calculatedBuyCeiling > 0 && recommendedBuyPrice > calculatedBuyCeiling) {
+    recommendedBuyPrice = calculatedBuyCeiling;
+    buyGuard.triggered = true;
+    buyGuard.reason = `Proteksi Mutlak Batas Atas Beli: Harga beli terkunci di Batas Atas (Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}) agar bot tidak membeli kemahalan di atas batas yang Anda tentukan.`;
+  }
+
+  // 4. Batas Minimum Absolut Pasar (Min Price Bound): Berlaku untuk Jual & Beli
+  if (config.minPriceBoundRp && config.minPriceBoundRp > 0) {
+    if (recommendedSellPrice < config.minPriceBoundRp) {
+      recommendedSellPrice = config.minPriceBoundRp;
+    }
+    if (recommendedBuyPrice < config.minPriceBoundRp) {
+      recommendedBuyPrice = config.minPriceBoundRp;
+    }
+  }
+
+  // 5. Batas Maksimum Absolut Pasar (Max Price Bound): Berlaku untuk Jual & Beli
+  if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) {
+    if (recommendedSellPrice > config.maxPriceBoundRp) {
+      recommendedSellPrice = config.maxPriceBoundRp;
+    }
+    if (recommendedBuyPrice > config.maxPriceBoundRp) {
+      recommendedBuyPrice = config.maxPriceBoundRp;
+    }
   }
 
   // 7. Kalkulasi Fee & Estimasi Laba Bersih

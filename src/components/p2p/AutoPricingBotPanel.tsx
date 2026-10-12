@@ -548,15 +548,55 @@ export function AutoPricingBotPanel({
       }
     }
 
-    const price = side === "buy" ? recommendedBuyPrice : recommendedSellPrice;
+    const rawPrice = side === "buy" ? recommendedBuyPrice : recommendedSellPrice;
 
-    // Proteksi Batas Bawah Jual (Floor HPP): Bot TIDAK BOLEH PERNAH pasang harga jual di bawah Floor!
-    if (side === "sell" && pricingResult.sellGuard.floorPrice > 0 && price < pricingResult.sellGuard.floorPrice) {
+    // Proteksi Batas Bawah Jual (Sell Floor & Min Price Bound):
+    const effectiveSellFloor = Math.max(
+      pricingResult.sellGuard.floorPrice || 0,
+      config.manualSellFloorRp || 0,
+      config.minPriceBoundRp || 0
+    );
+    if (side === "sell" && effectiveSellFloor > 0 && rawPrice < effectiveSellFloor) {
       toast.error(
-        `Ditolak Sistem: Harga jual (Rp ${price.toLocaleString("id-ID")}) berada di bawah Batas Bawah Floor HPP (Rp ${pricingResult.sellGuard.floorPrice.toLocaleString("id-ID")}). Bot dicegah memasang harga rugi di Binance!`
+        `Ditolak Sistem: Harga jual (Rp ${rawPrice.toLocaleString("id-ID")}) berada di bawah Batas Bawah (Rp ${effectiveSellFloor.toLocaleString("id-ID")}). Bot dicegah memasang harga di bawah batas yang Anda tentukan!`
       );
       return;
     }
+
+    // Proteksi Batas Bawah Beli (Buy Floor & Min Price Bound):
+    const effectiveBuyFloor = Math.max(
+      pricingResult.buyGuard.floorPrice || 0,
+      config.manualBuyFloorRp || 0,
+      config.minPriceBoundRp || 0
+    );
+    if (side === "buy" && effectiveBuyFloor > 0 && rawPrice < effectiveBuyFloor) {
+      toast.error(
+        `Ditolak Sistem: Harga beli (Rp ${rawPrice.toLocaleString("id-ID")}) berada di bawah Batas Bawah Beli (Rp ${effectiveBuyFloor.toLocaleString("id-ID")}). Bot dicegah memasang harga di bawah batas yang Anda tentukan!`
+      );
+      return;
+    }
+
+    // Proteksi Batas Atas Beli (Buy Ceiling):
+    const effectiveBuyCeiling =
+      config.manualBuyCeilingRp > 0 && config.manualBuyCeilingRp < 999_999
+        ? config.manualBuyCeilingRp
+        : (pricingResult.buyGuard.ceilingPrice || 0);
+    if (side === "buy" && effectiveBuyCeiling > 0 && rawPrice > effectiveBuyCeiling) {
+      toast.error(
+        `Ditolak Sistem: Harga beli (Rp ${rawPrice.toLocaleString("id-ID")}) berada di atas Batas Atas Beli (Rp ${effectiveBuyCeiling.toLocaleString("id-ID")}). Bot dicegah menawar di atas batas yang Anda tentukan!`
+      );
+      return;
+    }
+
+    // Proteksi Batas Maksimum Pasar (Max Price Bound):
+    if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0 && rawPrice > config.maxPriceBoundRp) {
+      toast.error(
+        `Ditolak Sistem: Harga (Rp ${rawPrice.toLocaleString("id-ID")}) melampaui Batas Maksimum Pasar (Rp ${config.maxPriceBoundRp.toLocaleString("id-ID")}).`
+      );
+      return;
+    }
+
+    const price = rawPrice;
 
     if (side === "buy") setIsPushingBuy(true);
     else setIsPushingSell(true);
@@ -704,6 +744,15 @@ export function AutoPricingBotPanel({
           }
 
           const roundedPrice = Math.round(recommendedBuyPrice);
+          const effectiveBuyFloor = Math.max(
+            pricingResult.buyGuard.floorPrice || 0,
+            config.manualBuyFloorRp || 0,
+            config.minPriceBoundRp || 0
+          );
+          if (effectiveBuyFloor > 0 && roundedPrice < effectiveBuyFloor) {
+            return; // JANGAN PUSH JIKA DI BAWAH BUY FLOOR
+          }
+
           const currentBuyStock =
             config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0
               ? config.manualBuyStockUsdt
@@ -723,6 +772,15 @@ export function AutoPricingBotPanel({
 
       if (config.merchantSellAdvNo && recommendedSellPrice > 0) {
         const roundedSellPrice = Math.round(recommendedSellPrice);
+        const effectiveSellFloor = Math.max(
+          pricingResult.sellGuard.floorPrice || 0,
+          config.manualSellFloorRp || 0,
+          config.minPriceBoundRp || 0
+        );
+        if (effectiveSellFloor > 0 && roundedSellPrice < effectiveSellFloor) {
+          return; // JANGAN PUSH JIKA DI BAWAH SELL FLOOR
+        }
+
         const currentSellStock =
           config.manualSellStockUsdt && config.manualSellStockUsdt > 0
             ? config.manualSellStockUsdt
