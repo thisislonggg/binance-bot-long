@@ -103,6 +103,7 @@ interface AutoPricingBotPanelProps {
     buyPrice: number;
     sellPrice: number;
     buyAmountUsdt?: number;
+    sellAmountUsdt?: number;
     maxBuyLimitIdr?: number;
     targetSide?: "buy" | "sell";
   }) => void;
@@ -345,18 +346,44 @@ export function AutoPricingBotPanel({
   };
 
   const handleApplySellOnly = () => {
+    const effectiveStock =
+      config.manualSellStockUsdt && config.manualSellStockUsdt > 0
+        ? config.manualSellStockUsdt
+        : liveStockUsdt > 0
+        ? Math.floor(liveStockUsdt * 100) / 100
+        : undefined;
+
     if (onApplyPrice) {
       onApplyPrice({
         buyPrice: recommendedBuyPrice,
         sellPrice: recommendedSellPrice,
+        sellAmountUsdt: effectiveStock,
         targetSide: "sell",
       });
       toast.success(
-        `Harga Jual Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")} diterapkan ke form!`
+        effectiveStock
+          ? `Iklan Jual: Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")} & All Stok ${effectiveStock.toLocaleString("id-ID")} USDT diterapkan ke form!`
+          : `Harga Jual Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")} diterapkan ke form!`
       );
     } else {
       handleCopy(recommendedSellPrice, "sell");
     }
+  };
+
+  const handleCopySellDetails = () => {
+    const effectiveStock =
+      config.manualSellStockUsdt && config.manualSellStockUsdt > 0
+        ? config.manualSellStockUsdt
+        : liveStockUsdt > 0
+        ? Math.floor(liveStockUsdt * 100) / 100
+        : undefined;
+
+    const text =
+      effectiveStock && recommendedSellPrice > 0
+        ? `Harga Jual: Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")}\nAll Stok USDT: ${effectiveStock.toLocaleString("id-ID")} USDT\nPlafon Max Limit: Rp ${Math.round(effectiveStock * recommendedSellPrice).toLocaleString("id-ID")}`
+        : `Harga Jual: Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")}`;
+    navigator.clipboard.writeText(text);
+    toast.success("Rincian iklan jual disalin ke clipboard!");
   };
 
   const handleCopyBuyDetails = () => {
@@ -401,6 +428,17 @@ export function AutoPricingBotPanel({
           : undefined
         : undefined;
 
+    const effectiveSellStock =
+      side === "sell"
+        ? config.manualSellStockUsdt && config.manualSellStockUsdt > 0
+          ? config.manualSellStockUsdt
+          : liveStockUsdt > 0
+          ? Math.floor(liveStockUsdt * 100) / 100
+          : undefined
+        : undefined;
+
+    const effectiveStock = side === "buy" ? effectiveBuyStock : effectiveSellStock;
+
     const effectiveBuyMaxLimit =
       side === "buy"
         ? config.manualBuyMaxLimitIdr && config.manualBuyMaxLimitIdr > 0
@@ -412,10 +450,28 @@ export function AutoPricingBotPanel({
           : undefined
         : undefined;
 
+    const effectiveSellMaxLimit =
+      side === "sell"
+        ? config.manualSellMaxLimitIdr && config.manualSellMaxLimitIdr > 0
+          ? config.manualSellMaxLimitIdr
+          : effectiveSellStock && price > 0
+          ? Math.floor(effectiveSellStock * price)
+          : undefined
+        : undefined;
+
+    const effectiveMaxLimit = side === "buy" ? effectiveBuyMaxLimit : effectiveSellMaxLimit;
+
     const effectiveBuyMinLimit =
       side === "buy" && config.manualBuyMinLimitIdr && config.manualBuyMinLimitIdr > 0
         ? config.manualBuyMinLimitIdr
         : undefined;
+
+    const effectiveSellMinLimit =
+      side === "sell" && config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0
+        ? config.manualSellMinLimitIdr
+        : undefined;
+
+    const effectiveMinLimit = side === "buy" ? effectiveBuyMinLimit : effectiveSellMinLimit;
 
     try {
       const res = await pushPriceFn({
@@ -424,9 +480,9 @@ export function AutoPricingBotPanel({
           advNo: advNo.trim(),
           side,
           price,
-          amountUsdt: effectiveBuyStock,
-          maxLimitIdr: effectiveBuyMaxLimit,
-          minLimitIdr: effectiveBuyMinLimit,
+          amountUsdt: effectiveStock,
+          maxLimitIdr: effectiveMaxLimit,
+          minLimitIdr: effectiveMinLimit,
         },
       });
 
@@ -1018,44 +1074,64 @@ export function AutoPricingBotPanel({
               )}
             </div>
 
-            {/* Quick Push ke Iklan Jual Binance C2C */}
-            <div className="mt-3 rounded-lg border border-ask/30 bg-ask/5 p-2.5 space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
+            {/* Fitur Otomatis Pasang Stok Jual dari Saldo Live */}
+            <div className="mt-3 rounded-lg border border-ask/30 bg-ask/5 p-3 space-y-2">
+              <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
-                  <Send className="size-3.5 text-ask" />
+                  <Wallet className="size-3.5 text-ask" />
                   <span className="text-[0.72rem] font-bold text-foreground">
-                    C2C Merchant API Push
+                    All Stok USDT Siap Jual
                   </span>
-                  <Badge
-                    variant="outline"
-                    className="h-4.5 px-1.5 text-[0.6rem] border-ask/30 text-ask bg-ask/10 font-semibold"
-                  >
-                    {config.merchantSellAdvNo ? `#${config.merchantSellAdvNo.slice(-6)}` : "Belum di-set"}
-                  </Badge>
                 </div>
-                <span className="text-[0.65rem] text-muted-foreground">
-                  Iklan Jual
-                </span>
+                <Badge
+                  variant="outline"
+                  className="h-4.5 px-1.5 text-[0.6rem] border-ask/30 text-ask bg-ask/10 font-bold"
+                >
+                  {liveStockUsdt > 0
+                    ? `${(Math.floor(liveStockUsdt * 100) / 100).toLocaleString("id-ID")} USDT (Live)`
+                    : "0 USDT"}
+                </Badge>
               </div>
 
-              <div className="flex items-center gap-1.5 pt-0.5">
+              <div className="flex items-center justify-between text-[0.68rem] text-muted-foreground">
+                <span>Plafon Kapasitas Penjualan:</span>
+                <strong className="num text-foreground">
+                  {liveStockUsdt > 0 && recommendedSellPrice > 0
+                    ? fmtRp(Math.floor(liveStockUsdt * recommendedSellPrice))
+                    : "—"}
+                </strong>
+              </div>
+
+              {/* Action Buttons: Terapkan ke Form Jual, Push API, & Salin */}
+              <div className="flex items-center gap-1.5 pt-1">
                 <Button
                   size="sm"
                   type="button"
-                  onClick={() => handlePushPrice("sell")}
-                  disabled={isPushingSell}
+                  onClick={handleApplySellOnly}
                   className="flex-1 h-7 text-xs font-semibold bg-ask text-ask-foreground hover:bg-ask/90 gap-1.5 shadow-sm"
                 >
-                  <Send className={`size-3.5 ${isPushingSell ? "animate-pulse" : ""}`} />
-                  <span>{isPushingSell ? "Mengirim ke Binance..." : "Push Harga ke Binance"}</span>
+                  <Zap className="size-3.5" />
+                  <span>Terapkan ke Form Jual</span>
                 </Button>
                 <Button
                   size="sm"
                   variant="outline"
                   type="button"
-                  onClick={() => handleCopy(recommendedSellPrice, "sell")}
+                  onClick={() => handlePushPrice("sell")}
+                  disabled={isPushingSell}
+                  className="h-7 text-xs px-2.5 border-ask/40 text-ask hover:bg-ask/10 gap-1 font-semibold"
+                  title="Update harga & all stok iklan langsung ke Binance C2C via API"
+                >
+                  <Send className={`size-3 ${isPushingSell ? "animate-pulse" : ""}`} />
+                  <span>{isPushingSell ? "Kirim..." : "Push API"}</span>
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  type="button"
+                  onClick={handleCopySellDetails}
                   className="h-7 text-xs px-2.5 border-border/80 text-muted-foreground hover:text-foreground hover:bg-surface-2"
-                  title="Salin Harga Jual"
+                  title="Salin Harga Jual, Stok USDT, dan Plafon Limit IDR"
                 >
                   <Copy className="size-3 mr-1" />
                   <span>Salin</span>
@@ -3347,6 +3423,7 @@ export function AutoPricingBotPanel({
                     </Badge>
                   </div>
 
+                  {/* 1. Nomor Iklan advNo */}
                   <div className="space-y-1">
                     <Label className="text-xs font-semibold text-foreground">
                       Nomor Iklan Jual Binance (advNo)
@@ -3363,18 +3440,222 @@ export function AutoPricingBotPanel({
                     </p>
                   </div>
 
+                  {/* 2. Pengaturan Harga Jual & Batas Aman */}
+                  <div className="space-y-2 rounded-lg border border-ask/25 bg-surface/70 p-2.5">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs font-bold text-ask flex items-center gap-1">
+                        <Sliders className="size-3.5" /> Setting Harga Jual & Batas Aman
+                      </Label>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateConfig({
+                              manualSellPriceOverrideRp:
+                                config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0
+                                  ? 0
+                                  : Math.round(recommendedSellPrice || 16_900),
+                            })
+                          }
+                          className={`text-[0.62rem] px-1.5 py-0.5 rounded font-bold transition-colors ${
+                            config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0
+                              ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                              : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          {config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0
+                            ? "Mode: Harga Tetap"
+                            : "Mode: Auto Bot"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Jika Mode Harga Tetap (Override) */}
+                    {config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0 ? (
+                      <div className="space-y-1 pt-1">
+                        <div className="flex items-center justify-between text-[0.68rem]">
+                          <span className="text-muted-foreground font-semibold">Harga Jual Tetap (Rp):</span>
+                          <button
+                            type="button"
+                            onClick={() => updateConfig({ manualSellPriceOverrideRp: 0 })}
+                            className="text-ask hover:underline text-[0.62rem]"
+                          >
+                            Kembali ke Auto Bot
+                          </button>
+                        </div>
+                        <div className="relative">
+                          <Input
+                            type="number"
+                            min={0}
+                            value={config.manualSellPriceOverrideRp}
+                            onChange={(e) =>
+                              updateConfig({ manualSellPriceOverrideRp: Math.max(0, Number(e.target.value)) })
+                            }
+                            className="h-8 text-xs font-bold bg-surface text-foreground font-mono pr-12"
+                            placeholder="Contoh: 16900"
+                          />
+                          <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[0.68rem] text-muted-foreground font-semibold">
+                            IDR
+                          </span>
+                        </div>
+                        <p className="text-[0.62rem] text-amber-500">
+                          Iklan jual akan dikirim dengan harga tetap Rp {config.manualSellPriceOverrideRp.toLocaleString("id-ID")}.
+                        </p>
+                      </div>
+                    ) : (
+                      /* Mode Auto Bot */
+                      <div className="space-y-1 pt-1 text-xs">
+                        <div className="flex justify-between text-muted-foreground text-[0.68rem]">
+                          <span>Floor Margin HPP:</span>
+                          <strong className="num text-ask">{fmtRp2(sellGuard.floorPrice)}</strong>
+                        </div>
+                        <div className="flex justify-between text-muted-foreground text-[0.68rem]">
+                          <span>Strategi Offset:</span>
+                          <strong className="text-foreground">{config.sellOffsetRp} Rp Undercut</strong>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 3. Otomatis Pasang All Stok Saldo USDT */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
+                        <Wallet className="size-3.5 text-ask" />
+                        <span>Stok USDT Jual (All Saldo)</span>
+                      </Label>
+                      {liveStockUsdt > 0 && (
+                        <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[0.6rem] font-bold">
+                          All Saldo: {liveStockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="relative">
+                      <Input
+                        type="number"
+                        step="any"
+                        value={config.manualSellStockUsdt && config.manualSellStockUsdt > 0 ? config.manualSellStockUsdt : ""}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          updateConfig({ manualSellStockUsdt: Number.isFinite(val) && val > 0 ? val : 0 });
+                        }}
+                        placeholder={
+                          liveStockUsdt > 0
+                            ? `Otomatis All Saldo: ${Math.floor(liveStockUsdt * 100) / 100} USDT`
+                            : "0 USDT (Tidak ada saldo)"
+                        }
+                        className="h-8 text-xs font-mono bg-surface font-semibold pr-14"
+                      />
+                      <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[0.68rem] text-muted-foreground font-semibold">
+                        USDT
+                      </span>
+                    </div>
+                    <p className="text-[0.65rem] text-muted-foreground">
+                      {config.manualSellStockUsdt && config.manualSellStockUsdt > 0
+                        ? `Menggunakan stok manual: ${config.manualSellStockUsdt} USDT. Kosongkan untuk otomatis pakai all saldo live.`
+                        : liveStockUsdt > 0
+                        ? `✓ Otomatis memasukkan seluruh saldo live Anda (${Math.floor(liveStockUsdt * 100) / 100} USDT) tanpa input manual!`
+                        : "Saldo USDT saat ini 0. Bot akan otomatis memasukkan seluruh saldo jika stok masuk."}
+                    </p>
+                  </div>
+
+                  {/* 4. Limit Transaksi Pesanan di Binance (Min & Max Limit IDR) */}
+                  <div className="space-y-1.5 rounded-lg border border-border/70 bg-surface/60 p-2.5">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
+                        <Coins className="size-3.5 text-primary" /> Batas Limit Transaksi Iklan (IDR)
+                      </Label>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <span className="text-[0.65rem] text-muted-foreground font-semibold">
+                          Limit Bawah (Min IDR):
+                        </span>
+                        <Input
+                          type="number"
+                          min={0}
+                          value={config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0 ? config.manualSellMinLimitIdr : ""}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            updateConfig({ manualSellMinLimitIdr: Number.isFinite(val) && val > 0 ? val : 0 });
+                          }}
+                          placeholder="Default: 50.000"
+                          className="h-7 text-xs bg-surface font-mono text-right"
+                        />
+                        <p className="text-[0.6rem] text-muted-foreground">
+                          {config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0
+                            ? `Min Rp ${config.manualSellMinLimitIdr.toLocaleString("id-ID")}`
+                            : "Default Rp 50.000"}
+                        </p>
+                      </div>
+
+                      <div className="space-y-1">
+                        <span className="text-[0.65rem] text-muted-foreground font-semibold">
+                          Limit Atas (Max IDR):
+                        </span>
+                        <Input
+                          type="number"
+                          min={0}
+                          value={config.manualSellMaxLimitIdr && config.manualSellMaxLimitIdr > 0 ? config.manualSellMaxLimitIdr : ""}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            updateConfig({ manualSellMaxLimitIdr: Number.isFinite(val) && val > 0 ? val : 0 });
+                          }}
+                          placeholder={
+                            liveStockUsdt > 0 && recommendedSellPrice > 0
+                              ? String(Math.floor(liveStockUsdt * recommendedSellPrice))
+                              : "Auto Stok"
+                          }
+                          className="h-7 text-xs bg-surface font-mono text-right"
+                        />
+                        <p className="text-[0.6rem] text-muted-foreground">
+                          {config.manualSellMaxLimitIdr && config.manualSellMaxLimitIdr > 0
+                            ? `Max Rp ${config.manualSellMaxLimitIdr.toLocaleString("id-ID")}`
+                            : "Auto dari kapasitas stok"}
+                        </p>
+                      </div>
+                    </div>
+
+                    {Boolean(
+                      config.manualSellMinLimitIdr &&
+                      config.manualSellMaxLimitIdr &&
+                      config.manualSellMinLimitIdr >= config.manualSellMaxLimitIdr
+                    ) && (
+                      <div className="text-[0.62rem] text-destructive flex items-center gap-1 font-semibold pt-0.5">
+                        <AlertTriangle className="size-3 shrink-0" />
+                        <span>Perhatian: Limit Bawah harus lebih kecil dari Limit Atas!</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 5. Live Summary Data Terkirim ke Binance */}
                   <div className="rounded bg-surface/80 p-2.5 border border-border/60 space-y-1 text-xs">
                     <div className="flex justify-between text-muted-foreground text-[0.68rem]">
-                      <span>Harga Rekomendasi:</span>
+                      <span>Harga Kirim Binance:</span>
                       <strong className="num text-foreground">{fmtRp2(recommendedSellPrice)}</strong>
                     </div>
                     <div className="flex justify-between text-muted-foreground text-[0.68rem]">
-                      <span>Floor Margin HPP:</span>
-                      <strong className="num text-ask">{fmtRp2(sellGuard.floorPrice)}</strong>
+                      <span>All Stok USDT Siap Jual:</span>
+                      <strong className="num text-ask">
+                        {config.manualSellStockUsdt && config.manualSellStockUsdt > 0
+                          ? `${config.manualSellStockUsdt} USDT (Manual)`
+                          : liveStockUsdt > 0
+                          ? `${Math.floor(liveStockUsdt * 100) / 100} USDT (All Saldo Live)`
+                          : "0 USDT"}
+                      </strong>
                     </div>
                     <div className="flex justify-between text-muted-foreground text-[0.68rem]">
-                      <span>Strategi:</span>
-                      <strong className="text-foreground">{config.sellOffsetRp} Rp Undercut</strong>
+                      <span>Rentang Limit Transaksi:</span>
+                      <strong className="num text-foreground">
+                        {`Rp ${(config.manualSellMinLimitIdr || 50_000).toLocaleString("id-ID")} - ${
+                          config.manualSellMaxLimitIdr && config.manualSellMaxLimitIdr > 0
+                            ? fmtRp(config.manualSellMaxLimitIdr)
+                            : liveStockUsdt > 0 && recommendedSellPrice > 0
+                            ? fmtRp(Math.floor(liveStockUsdt * recommendedSellPrice))
+                            : "Auto"
+                        }`}
+                      </strong>
                     </div>
                   </div>
 
@@ -3385,7 +3666,7 @@ export function AutoPricingBotPanel({
                     className="w-full h-8 text-xs font-semibold bg-ask text-ask-foreground hover:bg-ask/90 gap-1.5 shadow-sm"
                   >
                     <Send className={`size-3.5 ${isPushingSell ? "animate-pulse" : ""}`} />
-                    <span>{isPushingSell ? "Mengirim ke Binance..." : "Push Harga Jual ke Binance Sekarang"}</span>
+                    <span>{isPushingSell ? "Mengirim ke Binance..." : "Push Harga, All Stok, & Limit Jual ke Binance"}</span>
                   </Button>
                 </div>
               </div>

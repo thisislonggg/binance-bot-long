@@ -70,6 +70,10 @@ export type CompetitorFilterConfig = {
   manualBuyStockUsdt?: number;            // Target stok USDT beli manual/override (0 = auto dari kas bank)
   manualBuyMinLimitIdr?: number;          // Limit bawah pesanan IDR iklan beli di Binance (0 = default 50.000)
   manualBuyMaxLimitIdr?: number;          // Plafon limit IDR beli manual/override (0 = auto dari stok * harga)
+  manualSellStockUsdt?: number;           // Target stok USDT jual manual (0 = otomatis all saldo live)
+  manualSellMinLimitIdr?: number;         // Limit bawah pesanan IDR iklan jual di Binance (0 = default 50.000)
+  manualSellMaxLimitIdr?: number;         // Plafon limit IDR jual manual (0 = auto dari stok * harga)
+  manualSellPriceOverrideRp?: number;     // Override pasang harga jual manual tetap (0 = auto bot)
   autoPushToBinance: boolean;             // Otomatis push perubahan harga ke Binance P2P
   autoPushMinIntervalSec: number;         // Interval minimal push (detik, default 30)
 };
@@ -130,6 +134,10 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   manualBuyStockUsdt: 0,
   manualBuyMinLimitIdr: 0,
   manualBuyMaxLimitIdr: 0,
+  manualSellStockUsdt: 0,
+  manualSellMinLimitIdr: 0,
+  manualSellMaxLimitIdr: 0,
+  manualSellPriceOverrideRp: 0,
   autoPushToBinance: false,
   autoPushMinIntervalSec: 30,
 };
@@ -653,6 +661,12 @@ export function computeCompetitorPricing(input: {
   };
 
   let recommendedSellPrice = rawSellPrice;
+
+  // Cek jika pengguna menetapkan override harga jual tetap manual
+  if (config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0) {
+    recommendedSellPrice = Math.round(config.manualSellPriceOverrideRp);
+  }
+
   if (recommendedSellPrice < calculatedSellFloor) {
     sellGuard.triggered = true;
     sellGuard.reason = `Harga pasar (Rp ${rawSellPrice.toLocaleString("id-ID")}) di bawah batas aman modal (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor.`;
@@ -842,6 +856,10 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (typeof merged.manualBuyStockUsdt !== "number") merged.manualBuyStockUsdt = 0;
     if (typeof merged.manualBuyMinLimitIdr !== "number") merged.manualBuyMinLimitIdr = 0;
     if (typeof merged.manualBuyMaxLimitIdr !== "number") merged.manualBuyMaxLimitIdr = 0;
+    if (typeof merged.manualSellStockUsdt !== "number") merged.manualSellStockUsdt = 0;
+    if (typeof merged.manualSellMinLimitIdr !== "number") merged.manualSellMinLimitIdr = 0;
+    if (typeof merged.manualSellMaxLimitIdr !== "number") merged.manualSellMaxLimitIdr = 0;
+    if (typeof merged.manualSellPriceOverrideRp !== "number") merged.manualSellPriceOverrideRp = 0;
     if (!merged.buyFloorMode) merged.buyFloorMode = "disabled";
     if (typeof merged.manualBuyFloorRp !== "number") merged.manualBuyFloorRp = 0;
     if (typeof merged.manualBuyPriceOverrideRp !== "number") merged.manualBuyPriceOverrideRp = 0;

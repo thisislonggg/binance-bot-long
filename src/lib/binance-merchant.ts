@@ -617,6 +617,7 @@ const updateAdInputSchema = z.object({
   amount: z.number().optional(),               // Stok USDT
   minSingleTransAmount: z.number().optional(), // Min limit IDR
   maxSingleTransAmount: z.number().optional(), // Max limit IDR (dari saldo bank)
+  side: z.enum(["buy", "sell", "BUY", "SELL"]).optional(),
   payMethods: z.array(z.string()).optional(),
 });
 
@@ -646,7 +647,8 @@ export const updateMerchantAd = createServerFn({ method: "POST" })
     // Step 4: Verifikasi live status langsung di Binance
     // =========================================================================
 
-    const existingAd = await fetchAdDetailRobustly(cleanAdvNo, "buy");
+    const targetSide = data.side ? (data.side.toLowerCase() as "buy" | "sell") : undefined;
+    const existingAd = await fetchAdDetailRobustly(cleanAdvNo, targetSide);
 
     // Jika iklan tidak ditemukan di akun Binance sama sekali:
     if (!existingAd) {
@@ -1156,6 +1158,7 @@ export const pushPriceToBinanceAd = createServerFn({ method: "POST" })
       data: {
         sessionToken: data.sessionToken,
         advNo: data.advNo,
+        side: data.side,
         price: data.price,
         amount: data.amountUsdt,
         minSingleTransAmount: data.minLimitIdr,

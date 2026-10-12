@@ -935,12 +935,16 @@ function Dashboard() {
               setTradePrice(String(chosenPrice));
               if (side === "buy" && payload.buyAmountUsdt && payload.buyAmountUsdt > 0) {
                 setTradeAmount(String(payload.buyAmountUsdt));
+              } else if (side === "sell" && payload.sellAmountUsdt && payload.sellAmountUsdt > 0) {
+                setTradeAmount(String(payload.sellAmountUsdt));
               }
               setTradeRoleState("maker");
               setShowManualForm(true);
               toast.success(
                 side === "buy" && payload.buyAmountUsdt
-                  ? `Iklan Beli: Harga Rp ${chosenPrice.toLocaleString("id-ID")} & Stok ${payload.buyAmountUsdt.toLocaleString("id-ID")} USDT (sesuai saldo bank) dimasukkan ke form!`
+                  ? `Iklan Beli: Harga Rp ${chosenPrice.toLocaleString("id-ID")} & Stok ${payload.buyAmountUsdt.toLocaleString("id-ID")} USDT dimasukkan ke form!`
+                  : side === "sell" && payload.sellAmountUsdt
+                  ? `Iklan Jual: Harga Rp ${chosenPrice.toLocaleString("id-ID")} & All Stok ${payload.sellAmountUsdt.toLocaleString("id-ID")} USDT dimasukkan ke form!`
                   : `Harga ${side === "buy" ? "Beli" : "Jual"} Rp ${chosenPrice.toLocaleString("id-ID")} dimasukkan ke form!`
               );
             }}
