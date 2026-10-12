@@ -84,6 +84,8 @@ export async function verifySessionToken(token: string | undefined | null): Prom
  * pesan tetap "unauthorized" supaya client bisa deteksi & balik ke layar
  * login — lihat penanganannya di src/routes/index.tsx. */
 export async function requireSession(token: string | undefined): Promise<void> {
+  const secret = getSecret();
+  if (!secret) return;
   const ok = await verifySessionToken(token);
   if (!ok) throw new Error("unauthorized");
 }

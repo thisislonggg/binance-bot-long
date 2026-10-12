@@ -198,7 +198,16 @@ const listAdsInputSchema = z.object({
 export const getMerchantAdsList = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => listAdsInputSchema.parse(data))
   .handler(async ({ data }): Promise<MerchantApiResponse<BinanceMerchantAd[]>> => {
-    await requireSession(data.sessionToken);
+    try {
+      await requireSession(data.sessionToken);
+    } catch {
+      return {
+        ok: false,
+        code: "UNAUTHORIZED",
+        error: "Sesi dashboard tidak terverifikasi.",
+        message: "Sesi dashboard kedaluwarsa atau belum terautentikasi.",
+      };
+    }
 
     // Coba endpoint standar C2C ads list
     const res = await binanceMerchantRequest<BinanceMerchantAd[]>({
@@ -245,7 +254,16 @@ const updateAdInputSchema = z.object({
 export const updateMerchantAd = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => updateAdInputSchema.parse(data))
   .handler(async ({ data }): Promise<MerchantApiResponse> => {
-    await requireSession(data.sessionToken);
+    try {
+      await requireSession(data.sessionToken);
+    } catch {
+      return {
+        ok: false,
+        code: "UNAUTHORIZED",
+        error: "Sesi dashboard tidak terverifikasi.",
+        message: "Sesi dashboard kedaluwarsa atau belum terautentikasi.",
+      };
+    }
 
     const params: Record<string, string | number> = {
       advNo: data.advNo.trim(),
@@ -288,7 +306,16 @@ const updateAdStatusInputSchema = z.object({
 export const toggleMerchantAdStatus = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => updateAdStatusInputSchema.parse(data))
   .handler(async ({ data }): Promise<MerchantApiResponse> => {
-    await requireSession(data.sessionToken);
+    try {
+      await requireSession(data.sessionToken);
+    } catch {
+      return {
+        ok: false,
+        code: "UNAUTHORIZED",
+        error: "Sesi dashboard tidak terverifikasi.",
+        message: "Sesi dashboard kedaluwarsa atau belum terautentikasi.",
+      };
+    }
 
     return binanceMerchantRequest({
       endpoint: "/sapi/v1/c2c/ads/updateStatus",
@@ -321,7 +348,16 @@ const postAdInputSchema = z.object({
 export const postMerchantAd = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => postAdInputSchema.parse(data))
   .handler(async ({ data }): Promise<MerchantApiResponse<{ advNo: string }>> => {
-    await requireSession(data.sessionToken);
+    try {
+      await requireSession(data.sessionToken);
+    } catch {
+      return {
+        ok: false,
+        code: "UNAUTHORIZED",
+        error: "Sesi dashboard tidak terverifikasi.",
+        message: "Sesi dashboard kedaluwarsa atau belum terautentikasi.",
+      };
+    }
 
     return binanceMerchantRequest<{ advNo: string }>({
       endpoint: "/sapi/v1/c2c/ads/post",
@@ -371,7 +407,20 @@ export type PushPriceResult = {
 export const pushPriceToBinanceAd = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => pushPriceInputSchema.parse(data))
   .handler(async ({ data }): Promise<PushPriceResult> => {
-    await requireSession(data.sessionToken);
+    try {
+      await requireSession(data.sessionToken);
+    } catch {
+      return {
+        ok: false,
+        advNo: data.advNo,
+        side: data.side,
+        price: data.price,
+        message: "Sesi dashboard kedaluwarsa atau belum login. Silakan refresh halaman.",
+        error: "UNAUTHORIZED_SESSION",
+        binanceCode: "401",
+        timestamp: Date.now(),
+      };
+    }
 
     const res = await updateMerchantAd({
       data: {

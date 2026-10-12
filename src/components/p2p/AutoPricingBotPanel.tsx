@@ -92,6 +92,7 @@ interface AutoPricingBotPanelProps {
   fairPrice: number;
   stockHpp?: number;
   bankBalanceIdr?: number;
+  sessionToken?: string | null;
   onApplyPrice?: (payload: {
     buyPrice: number;
     sellPrice: number;
@@ -109,6 +110,7 @@ export function AutoPricingBotPanel({
   fairPrice,
   stockHpp = 0,
   bankBalanceIdr = 0,
+  sessionToken,
   onApplyPrice,
   onRefresh,
   isRefreshing = false,
@@ -348,9 +350,15 @@ export function AutoPricingBotPanel({
     if (side === "buy") setIsPushingBuy(true);
     else setIsPushingSell(true);
 
+    const effectiveToken =
+      sessionToken ||
+      (typeof window !== "undefined" ? sessionStorage.getItem("p2p_session_token") : null) ||
+      undefined;
+
     try {
       const res = await pushPriceFn({
         data: {
+          sessionToken: effectiveToken,
           advNo: advNo.trim(),
           side,
           price,

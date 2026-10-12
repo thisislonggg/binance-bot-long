@@ -920,6 +920,7 @@ function Dashboard() {
             fairPrice={s.fair_price || 0}
             stockHpp={pnl?.open_position_avg_cost_idr || 0}
             bankBalanceIdr={freeCashIdr}
+            sessionToken={sessionToken ?? undefined}
             onApplyPrice={(payload) => {
               const side = payload.targetSide || tradeSide;
               setTradeSide(side);
