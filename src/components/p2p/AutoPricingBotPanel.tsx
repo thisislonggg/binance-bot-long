@@ -47,6 +47,9 @@ import {
   PiggyBank,
   Coins,
   Clock,
+  Activity,
+  Play,
+  Server,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -60,6 +63,12 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  saveBotConfigToServer,
+  getBotConfigFromServer,
+  triggerBackgroundBotTickServer,
+  getBackgroundBotStatusServer,
+} from "@/lib/background-bot-engine";
 import {
   pushPriceToBinanceAd,
   type PushPriceResult,
@@ -141,11 +150,63 @@ export function AutoPricingBotPanel({
   const [importJsonInput, setImportJsonInput] = useState("");
   const [showImportBox, setShowImportBox] = useState(false);
 
-  // Simpan perubahan config ke localStorage
+  // Token autentikasi sesi
+  const effectiveToken =
+    sessionToken ||
+    (typeof window !== "undefined" ? sessionStorage.getItem("p2p_session_token") : null) ||
+    undefined;
+
+  // Server functions untuk background engine 24/7
+  const saveConfigToServerFn = useServerFn(saveBotConfigToServer);
+  const getConfigFromServerFn = useServerFn(getBotConfigFromServer);
+  const triggerTickFn = useServerFn(triggerBackgroundBotTickServer);
+  const getStatusFn = useServerFn(getBackgroundBotStatusServer);
+  const [isTriggeringServerTick, setIsTriggeringServerTick] = useState(false);
+
+  // Polling status background runner dari server setiap 5 detik
+  const { data: serverBotStatus, refetch: refetchServerStatus } = useQuery({
+    queryKey: ["p2p-background-bot-status"],
+    queryFn: async () => {
+      const res = await getStatusFn({ data: { sessionToken: effectiveToken } });
+      return res.ok ? res.lastRun : null;
+    },
+    refetchInterval: 5000,
+  });
+
+  // Sync initial config from server if available
+  useEffect(() => {
+    getConfigFromServerFn({ data: { sessionToken: effectiveToken } })
+      .then((res) => {
+        if (res.ok && res.config) {
+          setConfig((prev) => {
+            const merged = { ...prev, ...res.config };
+            saveBotConfig(merged);
+            return merged;
+          });
+        }
+      })
+      .catch(() => {});
+  }, [getConfigFromServerFn, effectiveToken]);
+
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Simpan perubahan config ke localStorage & Supabase
   const updateConfig = (updates: Partial<CompetitorFilterConfig>) => {
     setConfig((prev) => {
       const next = { ...prev, ...updates };
       saveBotConfig(next);
+
+      // Debounce sync ke server Supabase agar background runner 24/7 selalu sinkron
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => {
+        saveConfigToServerFn({
+          data: {
+            sessionToken: effectiveToken,
+            config: next as Record<string, unknown>,
+          },
+        }).catch(() => {});
+      }, 500);
+
       return next;
     });
   };
@@ -479,11 +540,6 @@ export function AutoPricingBotPanel({
     const price = side === "buy" ? recommendedBuyPrice : recommendedSellPrice;
     if (side === "buy") setIsPushingBuy(true);
     else setIsPushingSell(true);
-
-    const effectiveToken =
-      sessionToken ||
-      (typeof window !== "undefined" ? sessionStorage.getItem("p2p_session_token") : null) ||
-      undefined;
 
     const effectiveBuyStock =
       side === "buy"
@@ -3979,6 +4035,146 @@ export function AutoPricingBotPanel({
                     </p>
                   </div>
                 )}
+              </div>
+
+              {/* Otomasi 24/7 Tanpa Buka Website (Background Server Auto-Pricing) */}
+              <div className="rounded-xl border border-primary/40 bg-primary/5 p-3.5 space-y-3 shadow-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-primary/20 pb-2.5">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <Server className="size-4 text-primary" />
+                      <h4 className="text-xs font-bold text-foreground">
+                        Otomasi 24/7 di Background Server (Tanpa Buka Website)
+                      </h4>
+                      <Badge className="h-5 px-1.5 text-[0.6rem] bg-emerald-500/20 text-emerald-400 border-emerald-500/30 font-bold gap-1">
+                        <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        24 JAM NONSTOP
+                      </Badge>
+                    </div>
+                    <p className="text-[0.68rem] text-muted-foreground">
+                      Bot terus berjalan memantau pasar dan mengupdate harga iklan di Binance secara otomatis di server meskipun browser atau laptop Anda dimatikan!
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      type="button"
+                      disabled={isTriggeringServerTick}
+                      onClick={async () => {
+                        setIsTriggeringServerTick(true);
+                        try {
+                          const res = await triggerTickFn({ data: { sessionToken: effectiveToken } });
+                          if (res.ok) {
+                            toast.success(res.message);
+                            refetchServerStatus();
+                          } else {
+                            toast.warning(res.message || res.error || "Gagal menjalankan tick server");
+                          }
+                        } catch (e) {
+                          toast.error(`Error: ${String(e)}`);
+                        } finally {
+                          setIsTriggeringServerTick(false);
+                        }
+                      }}
+                      className="h-7 text-xs px-2.5 border-primary/40 text-primary hover:bg-primary/10 gap-1.5 font-semibold"
+                      title="Jalankan satu siklus auto-pricing langsung di server sekarang"
+                    >
+                      <Play className={`size-3 ${isTriggeringServerTick ? "animate-spin" : ""}`} />
+                      <span>{isTriggeringServerTick ? "Menjalankan..." : "Test Run di Server"}</span>
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Status Terakhir Server Run */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                  <div className="rounded-lg bg-surface/80 p-2.5 border border-border/70 space-y-1">
+                    <span className="text-[0.68rem] text-muted-foreground font-semibold flex items-center gap-1">
+                      <Clock className="size-3 text-primary" /> Status Terakhir Server Run:
+                    </span>
+                    <div className="text-foreground font-semibold text-xs flex items-center justify-between">
+                      <span>
+                        {serverBotStatus && typeof serverBotStatus === "object" && (serverBotStatus as Record<string, unknown>).timestamp
+                          ? `${Math.max(1, Math.round((Date.now() - Number((serverBotStatus as Record<string, unknown>).timestamp)) / 1000))} detik lalu`
+                          : "Menunggu trigger pertama"}
+                      </span>
+                      <span className="text-[0.68rem] text-muted-foreground">
+                        {serverBotStatus && typeof serverBotStatus === "object" && (serverBotStatus as Record<string, unknown>).timestamp
+                          ? new Date(Number((serverBotStatus as Record<string, unknown>).timestamp)).toLocaleTimeString("id-ID")
+                          : "-"}
+                      </span>
+                    </div>
+                    <p className="text-[0.65rem] text-muted-foreground truncate">
+                      {String((serverBotStatus as Record<string, unknown>)?.message || "Server siap menjalankan auto-push.")}
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg bg-surface/80 p-2.5 border border-border/70 space-y-1">
+                    <span className="text-[0.68rem] text-muted-foreground font-semibold flex items-center gap-1">
+                      <Activity className="size-3 text-emerald-400" /> Harga Terupdate di Binance:
+                    </span>
+                    <div className="flex justify-between items-center text-xs">
+                      <div>
+                        <span className="text-[0.65rem] text-muted-foreground">Beli: </span>
+                        <strong className="num text-bid">
+                          {(serverBotStatus as Record<string, unknown>)?.recommendedBuyPrice
+                            ? `Rp ${Number((serverBotStatus as Record<string, unknown>).recommendedBuyPrice).toLocaleString("id-ID")}`
+                            : "-"}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="text-[0.65rem] text-muted-foreground">Jual: </span>
+                        <strong className="num text-ask">
+                          {(serverBotStatus as Record<string, unknown>)?.recommendedSellPrice
+                            ? `Rp ${Number((serverBotStatus as Record<string, unknown>).recommendedSellPrice).toLocaleString("id-ID")}`
+                            : "-"}
+                        </strong>
+                      </div>
+                    </div>
+                    <div className="text-[0.65rem] text-muted-foreground flex gap-2">
+                      <span className={(serverBotStatus as Record<string, unknown>)?.buyPushed ? "text-bid font-bold" : ""}>
+                        Buy: {(serverBotStatus as Record<string, unknown>)?.buyPushed ? "✓ Pushed" : "Idle"}
+                      </span>
+                      <span className={(serverBotStatus as Record<string, unknown>)?.sellPushed ? "text-ask font-bold" : ""}>
+                        Sell: {(serverBotStatus as Record<string, unknown>)?.sellPushed ? "✓ Pushed" : "Idle"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* URL Webhook / Cron Eksternal */}
+                <div className="rounded-lg bg-surface/60 p-2.5 border border-border/60 space-y-1.5 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[0.68rem] font-bold text-foreground flex items-center gap-1.5">
+                      <Globe className="size-3.5 text-primary" /> Webhook Cron URL (Trigger 24 Jam):
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        const cronUrl =
+                          typeof window !== "undefined"
+                            ? `${window.location.origin}/api/cron/auto-pricing`
+                            : "https://binance-bot-long.vercel.app/api/cron/auto-pricing";
+                        navigator.clipboard.writeText(cronUrl);
+                        toast.success("Webhook URL Cron berhasil disalin!");
+                      }}
+                      className="h-6 text-[0.65rem] px-2 text-primary hover:bg-primary/10 gap-1 font-semibold"
+                    >
+                      <Copy className="size-3" />
+                      <span>Salin URL</span>
+                    </Button>
+                  </div>
+                  <div className="p-1.5 rounded bg-surface-2 font-mono text-[0.65rem] text-primary truncate select-all">
+                    {typeof window !== "undefined"
+                      ? `${window.location.origin}/api/cron/auto-pricing`
+                      : "https://binance-bot-long.vercel.app/api/cron/auto-pricing"}
+                  </div>
+                  <p className="text-[0.65rem] text-muted-foreground leading-relaxed">
+                    💡 <strong>Tips:</strong> Vercel Cron sudah otomatis memanggil URL ini setiap 1 menit. Jika ingin update lebih cepat (setiap 10-30 detik nonstop), cukup salin URL di atas dan pasang di layanan gratis seperti <strong>cron-job.org</strong> atau <strong>UptimeRobot</strong>!
+                  </p>
+                </div>
               </div>
 
               {/* Log Respons Terakhir dari Binance API */}

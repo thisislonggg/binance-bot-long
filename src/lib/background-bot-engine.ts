@@ -1,0 +1,436 @@
+import { createServerFn } from "@tanstack/react-start";
+import { z } from "zod";
+import { requireSession } from "./auth";
+import { getSupabase } from "./supabase";
+import {
+  DEFAULT_BOT_CONFIG,
+  computeCompetitorPricing,
+  type CompetitorFilterConfig,
+} from "./competitor-bot";
+import { fetchP2pAds } from "./p2p.functions";
+import { fetchFundingBalanceInternal } from "./binance-sync";
+import { fetchActiveP2pSellOrdersInternal } from "./payment-verifier";
+import { updateMerchantAdInternal } from "./binance-merchant";
+
+export type BackgroundBotTickResult = {
+  ok: boolean;
+  timestamp: number;
+  message: string;
+  botEnabled: boolean;
+  autoPushEnabled: boolean;
+  recommendedBuyPrice?: number;
+  recommendedSellPrice?: number;
+  buyPushed?: boolean;
+  sellPushed?: boolean;
+  buyResult?: Record<string, unknown>;
+  sellResult?: Record<string, unknown>;
+  error?: string;
+};
+
+// ── In-Memory Cache Terakhir untuk Akselerasi & Fallback jika DB Offline ──────
+let inMemoryLastCronRun: Record<string, unknown> | null = null;
+let inMemoryLastPushed: { buy?: number; sell?: number; buyStock?: number } = {};
+
+/**
+ * Mengambil konfigurasi bot P2P dari Supabase user_settings atau fallback default/env.
+ */
+export async function getBotConfigServer(): Promise<CompetitorFilterConfig> {
+  const db = getSupabase();
+  let cfg = { ...DEFAULT_BOT_CONFIG };
+
+  if (db) {
+    try {
+      const { data } = await db
+        .from("user_settings")
+        .select("value")
+        .eq("key", "p2p_bot_config")
+        .maybeSingle();
+
+      if (data?.value) {
+        const parsed = JSON.parse(data.value);
+        cfg = { ...cfg, ...parsed };
+      }
+    } catch {
+      // Abaikan jika database belum siap
+    }
+  }
+
+  // Override dari Environment Variables jika ada
+  if (!cfg.merchantBuyAdvNo && process.env.BINANCE_BUY_ADV_NO) {
+    cfg.merchantBuyAdvNo = process.env.BINANCE_BUY_ADV_NO.trim();
+  }
+  if (!cfg.merchantSellAdvNo && process.env.BINANCE_SELL_ADV_NO) {
+    cfg.merchantSellAdvNo = process.env.BINANCE_SELL_ADV_NO.trim();
+  }
+
+  return cfg;
+}
+
+/**
+ * Menyimpan konfigurasi bot ke Supabase user_settings agar bisa dibaca background runner.
+ */
+export async function saveBotConfigServer(config: Partial<CompetitorFilterConfig>): Promise<boolean> {
+  const db = getSupabase();
+  if (!db) return false;
+
+  try {
+    const existing = await getBotConfigServer();
+    const merged = { ...existing, ...config };
+    await db.from("user_settings").upsert({
+      key: "p2p_bot_config",
+      value: JSON.stringify(merged),
+    });
+    return true;
+  } catch (err) {
+    console.error("Gagal menyimpan bot config ke Supabase:", err);
+    return false;
+  }
+}
+
+/**
+ * Mesin Inti: Menjalankan satu siklus otomatisasi (Auto-Pricing Tick).
+ * Dapat dipanggil oleh:
+ * 1. Endpoint Webhook/Cron GET/POST /api/cron/auto-pricing
+ * 2. Vercel Cron (setiap 1 menit)
+ * 3. Supabase pg_cron (setiap 30-60 detik)
+ * 4. Background Server Daemon / Electron Tray
+ * 5. Tombol "Test Run Server Sekarang" di dashboard
+ */
+export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
+  const now = Date.now();
+  const db = getSupabase();
+
+  try {
+    const config = await getBotConfigServer();
+
+    if (!config.enabled) {
+      const res: BackgroundBotTickResult = {
+        ok: true,
+        timestamp: now,
+        botEnabled: false,
+        autoPushEnabled: config.autoPushToBinance,
+        message: "Bot sedang dinonaktifkan (OFF). Nyalakan toggle 'Status Bot' di dashboard untuk menjalankan auto-push 24/7.",
+      };
+      inMemoryLastCronRun = res;
+      return res;
+    }
+
+    if (!config.autoPushToBinance) {
+      const res: BackgroundBotTickResult = {
+        ok: true,
+        timestamp: now,
+        botEnabled: true,
+        autoPushEnabled: false,
+        message: "Auto-Push ke Binance sedang OFF. Aktifkan opsi 'Auto-Push Live ke Binance' agar bot otomatis memperbarui harga iklan.",
+      };
+      inMemoryLastCronRun = res;
+      return res;
+    }
+
+    // 1. Ambil data pasar live (iklan kompetitor buy & sell)
+    const [sellRefAds, buyRefAds] = await Promise.all([
+      fetchP2pAds("BUY"), // acuan jual saya
+      fetchP2pAds("SELL"), // acuan beli saya
+    ]);
+
+    if (!sellRefAds.length && !buyRefAds.length) {
+      return {
+        ok: false,
+        timestamp: now,
+        botEnabled: true,
+        autoPushEnabled: true,
+        message: "Gagal mengambil data live orderbook dari Binance P2P. Coba beberapa saat lagi.",
+      };
+    }
+
+    // 2. Ambil saldo funding wallet live
+    const funding = await fetchFundingBalanceInternal();
+    const liveStockUsdt = funding?.usdt ?? 0;
+
+    // 3. Ambil modal HPP & Saldo Modal Bank dari user_settings
+    let stockHpp = 0;
+    let initialCapitalIdr = 180_000_000;
+    let bankBalanceIdr = 0;
+
+    if (db) {
+      try {
+        const { data: capData } = await db
+          .from("user_settings")
+          .select("value")
+          .eq("key", "pnl_initial_capital")
+          .maybeSingle();
+        if (capData?.value) {
+          initialCapitalIdr = Number(capData.value) || 180_000_000;
+        }
+
+        const { data: hppData } = await db
+          .from("user_settings")
+          .select("value")
+          .eq("key", "pnl_custom_stock_cost")
+          .maybeSingle();
+        if (hppData?.value) {
+          stockHpp = Number(hppData.value) || 0;
+        }
+      } catch {
+        // Abaikan
+      }
+    }
+
+    // 4. Ambil orderan P2P aktif untuk segregasi modal kas
+    const activeOrders = await fetchActiveP2pSellOrdersInternal();
+    const activeBuyOrders = activeOrders.filter((o) => o.tradeType === "BUY");
+    const activeBuyOrdersUsdt =
+      Math.round(activeBuyOrders.reduce((s, o) => s + (o.amountUsdt || 0), 0) * 100) / 100;
+    const activeBuyOrdersIdr =
+      Math.round(activeBuyOrders.reduce((s, o) => s + (o.totalPriceIdr || 0), 0));
+
+    // 5. Jalankan kalkulator strategi kompetitor
+    const pricing = computeCompetitorPricing({
+      sellRefAds,
+      buyRefAds,
+      fairPrice: 0,
+      config,
+      stockHpp,
+      bankBalanceIdr,
+      initialCapitalIdr,
+      liveStockUsdt,
+      activeBuyOrdersUsdt,
+      activeBuyOrdersIdr,
+    });
+
+    // 6. Muat riwayat harga terakhir yang pernah di-push
+    let lastPushedPrices = { ...inMemoryLastPushed };
+    if (db) {
+      try {
+        const { data: lpData } = await db
+          .from("user_settings")
+          .select("value")
+          .eq("key", "p2p_bot_last_pushed")
+          .maybeSingle();
+        if (lpData?.value) {
+          lastPushedPrices = { ...lastPushedPrices, ...JSON.parse(lpData.value) };
+        }
+      } catch {
+        // Abaikan
+      }
+    }
+
+    let buyPushed = false;
+    let sellPushed = false;
+    let buyResult: Record<string, unknown> | undefined = undefined;
+    let sellResult: Record<string, unknown> | undefined = undefined;
+
+    // ── Eksekusi Push Iklan Beli (BUY) ───────────────────────────────────────
+    const roundedBuyPrice = Math.round(pricing.recommendedBuyPrice);
+    if (config.merchantBuyAdvNo && roundedBuyPrice > 0) {
+      const isBuyBlocked =
+        (!config.manualBuyStockUsdt || config.manualBuyStockUsdt <= 0) &&
+        (pricing.bankAllocation.isBelowMinLimit || pricing.bankAllocation.autoBuyStockUsdt <= 0);
+
+      if (!isBuyBlocked) {
+        const currentBuyStock =
+          config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0
+            ? config.manualBuyStockUsdt
+            : pricing.bankAllocation.autoBuyStockUsdt;
+
+        const priceChanged = lastPushedPrices.buy !== roundedBuyPrice;
+        const stockChanged =
+          lastPushedPrices.buyStock !== undefined &&
+          lastPushedPrices.buyStock !== currentBuyStock;
+
+        if (priceChanged || stockChanged) {
+          const buyRes = await updateMerchantAdInternal({
+            advNo: config.merchantBuyAdvNo.trim(),
+            side: "buy",
+            price: roundedBuyPrice,
+            amount: currentBuyStock > 0 ? currentBuyStock : undefined,
+            minSingleTransAmount: config.manualBuyMinLimitIdr || 50_000_000,
+            maxSingleTransAmount: config.manualBuyMaxLimitIdr || 500_000_000,
+          });
+
+          buyResult = buyRes as unknown as Record<string, unknown>;
+          if (buyRes.ok) {
+            buyPushed = true;
+            lastPushedPrices.buy = roundedBuyPrice;
+            lastPushedPrices.buyStock = currentBuyStock;
+          }
+        }
+      }
+    }
+
+    // ── Eksekusi Push Iklan Jual (SELL) ──────────────────────────────────────
+    const roundedSellPrice = Math.round(pricing.recommendedSellPrice);
+    if (config.merchantSellAdvNo && roundedSellPrice > 0) {
+      const priceChanged = lastPushedPrices.sell !== roundedSellPrice;
+
+      if (priceChanged) {
+        const maxAvailableSellStockUsdt =
+          liveStockUsdt > 0 ? Math.max(0, Math.floor((liveStockUsdt / 1.0005) * 100) / 100) : 0;
+        const effectiveSellStock =
+          config.manualSellStockUsdt && config.manualSellStockUsdt > 0
+            ? config.manualSellStockUsdt
+            : maxAvailableSellStockUsdt > 0
+            ? maxAvailableSellStockUsdt
+            : undefined;
+
+        const sellRes = await updateMerchantAdInternal({
+          advNo: config.merchantSellAdvNo.trim(),
+          side: "sell",
+          price: roundedSellPrice,
+          amount: effectiveSellStock,
+          minSingleTransAmount: config.manualSellMinLimitIdr,
+          maxSingleTransAmount:
+            config.manualSellMaxLimitIdr ||
+            (effectiveSellStock && roundedSellPrice > 0
+              ? Math.floor(effectiveSellStock * roundedSellPrice)
+              : undefined),
+        });
+
+        sellResult = sellRes as unknown as Record<string, unknown>;
+        if (sellRes.ok) {
+          sellPushed = true;
+          lastPushedPrices.sell = roundedSellPrice;
+        }
+      }
+    }
+
+    inMemoryLastPushed = lastPushedPrices;
+
+    // 7. Simpan ringkasan run ke Supabase
+    const tickResult: BackgroundBotTickResult = {
+      ok: true,
+      timestamp: now,
+      botEnabled: true,
+      autoPushEnabled: true,
+      recommendedBuyPrice: roundedBuyPrice,
+      recommendedSellPrice: roundedSellPrice,
+      buyPushed,
+      sellPushed,
+      buyResult,
+      sellResult,
+      message: `Siklus bot background selesai. Beli: Rp ${roundedBuyPrice.toLocaleString("id-ID")}${buyPushed ? " (Pushed)" : ""}, Jual: Rp ${roundedSellPrice.toLocaleString("id-ID")}${sellPushed ? " (Pushed)" : ""}`,
+    };
+
+    inMemoryLastCronRun = tickResult;
+
+    if (db) {
+      try {
+        await Promise.all([
+          db.from("user_settings").upsert({
+            key: "p2p_bot_last_pushed",
+            value: JSON.stringify(lastPushedPrices),
+          }),
+          db.from("user_settings").upsert({
+            key: "p2p_bot_last_cron_run",
+            value: JSON.stringify(tickResult),
+          }),
+        ]);
+      } catch {
+        // Abaikan
+      }
+    }
+
+    return tickResult;
+  } catch (err) {
+    const errStr = err instanceof Error ? err.message : String(err);
+    const failRes: BackgroundBotTickResult = {
+      ok: false,
+      timestamp: now,
+      botEnabled: true,
+      autoPushEnabled: true,
+      message: `Gagal menjalankan background auto-pricing: ${errStr}`,
+      error: errStr,
+    };
+    inMemoryLastCronRun = failRes;
+    return failRes;
+  }
+}
+
+// ── Server Functions untuk Komunikasi Frontend Dashboard ─────────────────────
+
+const saveConfigInputSchema = z.object({
+  sessionToken: z.string().optional(),
+  config: z.record(z.unknown()),
+});
+
+export const saveBotConfigToServer = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => saveConfigInputSchema.parse(data))
+  .handler(async ({ data }): Promise<{ ok: boolean; message: string }> => {
+    try {
+      await requireSession(data.sessionToken);
+    } catch {
+      return { ok: false, message: "Sesi tidak terverifikasi." };
+    }
+
+    const ok = await saveBotConfigServer(data.config as Partial<CompetitorFilterConfig>);
+    return {
+      ok,
+      message: ok
+        ? "Konfigurasi bot berhasil disinkronkan ke server 24/7."
+        : "Gagal menyimpan ke database Supabase.",
+    };
+  });
+
+const getConfigInputSchema = z.object({
+  sessionToken: z.string().optional(),
+});
+
+export const getBotConfigFromServer = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => getConfigInputSchema.parse(data))
+  .handler(async ({ data }): Promise<{ ok: boolean; config: CompetitorFilterConfig }> => {
+    try {
+      await requireSession(data.sessionToken);
+    } catch {
+      return { ok: false, config: DEFAULT_BOT_CONFIG };
+    }
+
+    const config = await getBotConfigServer();
+    return { ok: true, config };
+  });
+
+export const triggerBackgroundBotTickServer = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => getConfigInputSchema.parse(data))
+  .handler(async ({ data }): Promise<BackgroundBotTickResult> => {
+    try {
+      await requireSession(data.sessionToken);
+    } catch {
+      return {
+        ok: false,
+        timestamp: Date.now(),
+        botEnabled: false,
+        autoPushEnabled: false,
+        message: "Sesi tidak terverifikasi.",
+      };
+    }
+
+    return runBackgroundBotTick();
+  });
+
+export const getBackgroundBotStatusServer = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => getConfigInputSchema.parse(data))
+  .handler(async ({ data }): Promise<{ ok: boolean; lastRun: Record<string, unknown> | null }> => {
+    try {
+      await requireSession(data.sessionToken);
+    } catch {
+      return { ok: false, lastRun: null };
+    }
+
+    const db = getSupabase();
+    if (db) {
+      try {
+        const { data: dbData } = await db
+          .from("user_settings")
+          .select("value")
+          .eq("key", "p2p_bot_last_cron_run")
+          .maybeSingle();
+
+        if (dbData?.value) {
+          return { ok: true, lastRun: JSON.parse(dbData.value) };
+        }
+      } catch {
+        // Abaikan
+      }
+    }
+
+    return { ok: true, lastRun: inMemoryLastCronRun };
+  });

@@ -619,22 +619,19 @@ const updateAdInputSchema = z.object({
   payMethods: z.array(z.string()).optional(),
 });
 
-export const updateMerchantAd = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => updateAdInputSchema.parse(data))
-  .handler(async ({ data }): Promise<MerchantApiResponse> => {
-    try {
-      await requireSession(data.sessionToken);
-    } catch {
-      return {
-        ok: false,
-        code: "UNAUTHORIZED",
-        error: "Sesi dashboard tidak terverifikasi.",
-        message: "Sesi dashboard kedaluwarsa atau belum terautentikasi.",
-      };
-    }
+export type UpdateAdInternalParams = {
+  advNo: string;
+  price: number;
+  amount?: number;
+  minSingleTransAmount?: number;
+  maxSingleTransAmount?: number;
+  side?: "buy" | "sell" | "BUY" | "SELL";
+  payMethods?: string[];
+};
 
-    const cleanAdvNo = data.advNo.trim().replace(/^#/, "");
-    const newPrice = Math.round(data.price);
+export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Promise<MerchantApiResponse> {
+  const cleanAdvNo = data.advNo.trim().replace(/^#/, "");
+  const newPrice = Math.round(data.price);
 
     // =========================================================================
     // PROTOKOL UTAMA: Binance P2P Skill Agent SAPI (Full-Object Update)
@@ -1046,6 +1043,22 @@ export const updateMerchantAd = createServerFn({ method: "POST" })
       data: { livePrice: livePriceAfter, targetPrice: newPrice, liveStock: liveStockAfter, targetStock, lastError },
       timestamp: Date.now(),
     };
+}
+
+export const updateMerchantAd = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => updateAdInputSchema.parse(data))
+  .handler(async ({ data }): Promise<MerchantApiResponse> => {
+    try {
+      await requireSession(data.sessionToken);
+    } catch {
+      return {
+        ok: false,
+        code: "UNAUTHORIZED",
+        error: "Sesi dashboard tidak terverifikasi.",
+        message: "Sesi dashboard kedaluwarsa atau belum terautentikasi.",
+      };
+    }
+    return updateMerchantAdInternal(data);
   });
 
 // ── 3. Update Status Iklan (Nyalakan / Jeda) ─────────────────────────────────

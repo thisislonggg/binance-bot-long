@@ -694,84 +694,87 @@ export type FundingBalance = {
 
 const fundingBalanceInputSchema = z.object({ sessionToken: z.string().optional() });
 
-export const getBinanceFundingBalance = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => fundingBalanceInputSchema.parse(data))
-  .handler(async ({ data }): Promise<FundingBalance> => {
-    await requireSession(data.sessionToken);
+export async function fetchFundingBalanceInternal(): Promise<FundingBalance> {
+  const apiKey = process.env["BINANCE_API_KEY"]?.trim();
+  const apiSecret = process.env["BINANCE_API_SECRET"]?.trim();
 
-    const apiKey = process.env["BINANCE_API_KEY"]?.trim();
-    const apiSecret = process.env["BINANCE_API_SECRET"]?.trim();
+  if (
+    !apiKey ||
+    !apiSecret ||
+    apiKey === "your_binance_api_key_here" ||
+    apiSecret === "your_binance_api_secret_here"
+  ) {
+    return { usdt: null, free: null, locked: null, not_configured: true };
+  }
 
-    if (
-      !apiKey ||
-      !apiSecret ||
-      apiKey === "your_binance_api_key_here" ||
-      apiSecret === "your_binance_api_secret_here"
-    ) {
-      return { usdt: null, free: null, locked: null, not_configured: true };
-    }
+  try {
+    const timestamp = Date.now();
+    const params = `asset=USDT&timestamp=${timestamp}&recvWindow=60000`;
+    const signature = createHmac("sha256", apiSecret).update(params).digest("hex");
+    const fundingBaseUrl =
+      process.env["BINANCE_FUNDING_PROXY_URL"] ||
+      (process.env["BINANCE_PROXY_URL"]
+        ? process.env["BINANCE_PROXY_URL"].replace(/\/sapi\/v1\/c2c\/orderMatch\/listUserOrderHistory.*$/, "/sapi/v1/asset/get-funding-asset")
+        : null) ||
+      (process.env["BINANCE_API_BASE_URL"]
+        ? `${process.env["BINANCE_API_BASE_URL"].replace(/\/sapi\/v1\/c2c.*$/, "")}/sapi/v1/asset/get-funding-asset`
+        : BINANCE_FUNDING_URL);
+    const url = `${fundingBaseUrl}?${params}&signature=${signature}`;
 
-    try {
-      const timestamp = Date.now();
-      const params = `asset=USDT&timestamp=${timestamp}&recvWindow=60000`;
-      const signature = createHmac("sha256", apiSecret).update(params).digest("hex");
-      const fundingBaseUrl =
-        process.env["BINANCE_FUNDING_PROXY_URL"] ||
-        (process.env["BINANCE_PROXY_URL"]
-          ? process.env["BINANCE_PROXY_URL"].replace(/\/sapi\/v1\/c2c\/orderMatch\/listUserOrderHistory.*$/, "/sapi/v1/asset/get-funding-asset")
-          : null) ||
-        (process.env["BINANCE_API_BASE_URL"]
-          ? `${process.env["BINANCE_API_BASE_URL"].replace(/\/sapi\/v1\/c2c.*$/, "")}/sapi/v1/asset/get-funding-asset`
-          : BINANCE_FUNDING_URL);
-      const url = `${fundingBaseUrl}?${params}&signature=${signature}`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "X-MBX-APIKEY": apiKey,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    });
 
-      const resp = await fetch(url, {
-        method: "POST",
-        headers: {
-          "X-MBX-APIKEY": apiKey,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-      });
-
-      if (!resp.ok) {
-        const body = await resp.text().catch(() => "");
-        return {
-          usdt: null,
-          free: null,
-          locked: null,
-          error: `HTTP ${resp.status}: ${body.slice(0, 200)}`,
-        };
-      }
-
-      const json = (await resp.json()) as FundingAsset[];
-      if (!Array.isArray(json)) {
-        return { usdt: null, free: null, locked: null, error: "Respons API tidak diharapkan" };
-      }
-
-      const usdtAsset = json.find((a) => a.asset?.toUpperCase() === "USDT");
-      if (!usdtAsset) {
-        // Jika tidak ada USDT di Funding Wallet (saldo 0)
-        return { usdt: 0, free: 0, locked: 0 };
-      }
-
-      const free = parseFloat(usdtAsset.free) || 0;
-      const locked = parseFloat(usdtAsset.locked) || 0;
-      const freeze = parseFloat(usdtAsset.freeze) || 0;
-      const withdrawing = parseFloat(usdtAsset.withdrawing) || 0;
-      const total = free + locked + freeze + withdrawing;
-
-      return {
-        usdt: total,
-        free,
-        locked: locked + freeze + withdrawing,
-      };
-    } catch (err) {
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
       return {
         usdt: null,
         free: null,
         locked: null,
-        error: String(err),
+        error: `HTTP ${resp.status}: ${body.slice(0, 200)}`,
       };
     }
+
+    const json = (await resp.json()) as FundingAsset[];
+    if (!Array.isArray(json)) {
+      return { usdt: null, free: null, locked: null, error: "Respons API tidak diharapkan" };
+    }
+
+    const usdtAsset = json.find((a) => a.asset?.toUpperCase() === "USDT");
+    if (!usdtAsset) {
+      // Jika tidak ada USDT di Funding Wallet (saldo 0)
+      return { usdt: 0, free: 0, locked: 0 };
+    }
+
+    const free = parseFloat(usdtAsset.free) || 0;
+    const locked = parseFloat(usdtAsset.locked) || 0;
+    const freeze = parseFloat(usdtAsset.freeze) || 0;
+    const withdrawing = parseFloat(usdtAsset.withdrawing) || 0;
+    const total = free + locked + freeze + withdrawing;
+
+    return {
+      usdt: total,
+      free,
+      locked: locked + freeze + withdrawing,
+    };
+  } catch (err) {
+    return {
+      usdt: null,
+      free: null,
+      locked: null,
+      error: String(err),
+    };
+  }
+}
+
+export const getBinanceFundingBalance = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => fundingBalanceInputSchema.parse(data))
+  .handler(async ({ data }): Promise<FundingBalance> => {
+    await requireSession(data.sessionToken);
+    return fetchFundingBalanceInternal();
   });
 

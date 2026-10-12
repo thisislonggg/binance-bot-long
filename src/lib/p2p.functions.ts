@@ -26,7 +26,7 @@ let lastLiveSellAds: Ad[] = [];
 let lastLiveBuyAds: Ad[] = [];
 const inFlightP2p: { BUY: Promise<Ad[]> | null; SELL: Promise<Ad[]> | null } = { BUY: null, SELL: null };
 
-async function fetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: number = 17650): Promise<Ad[]> {
+export async function fetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: number = 17650): Promise<Ad[]> {
   if (inFlightP2p[tradeType]) {
     return inFlightP2p[tradeType]!;
   }

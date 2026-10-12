@@ -46,11 +46,44 @@ function isH3SwallowedErrorBody(body: string): boolean {
 
 import { handleIncomingBankNotificationWebhook } from "./lib/payment-verifier";
 import { handleIncomingChatMessageWebhook } from "./lib/liveness-verifier";
+import { runBackgroundBotTick } from "./lib/background-bot-engine";
+
+let serverLoopStarted = false;
+function ensureServerAutoPricingLoop() {
+  if (serverLoopStarted) return;
+  serverLoopStarted = true;
+  // Menjalankan auto-pricing background loop otomatis setiap 20 detik selama server aktif
+  setInterval(async () => {
+    try {
+      await runBackgroundBotTick();
+    } catch {
+      // Abaikan error di background loop
+    }
+  }, 20_000);
+}
 
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      ensureServerAutoPricingLoop();
       const url = new URL(request.url);
+
+      // Webhook / Cron 24/7 Otomatisasi Auto-Pricing (Dapat dipanggil Vercel Cron, pg_cron, atau cron-job.org)
+      if (
+        url.pathname === "/api/cron/auto-pricing" ||
+        url.pathname === "/api/bot/auto-pricing-tick" ||
+        url.pathname === "/api/bot/tick"
+      ) {
+        const result = await runBackgroundBotTick();
+        return new Response(JSON.stringify(result, null, 2), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "access-control-allow-origin": "*",
+            "cache-control": "no-store, no-cache, must-revalidate",
+          },
+        });
+      }
 
       // Webhook Penerima Notifikasi Bank (MacroDroid / Android Push Notif Forwarder)
       if (url.pathname === "/api/webhook/bank-notification") {
