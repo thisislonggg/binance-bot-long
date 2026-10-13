@@ -5,6 +5,8 @@
 
 import { type Ad } from "./p2p-engine";
 
+export const MAKER_FEE_RATE = 0.0005; // 0.05% fee pembuat iklan (maker) di Binance P2P IDR
+
 export type CompetitorFilterConfig = {
   enabled: boolean;
   // ── Filter Merchant Acuan ──────────────────────────────────────────────────
@@ -758,7 +760,6 @@ export function computeCompetitorPricing(input: {
   };
 
   // ── Hitung Batas Pengaman JUAL (Sell Floor Guard) & BELI (Buy Ceiling Guard) di Awal ──
-  const MAKER_FEE_RATE = 0.0005;
   const effectiveHpp = stockHpp > 0
     ? stockHpp
     : (fairPrice > 0 ? fairPrice : liveMarketAnchor);
