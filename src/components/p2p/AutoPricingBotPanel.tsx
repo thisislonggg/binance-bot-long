@@ -381,18 +381,7 @@ export function AutoPricingBotPanel({
       if (o.advNo) {
         return o.advNo.trim().replace(/^#/, "") === cleanSellAdvNo;
       }
-      return true;
-    })
-  );
-
-  const cleanBuyAdvNo = config.merchantBuyAdvNo?.trim().replace(/^#/, "");
-  const hasActiveBuyOrder = Boolean(
-    cleanBuyAdvNo &&
-    activeBuyOrdersList.some((o) => {
-      if (o.advNo) {
-        return o.advNo.trim().replace(/^#/, "") === cleanBuyAdvNo;
-      }
-      return true;
+      return false;
     })
   );
 
@@ -771,7 +760,7 @@ export function AutoPricingBotPanel({
 
     const effectiveMinLimit = side === "buy" ? effectiveBuyMinLimit : effectiveSellMinLimit;
 
-    const hasActiveOrdersOnSide = side === "sell" ? hasActiveSellOrder : hasActiveBuyOrder;
+    const hasActiveOrdersOnSide = side === "sell" ? hasActiveSellOrder : false;
 
     try {
       const res = await pushPriceFn({
@@ -900,11 +889,11 @@ export function AutoPricingBotPanel({
               : bankAllocation.autoBuyStockUsdt;
 
           const priceChanged = lastPushedPricesRef.current.buy !== roundedPrice;
-          const stockChanged = !hasActiveBuyOrder && lastPushedStockRef.current.buy !== currentBuyStock;
+          const stockChanged = lastPushedStockRef.current.buy !== currentBuyStock;
 
           if (priceChanged || stockChanged) {
             lastPushedPricesRef.current.buy = roundedPrice;
-            if (!hasActiveBuyOrder) lastPushedStockRef.current.buy = currentBuyStock;
+            lastPushedStockRef.current.buy = currentBuyStock;
             lastPushTimeRef.current = now;
             buyTriggered = true;
             handlePushPrice("buy");

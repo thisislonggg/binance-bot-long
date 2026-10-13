@@ -285,18 +285,11 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
       }
     }
 
-    // ── Cek Pesanan P2P Aktif pada Iklan Jual & Beli ─────────────────────────
-    const cleanBuyAdvNo = config.merchantBuyAdvNo?.trim().replace(/^#/, "");
-    const hasActiveBuyOrder = Boolean(
-      cleanBuyAdvNo &&
-      activeBuyOrders.some((o) => {
-        if (o.advNo) {
-          return o.advNo.trim().replace(/^#/, "") === cleanBuyAdvNo;
-        }
-        return true;
-      })
-    );
-
+    // ── Cek Pesanan P2P Aktif pada Iklan Jual (SELL) ─────────────────────────
+    // Pada iklan JUAL, Binance mengunci kuota kripto merchant di escrow sehingga
+    // perubahan stok/limit ditolak Binance saat ada order aktif berlangsung.
+    // Pada iklan BELI (BUY), Binance TIDAK mengunci kuota kripto merchant, sehingga
+    // kuota stok & batas transaksi fiat SELALU dapat dan WAJIB diperbarui otomatis.
     const cleanSellAdvNo = config.merchantSellAdvNo?.trim().replace(/^#/, "");
     const activeSellOrders = activeOrders.filter((o) => o.tradeType === "SELL");
     const hasActiveSellOrder = Boolean(
@@ -305,7 +298,7 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
         if (o.advNo) {
           return o.advNo.trim().replace(/^#/, "") === cleanSellAdvNo;
         }
-        return true;
+        return false;
       })
     );
 
@@ -366,7 +359,7 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
             : pricing.bankAllocation.autoBuyStockUsdt;
 
         const priceChanged = lastPushedPrices.buy !== roundedBuyPrice;
-        const stockChanged = !hasActiveBuyOrder && lastPushedPrices.buyStock !== currentBuyStock;
+        const stockChanged = lastPushedPrices.buyStock !== currentBuyStock;
         const statusNeedsOnline = lastPushedPrices.buyStatus === "OFFLINE";
 
         if (priceChanged || stockChanged || statusNeedsOnline) {
@@ -374,20 +367,20 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
             advNo: config.merchantBuyAdvNo.trim(),
             side: "buy",
             price: roundedBuyPrice,
-            amount: hasActiveBuyOrder ? undefined : (currentBuyStock > 0 ? currentBuyStock : undefined),
-            minSingleTransAmount: hasActiveBuyOrder ? undefined : (config.manualBuyMinLimitIdr || 50_000_000),
-            maxSingleTransAmount: hasActiveBuyOrder ? undefined : (config.manualBuyMaxLimitIdr || 500_000_000),
+            amount: currentBuyStock > 0 ? currentBuyStock : undefined,
+            minSingleTransAmount: config.manualBuyMinLimitIdr || 50_000_000,
+            maxSingleTransAmount: config.manualBuyMaxLimitIdr || 500_000_000,
             floorPrice: effectiveBuyFloor > 0 ? effectiveBuyFloor : undefined,
             ceilingPrice: effectiveBuyCeiling < 999_999 ? effectiveBuyCeiling : undefined,
-            hasActiveOrders: hasActiveBuyOrder,
-            priceOnly: hasActiveBuyOrder,
+            hasActiveOrders: false,
+            priceOnly: false,
           });
 
           buyResult = buyRes as unknown as Record<string, unknown>;
           if (buyRes.ok) {
             buyPushed = true;
             lastPushedPrices.buy = roundedBuyPrice;
-            if (!hasActiveBuyOrder) lastPushedPrices.buyStock = currentBuyStock;
+            lastPushedPrices.buyStock = currentBuyStock;
             lastPushedPrices.buyStatus = "ONLINE";
           }
         }

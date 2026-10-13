@@ -699,10 +699,12 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
     const targetAdvNo = String(existingAd["advNo"] || cleanAdvNo);
 
     // Tentukan tradeType: 0 = BUY, 1 = SELL
-    let isBuy = true;
+    let isBuy = targetSide === "sell" ? false : targetSide === "buy" ? true : true;
     const tt = existingAd["tradeType"];
     if (tt === "SELL" || tt === 1 || tt === "1") {
       isBuy = false;
+    } else if (tt === "BUY" || tt === 0 || tt === "0") {
+      isBuy = true;
     }
 
     // ── DEFENSE-IN-DEPTH: Proteksi Batas Bawah Iklan Jual & Batas Iklan Beli (Hard Floor/Ceiling Clamp) ──
@@ -928,12 +930,19 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
     };
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PENGECEKAN JALUR HARGA SAJA (PRICE-ONLY / ONGOING ORDERS):
-    // Jika data.priceOnly atau data.hasActiveOrders bernilai true (sedang ada pesanan aktif
-    // yang mengunci kuota kripto di Binance), Binance menolak modifikasi stok & limit.
-    // Jalankan langsung jalur cepat Price-Only update tanpa membuang waktu.
+    // PENGECEKAN JALUR HARGA SAJA (PRICE-ONLY / ONGOING SELL ORDERS):
+    // Jalur cepat Price-Only HANYA aktif jika:
+    // 1. Permintaan eksplisit priceOnly (tanpa request update stok), ATAU
+    // 2. Iklan JUAL (SELL) yang sedang memiliki pesanan aktif (hasActiveOrders: true),
+    //    karena pada iklan JUAL Binance mengunci saldo kripto merchant di escrow sehingga
+    //    perubahan stok/limit ditolak Binance saat ada order berlangsung.
+    //
+    // CATATAN KRUSIAL: Untuk iklan BELI (BUY), Binance TIDAK mengunci kuota kripto merchant,
+    // sehingga stok USDT beli dan limit IDR WAJIB selalu diperbarui otomatis mengikuti kas!
     // ─────────────────────────────────────────────────────────────────────────
-    const isPriceOnlyMode = Boolean(data.priceOnly || data.hasActiveOrders);
+    const isPriceOnlyMode =
+      (Boolean(data.priceOnly) && !isStockUpdateRequested) ||
+      (!isBuy && Boolean(data.hasActiveOrders));
 
     if (isPriceOnlyMode) {
       // 1a. Standard SAPI /sapi/v1/c2c/ads/update (Price Only)
@@ -1015,10 +1024,61 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
         updateSucceeded = true;
       } else {
         lastError = res1;
+      }
 
-        // JIKA GAGAL (karena pesanan aktif mengunci saldo atau parameter limit):
-        // JANGAN buang waktu mencoba 4 permutasi stok yang akan ditolak!
-        // Langsung eksekusi fallback instan ke Price-Only agar harga segera terupdate di pasar!
+      // Percobaan 2: Singular SAPI /sapi/v1/c2c/ad/update dengan stok & limit
+      if (!updateSucceeded && isStockUpdateRequested) {
+        const res2 = await binanceMerchantRequest({
+          endpoint: "/sapi/v1/c2c/ad/update",
+          method: "POST",
+          params: {
+            advNo: targetAdvNo,
+            adNo: targetAdvNo,
+            price: newPrice,
+            priceType: 1,
+            initAmount: totalInitAmount,
+            amount: targetStock,
+            minSingleTransAmount: minLimit,
+            maxSingleTransAmount: maxLimit,
+          },
+        });
+        if (res2.ok && res2.data !== false) {
+          updateSucceeded = true;
+        } else {
+          lastError = res2;
+        }
+      }
+
+      // Percobaan 3: Agent SAPI /sapi/v1/c2c/agent/ads/update (JSON Body dengan Stok & Limit)
+      if (!updateSucceeded && isStockUpdateRequested) {
+        const agentCleanPayload: Record<string, any> = {
+          advNo: targetAdvNo,
+          price: newPrice,
+          priceType: 1,
+          amount: targetStock,
+          initAmount: totalInitAmount,
+          minSingleTransAmount: minLimit,
+          maxSingleTransAmount: maxLimit,
+        };
+        if (effectiveTradeMethods && effectiveTradeMethods.length > 0) {
+          agentCleanPayload.tradeMethods = effectiveTradeMethods;
+        }
+
+        const res3 = await binanceAgentRequest({
+          endpoint: "/sapi/v1/c2c/agent/ads/update",
+          method: "POST",
+          body: agentCleanPayload,
+        });
+        if (res3.ok && res3.data !== false) {
+          updateSucceeded = true;
+        } else {
+          lastError = res3;
+        }
+      }
+
+      // Fallback: Jika SEMUA percobaan update stok di atas ditolak Binance,
+      // fallback ke Price-Only agar bot tidak telat update harga di pasar.
+      if (!updateSucceeded) {
         const resFallbackStd = await binanceMerchantRequest({
           endpoint: "/sapi/v1/c2c/ads/update",
           method: "POST",
