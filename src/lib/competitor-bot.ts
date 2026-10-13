@@ -31,8 +31,12 @@ export type CompetitorFilterConfig = {
 
   // ── Filter Merchant (Blacklist / Whitelist) ────────────────────────────────
   merchantFilterMode: "all_except_blacklist" | "whitelist_only";
-  blacklistedMerchants: string[]; // Daftar nama merchant yang diabaikan/di-blacklist
-  whitelistedMerchants: string[]; // Daftar nama merchant yang diizinkan (jika mode whitelist)
+  blacklistedMerchants: string[]; // Daftar nama merchant yang diabaikan/di-blacklist (global fallback)
+  whitelistedMerchants: string[]; // Daftar nama merchant yang diizinkan (jika mode whitelist) (global fallback)
+  blacklistedSellMerchants?: string[]; // Blacklist khusus acuan Iklan Jual (sell_ref)
+  blacklistedBuyMerchants?: string[];  // Blacklist khusus acuan Iklan Beli (buy_ref)
+  whitelistedSellMerchants?: string[]; // Whitelist khusus acuan Iklan Jual (sell_ref)
+  whitelistedBuyMerchants?: string[];  // Whitelist khusus acuan Iklan Beli (buy_ref)
 
   // ── Anti-Spoofing & Rentang Harga Pasar Absolut ───────────────────────────
   ignoreOutlierSpikes: boolean;   // Abaikan harga pancingan yang melompat ekstrem dari klaster pasar
@@ -106,6 +110,10 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   merchantFilterMode: "all_except_blacklist",
   blacklistedMerchants: [],
   whitelistedMerchants: [],
+  blacklistedSellMerchants: [],
+  blacklistedBuyMerchants: [],
+  whitelistedSellMerchants: [],
+  whitelistedBuyMerchants: [],
 
   ignoreOutlierSpikes: true,
   maxOutlierGapRp: 40,
@@ -301,6 +309,7 @@ export type CompetitorPricingResult = {
     floorPrice?: number;
     autoSwitched?: boolean;
     switchedToRank?: number;
+    marketAnchorPrice?: number;
   };
   spreadAbs: number;
   spreadPct: number;
@@ -379,26 +388,42 @@ export function evaluateCompetitorAds(
       });
     }
 
-    // 0b. Filter Whitelist / Blacklist Merchant
+    // 0b. Filter Whitelist / Blacklist Merchant (Dipisahkan antara Sisi JUAL vs BELI)
+    const activeWhitelist = side === "sell_ref"
+      ? (Array.isArray(config.whitelistedSellMerchants) && config.whitelistedSellMerchants.length > 0
+          ? config.whitelistedSellMerchants
+          : (config.whitelistedMerchants || []))
+      : (Array.isArray(config.whitelistedBuyMerchants) && config.whitelistedBuyMerchants.length > 0
+          ? config.whitelistedBuyMerchants
+          : (config.whitelistedMerchants || []));
+
+    const activeBlacklist = side === "sell_ref"
+      ? (Array.isArray(config.blacklistedSellMerchants) && config.blacklistedSellMerchants.length > 0
+          ? config.blacklistedSellMerchants
+          : (config.blacklistedMerchants || []))
+      : (Array.isArray(config.blacklistedBuyMerchants) && config.blacklistedBuyMerchants.length > 0
+          ? config.blacklistedBuyMerchants
+          : (config.blacklistedMerchants || []));
+
     if (config.merchantFilterMode === "whitelist_only") {
-      const isWhitelisted = (config.whitelistedMerchants || []).some(
+      const isWhitelisted = activeWhitelist.some(
         (w) => w && w.trim().toLowerCase() === ad.merchant_name.trim().toLowerCase(),
       );
       if (!isWhitelisted) {
         reasons.push({
           code: "NOT_IN_WHITELIST",
-          message: "Merchant tidak ada di daftar Whitelist pilihan Anda",
+          message: `Merchant tidak ada di daftar Whitelist ${side === "sell_ref" ? "Jual" : "Beli"} pilihan Anda`,
         });
       }
     } else {
-      if (config.blacklistedMerchants && config.blacklistedMerchants.length > 0) {
-        const isBlacklisted = config.blacklistedMerchants.some(
+      if (activeBlacklist.length > 0) {
+        const isBlacklisted = activeBlacklist.some(
           (b) => b && b.trim().toLowerCase() === ad.merchant_name.trim().toLowerCase(),
         );
         if (isBlacklisted) {
           reasons.push({
             code: "BLACKLISTED",
-            message: "Merchant ada di daftar blacklist Anda",
+            message: `Merchant ada di daftar blacklist ${side === "sell_ref" ? "Jual" : "Beli"} Anda`,
           });
         }
       }
@@ -936,15 +961,30 @@ export function computeCompetitorPricing(input: {
     }
   }
 
-  // 3. Hitung dan Terapkan Batas Pengaman BELI (Buy Ceiling Guard) dari Harga Jual
-  // Ceiling Beli (Batas Atas): Mencegah beli kemahalan di pucuk yang mengikis spread minimal terhadap harga jual
+  // 3. Hitung dan Terapkan Batas Pengaman BELI (Buy Ceiling Guard) dari Harga Pasar Kompetitor
+  // Ceiling Beli (Batas Atas): Mengikuti harga pasar kompetitor jual dikurangi minSpreadRp,
+  // BUKAN dari batas bawah jual (Floor modal) kita sendiri.
+  let marketSellAnchor = 0;
   if (config.buyCeilingMode === "auto_fair") {
-    // FORMULA RESMI: Batas Atas Beli = Harga Jual Bot Kita - Min Spread Guard
-    const effectiveSellForCeiling = recommendedSellPrice > 0
-      ? recommendedSellPrice
-      : (rawSellPrice > 0 ? rawSellPrice : (fairPrice > 0 ? fairPrice : liveMarketAnchor));
+    // Acuan pasar kompetitor murni:
+    // 1. Target kompetitor jual alami (naturalSellTargetPrice: harga acuan kompetitor target sebelum terbentur floor)
+    // 2. Atau harga jual terbaik kompetitor di orderbook (bestMarketSell)
+    // 3. Atau fair price pasar live
+    const bestMarketSell = Array.isArray(sellRefAds) && sellRefAds.length > 0 && sellRefAds[0]?.price > 10_000
+      ? sellRefAds[0].price
+      : 0;
 
-    calculatedBuyCeiling = Math.round(effectiveSellForCeiling - config.minSpreadRp);
+    if (naturalSellTargetPrice > 0 && !sellBase.isFallback) {
+      marketSellAnchor = naturalSellTargetPrice;
+    } else if (bestMarketSell > 0) {
+      marketSellAnchor = bestMarketSell;
+    } else if (fairPrice > 0) {
+      marketSellAnchor = fairPrice;
+    } else {
+      marketSellAnchor = liveMarketAnchor;
+    }
+
+    calculatedBuyCeiling = Math.round(marketSellAnchor - config.minSpreadRp);
   } else {
     // Mode Manual: gunakan manualBuyCeilingRp jika diisi
     calculatedBuyCeiling = config.manualBuyCeilingRp > 0 ? Math.round(config.manualBuyCeilingRp) : 999_999;
@@ -972,6 +1012,7 @@ export function computeCompetitorPricing(input: {
     triggered: false,
     ceilingPrice: calculatedBuyCeiling,
     floorPrice: calculatedBuyFloor,
+    marketAnchorPrice: marketSellAnchor > 0 ? marketSellAnchor : undefined,
   };
 
   let recommendedBuyPrice = rawBuyPrice;
@@ -1095,10 +1136,9 @@ export function computeCompetitorPricing(input: {
     }
   }
 
-  // Jika recommendedSellPrice disesuaikan di Step 6 dan mode auto_fair,
-  // sinkronisasikan ulang calculatedBuyCeiling agar konsisten
-  if (config.buyCeilingMode === "auto_fair") {
-    calculatedBuyCeiling = Math.round(recommendedSellPrice - config.minSpreadRp);
+  // Jika mode auto_fair, pastikan calculatedBuyCeiling tetap konsisten terhadap harga pasar kompetitor
+  if (config.buyCeilingMode === "auto_fair" && marketSellAnchor > 0) {
+    calculatedBuyCeiling = Math.round(marketSellAnchor - config.minSpreadRp);
     if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) {
       calculatedBuyCeiling = Math.min(calculatedBuyCeiling, config.maxPriceBoundRp);
     }
@@ -1106,6 +1146,7 @@ export function computeCompetitorPricing(input: {
       calculatedBuyCeiling = calculatedBuyFloor;
     }
     buyGuard.ceilingPrice = calculatedBuyCeiling;
+    buyGuard.marketAnchorPrice = marketSellAnchor;
   }
 
   // ── FINAL SAFEGUARDS: PENGAMAN MUTLAK SEMUA BATAS HARGA YANG DI-SET PENGGUNA ──
@@ -1306,6 +1347,10 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (!Array.isArray(merged.filterPaymentMethods)) merged.filterPaymentMethods = [];
     if (!Array.isArray(merged.blacklistedMerchants)) merged.blacklistedMerchants = [];
     if (!Array.isArray(merged.whitelistedMerchants)) merged.whitelistedMerchants = [];
+    if (!Array.isArray(merged.blacklistedSellMerchants)) merged.blacklistedSellMerchants = [...merged.blacklistedMerchants];
+    if (!Array.isArray(merged.blacklistedBuyMerchants)) merged.blacklistedBuyMerchants = [...merged.blacklistedMerchants];
+    if (!Array.isArray(merged.whitelistedSellMerchants)) merged.whitelistedSellMerchants = [...merged.whitelistedMerchants];
+    if (!Array.isArray(merged.whitelistedBuyMerchants)) merged.whitelistedBuyMerchants = [...merged.whitelistedMerchants];
     if (!merged.targetMode) merged.targetMode = "rank";
     if (!merged.merchantFilterMode) merged.merchantFilterMode = "all_except_blacklist";
     if (!merged.paymentMatchMode) merged.paymentMatchMode = "any";

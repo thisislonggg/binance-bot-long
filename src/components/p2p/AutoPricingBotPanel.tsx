@@ -149,6 +149,7 @@ export function AutoPricingBotPanel({
 
   const [blacklistInput, setBlacklistInput] = useState("");
   const [whitelistInput, setWhitelistInput] = useState("");
+  const [merchantFilterSide, setMerchantFilterSide] = useState<"sell" | "buy">("sell");
   const [importJsonInput, setImportJsonInput] = useState("");
   const [showImportBox, setShowImportBox] = useState(false);
 
@@ -235,10 +236,13 @@ export function AutoPricingBotPanel({
   const importConfigFromJson = () => {
     try {
       const parsed = JSON.parse(importJsonInput);
-      const merged: CompetitorFilterConfig = { ...DEFAULT_BOT_CONFIG, ...parsed };
       if (!Array.isArray(merged.filterPaymentMethods)) merged.filterPaymentMethods = [];
       if (!Array.isArray(merged.blacklistedMerchants)) merged.blacklistedMerchants = [];
       if (!Array.isArray(merged.whitelistedMerchants)) merged.whitelistedMerchants = [];
+      if (!Array.isArray(merged.blacklistedSellMerchants)) merged.blacklistedSellMerchants = [...merged.blacklistedMerchants];
+      if (!Array.isArray(merged.blacklistedBuyMerchants)) merged.blacklistedBuyMerchants = [...merged.blacklistedMerchants];
+      if (!Array.isArray(merged.whitelistedSellMerchants)) merged.whitelistedSellMerchants = [...merged.whitelistedMerchants];
+      if (!Array.isArray(merged.whitelistedBuyMerchants)) merged.whitelistedBuyMerchants = [...merged.whitelistedMerchants];
       setConfig(merged);
       saveBotConfig(merged);
       setImportJsonInput("");
@@ -264,57 +268,85 @@ export function AutoPricingBotPanel({
     toast.info("Filter metode pembayaran di-reset ke semua.");
   };
 
-  // ── Manajemen Blacklist & Whitelist ─────────────────────────────────────────
-  const addBlacklistedMerchant = (name: string) => {
+  // ── Manajemen Blacklist & Whitelist (Terpisah JUAL & BELI) ───────────────────
+  const getActiveBlacklist = (side: "sell" | "buy" = merchantFilterSide): string[] => {
+    if (side === "sell") {
+      return Array.isArray(config.blacklistedSellMerchants) && config.blacklistedSellMerchants.length > 0
+        ? config.blacklistedSellMerchants
+        : config.blacklistedMerchants || [];
+    }
+    return Array.isArray(config.blacklistedBuyMerchants) && config.blacklistedBuyMerchants.length > 0
+      ? config.blacklistedBuyMerchants
+      : config.blacklistedMerchants || [];
+  };
+
+  const getActiveWhitelist = (side: "sell" | "buy" = merchantFilterSide): string[] => {
+    if (side === "sell") {
+      return Array.isArray(config.whitelistedSellMerchants) && config.whitelistedSellMerchants.length > 0
+        ? config.whitelistedSellMerchants
+        : config.whitelistedMerchants || [];
+    }
+    return Array.isArray(config.whitelistedBuyMerchants) && config.whitelistedBuyMerchants.length > 0
+      ? config.whitelistedBuyMerchants
+      : config.whitelistedMerchants || [];
+  };
+
+  const addBlacklistedMerchant = (name: string, targetSide: "sell" | "buy" = merchantFilterSide) => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    const current = config.blacklistedMerchants || [];
+    const sideKey = targetSide === "sell" ? "blacklistedSellMerchants" : "blacklistedBuyMerchants";
+    const current = getActiveBlacklist(targetSide);
     if (current.some((m) => m.toLowerCase() === trimmed.toLowerCase())) {
-      toast.info(`Merchant "${trimmed}" sudah ada di blacklist.`);
+      toast.info(`Merchant "${trimmed}" sudah ada di blacklist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"}.`);
       return;
     }
     const next = [...current, trimmed];
-    updateConfig({ blacklistedMerchants: next });
-    toast.success(`"${trimmed}" ditambahkan ke blacklist.`);
+    updateConfig({ [sideKey]: next });
+    toast.success(`"${trimmed}" ditambahkan ke blacklist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"}.`);
     setBlacklistInput("");
   };
 
-  const removeBlacklistedMerchant = (name: string) => {
-    const current = config.blacklistedMerchants || [];
+  const removeBlacklistedMerchant = (name: string, targetSide: "sell" | "buy" = merchantFilterSide) => {
+    const sideKey = targetSide === "sell" ? "blacklistedSellMerchants" : "blacklistedBuyMerchants";
+    const current = getActiveBlacklist(targetSide);
     const next = current.filter((m) => m.toLowerCase() !== name.toLowerCase());
-    updateConfig({ blacklistedMerchants: next });
-    toast.info(`Merchant "${name}" dihapus dari blacklist.`);
+    updateConfig({ [sideKey]: next });
+    toast.info(`Merchant "${name}" dihapus dari blacklist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"}.`);
   };
 
-  const clearBlacklist = () => {
-    updateConfig({ blacklistedMerchants: [] });
-    toast.info("Daftar blacklist dikosongkan.");
+  const clearBlacklist = (targetSide: "sell" | "buy" = merchantFilterSide) => {
+    const sideKey = targetSide === "sell" ? "blacklistedSellMerchants" : "blacklistedBuyMerchants";
+    updateConfig({ [sideKey]: [] });
+    toast.info(`Daftar blacklist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"} dikosongkan.`);
   };
 
-  const addWhitelistedMerchant = (name: string) => {
+  const addWhitelistedMerchant = (name: string, targetSide: "sell" | "buy" = merchantFilterSide) => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    const current = config.whitelistedMerchants || [];
+    const sideKey = targetSide === "sell" ? "whitelistedSellMerchants" : "whitelistedBuyMerchants";
+    const current = getActiveWhitelist(targetSide);
     if (current.some((m) => m.toLowerCase() === trimmed.toLowerCase())) {
-      toast.info(`Merchant "${trimmed}" sudah ada di whitelist.`);
+      toast.info(`Merchant "${trimmed}" sudah ada di whitelist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"}.`);
       return;
     }
     const next = [...current, trimmed];
-    updateConfig({ whitelistedMerchants: next });
-    toast.success(`"${trimmed}" ditambahkan ke whitelist.`);
+    updateConfig({ [sideKey]: next });
+    toast.success(`"${trimmed}" ditambahkan ke whitelist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"}.`);
     setWhitelistInput("");
   };
 
-  const removeWhitelistedMerchant = (name: string) => {
-    const current = config.whitelistedMerchants || [];
+  const removeWhitelistedMerchant = (name: string, targetSide: "sell" | "buy" = merchantFilterSide) => {
+    const sideKey = targetSide === "sell" ? "whitelistedSellMerchants" : "whitelistedBuyMerchants";
+    const current = getActiveWhitelist(targetSide);
     const next = current.filter((m) => m.toLowerCase() !== name.toLowerCase());
-    updateConfig({ whitelistedMerchants: next });
-    toast.info(`Merchant "${name}" dihapus dari whitelist.`);
+    updateConfig({ [sideKey]: next });
+    toast.info(`Merchant "${name}" dihapus dari whitelist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"}.`);
   };
 
-  const clearWhitelist = () => {
-    updateConfig({ whitelistedMerchants: [] });
-    toast.info("Daftar whitelist dikosongkan.");
+  const clearWhitelist = (targetSide: "sell" | "buy" = merchantFilterSide) => {
+    const sideKey = targetSide === "sell" ? "whitelistedSellMerchants" : "whitelistedBuyMerchants";
+    updateConfig({ [sideKey]: [] });
+    toast.info(`Daftar whitelist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"} dikosongkan.`);
   };
 
   // ── Query Order P2P Aktif Real-Time (BUY & SELL) ───────────────────────────
@@ -1828,10 +1860,17 @@ export function AutoPricingBotPanel({
                         ((radarTab === "sell" && sellTargetMerchant?.merchant_name === item.ad.merchant_name && sellTargetMerchant?.price === item.ad.price) ||
                           (radarTab === "buy" && buyTargetMerchant?.merchant_name === item.ad.merchant_name && buyTargetMerchant?.price === item.ad.price));
 
-                      const isBlacklisted = config.blacklistedMerchants?.some(
+                      const sideBlacklist = radarTab === "sell"
+                        ? (config.blacklistedSellMerchants ?? config.blacklistedMerchants ?? [])
+                        : (config.blacklistedBuyMerchants ?? config.blacklistedMerchants ?? []);
+                      const sideWhitelist = radarTab === "sell"
+                        ? (config.whitelistedSellMerchants ?? config.whitelistedMerchants ?? [])
+                        : (config.whitelistedBuyMerchants ?? config.whitelistedMerchants ?? []);
+
+                      const isBlacklisted = sideBlacklist.some(
                         (b) => b && b.toLowerCase() === item.ad.merchant_name.toLowerCase(),
                       );
-                      const isWhitelisted = config.whitelistedMerchants?.some(
+                      const isWhitelisted = sideWhitelist.some(
                         (w) => w && w.toLowerCase() === item.ad.merchant_name.toLowerCase(),
                       );
 
@@ -3275,17 +3314,59 @@ export function AutoPricingBotPanel({
                 </div>
               </div>
 
+              {/* Selector Sisi JUAL vs BELI untuk Pengaturan Blokir Merchant */}
+              <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-surface border border-border/80">
+                <div className="space-y-0.5">
+                  <div className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                    <UserX className="size-3.5 text-primary" /> Target Blokir Merchant:
+                  </div>
+                  <p className="text-[0.68rem] text-muted-foreground">
+                    Blokir merchant diatur terpisah antara acuan Iklan Jual dan Iklan Beli
+                  </p>
+                </div>
+                <div className="inline-flex rounded-md bg-surface-2 p-0.5 border border-border/60">
+                  <button
+                    type="button"
+                    onClick={() => setMerchantFilterSide("sell")}
+                    className={`flex items-center gap-1.5 rounded px-3 py-1 text-xs font-bold transition-all ${
+                      merchantFilterSide === "sell"
+                        ? "bg-ask text-white shadow-xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    🟢 Iklan Jual (SELL)
+                    <span className="rounded-full bg-black/25 px-1.5 py-0.2 text-[0.6rem]">
+                      {getActiveBlacklist("sell").length} BL
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMerchantFilterSide("buy")}
+                    className={`flex items-center gap-1.5 rounded px-3 py-1 text-xs font-bold transition-all ${
+                      merchantFilterSide === "buy"
+                        ? "bg-bid text-white shadow-xs"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    🔵 Iklan Beli (BUY)
+                    <span className="rounded-full bg-black/25 px-1.5 py-0.2 text-[0.6rem]">
+                      {getActiveBlacklist("buy").length} BL
+                    </span>
+                  </button>
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 {/* Panel Blacklist */}
                 <div className="rounded-lg border border-border/70 bg-surface-2/40 p-3 space-y-2.5 text-xs">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-foreground flex items-center gap-1.5">
-                      <UserX className="size-3.5 text-destructive" /> Daftar Blacklist ({config.blacklistedMerchants?.length || 0})
+                      <UserX className="size-3.5 text-destructive" /> Blacklist Iklan {merchantFilterSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"} ({getActiveBlacklist(merchantFilterSide).length})
                     </span>
-                    {config.blacklistedMerchants?.length > 0 && (
+                    {getActiveBlacklist(merchantFilterSide).length > 0 && (
                       <button
                         type="button"
-                        onClick={clearBlacklist}
+                        onClick={() => clearBlacklist(merchantFilterSide)}
                         className="text-[0.68rem] text-destructive hover:underline"
                       >
                         Kosongkan
@@ -3296,13 +3377,13 @@ export function AutoPricingBotPanel({
                   <form
                     onSubmit={(e) => {
                       e.preventDefault();
-                      addBlacklistedMerchant(blacklistInput);
+                      addBlacklistedMerchant(blacklistInput, merchantFilterSide);
                     }}
                     className="flex items-center gap-2"
                   >
                     <Input
                       type="text"
-                      placeholder="Ketik nickname merchant..."
+                      placeholder={`Ketik nickname merchant untuk ${merchantFilterSide === "sell" ? "Iklan Jual" : "Iklan Beli"}...`}
                       value={blacklistInput}
                       onChange={(e) => setBlacklistInput(e.target.value)}
                       className="h-7 text-xs bg-surface"
@@ -3313,8 +3394,8 @@ export function AutoPricingBotPanel({
                   </form>
 
                   <div className="flex flex-wrap gap-1.5 min-h-[48px] max-h-36 overflow-y-auto pt-1">
-                    {config.blacklistedMerchants && config.blacklistedMerchants.length > 0 ? (
-                      config.blacklistedMerchants.map((name) => (
+                    {getActiveBlacklist(merchantFilterSide).length > 0 ? (
+                      getActiveBlacklist(merchantFilterSide).map((name) => (
                         <span
                           key={name}
                           className="inline-flex items-center gap-1 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-xs font-semibold text-destructive"
@@ -3322,7 +3403,7 @@ export function AutoPricingBotPanel({
                           {name}
                           <button
                             type="button"
-                            onClick={() => removeBlacklistedMerchant(name)}
+                            onClick={() => removeBlacklistedMerchant(name, merchantFilterSide)}
                             className="rounded-full p-0.5 hover:bg-destructive/20 ml-0.5"
                           >
                             <X className="size-3" />
@@ -3331,7 +3412,7 @@ export function AutoPricingBotPanel({
                       ))
                     ) : (
                       <p className="text-[0.7rem] text-muted-foreground italic py-1">
-                        Belum ada merchant di blacklist. Klik [🚫] pada tabel radar di atas untuk blacklist instan.
+                        Belum ada merchant di blacklist {merchantFilterSide === "sell" ? "Iklan Jual" : "Iklan Beli"}. Klik [🚫] pada tabel radar di atas untuk blacklist instan.
                       </p>
                     )}
                   </div>
@@ -3341,12 +3422,12 @@ export function AutoPricingBotPanel({
                 <div className="rounded-lg border border-border/70 bg-surface-2/40 p-3 space-y-2.5 text-xs">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-foreground flex items-center gap-1.5">
-                      <UserCheck className="size-3.5 text-primary" /> Daftar Whitelist ({config.whitelistedMerchants?.length || 0})
+                      <UserCheck className="size-3.5 text-primary" /> Whitelist Iklan {merchantFilterSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"} ({getActiveWhitelist(merchantFilterSide).length})
                     </span>
-                    {config.whitelistedMerchants?.length > 0 && (
+                    {getActiveWhitelist(merchantFilterSide).length > 0 && (
                       <button
                         type="button"
-                        onClick={clearWhitelist}
+                        onClick={() => clearWhitelist(merchantFilterSide)}
                         className="text-[0.68rem] text-muted-foreground hover:underline"
                       >
                         Kosongkan
@@ -3357,13 +3438,13 @@ export function AutoPricingBotPanel({
                   <form
                     onSubmit={(e) => {
                       e.preventDefault();
-                      addWhitelistedMerchant(whitelistInput);
+                      addWhitelistedMerchant(whitelistInput, merchantFilterSide);
                     }}
                     className="flex items-center gap-2"
                   >
                     <Input
                       type="text"
-                      placeholder="Ketik nickname merchant..."
+                      placeholder={`Ketik nickname merchant untuk ${merchantFilterSide === "sell" ? "Iklan Jual" : "Iklan Beli"}...`}
                       value={whitelistInput}
                       onChange={(e) => setWhitelistInput(e.target.value)}
                       className="h-7 text-xs bg-surface"
@@ -3374,8 +3455,8 @@ export function AutoPricingBotPanel({
                   </form>
 
                   <div className="flex flex-wrap gap-1.5 min-h-[48px] max-h-36 overflow-y-auto pt-1">
-                    {config.whitelistedMerchants && config.whitelistedMerchants.length > 0 ? (
-                      config.whitelistedMerchants.map((name) => (
+                    {getActiveWhitelist(merchantFilterSide).length > 0 ? (
+                      getActiveWhitelist(merchantFilterSide).map((name) => (
                         <span
                           key={name}
                           className="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary"
@@ -3383,7 +3464,7 @@ export function AutoPricingBotPanel({
                           {name}
                           <button
                             type="button"
-                            onClick={() => removeWhitelistedMerchant(name)}
+                            onClick={() => removeWhitelistedMerchant(name, merchantFilterSide)}
                             className="rounded-full p-0.5 hover:bg-primary/20 ml-0.5"
                           >
                             <X className="size-3" />
@@ -3392,7 +3473,7 @@ export function AutoPricingBotPanel({
                       ))
                     ) : (
                       <p className="text-[0.7rem] text-muted-foreground italic py-1">
-                        Belum ada merchant di whitelist. Aktifkan mode "Hanya Pantau Whitelist" jika ingin bersaing eksklusif.
+                        Belum ada merchant di whitelist {merchantFilterSide === "sell" ? "Iklan Jual" : "Iklan Beli"}. Aktifkan mode "Hanya Pantau Whitelist" jika ingin bersaing eksklusif.
                       </p>
                     )}
                   </div>
@@ -3487,7 +3568,7 @@ export function AutoPricingBotPanel({
                       onClick={() => updateConfig({ buyCeilingMode: "auto_fair", manualBuyCeilingRp: 0 })}
                       className="h-7 text-xs font-semibold"
                     >
-                      Auto dari Harga Jual - Min Spread
+                      Auto dari Pasar Kompetitor Jual - Min Spread
                     </Button>
                     <Button
                       type="button"
@@ -3496,7 +3577,7 @@ export function AutoPricingBotPanel({
                       onClick={() =>
                         updateConfig({
                           buyCeilingMode: "manual",
-                          manualBuyCeilingRp: config.manualBuyCeilingRp || buyGuard.ceilingPrice || 17825,
+                          manualBuyCeilingRp: config.manualBuyCeilingRp || buyGuard.ceilingPrice || 16825,
                         })
                       }
                       className="h-7 text-xs font-semibold"
@@ -3520,7 +3601,7 @@ export function AutoPricingBotPanel({
                     <div className="flex items-center justify-between pt-1 text-[0.68rem] text-muted-foreground">
                       <span>Formula Ceiling Auto:</span>
                       <strong className="num text-bid font-bold">
-                        {fmtRp2(pricingResult.recommendedSellPrice)} - Rp {config.minSpreadRp} = {fmtRp2(buyGuard.ceilingPrice)}
+                        {fmtRp2(buyGuard.marketAnchorPrice || pricingResult.recommendedSellPrice)} (Pasar Jual) - Rp {config.minSpreadRp} = {fmtRp2(buyGuard.ceilingPrice)}
                       </strong>
                     </div>
                   )}
@@ -3967,7 +4048,7 @@ export function AutoPricingBotPanel({
                           <p className="text-[0.6rem] text-muted-foreground">
                             {config.buyCeilingMode === "manual" && config.manualBuyCeilingRp && config.manualBuyCeilingRp > 0
                               ? `Manual Max: Rp ${config.manualBuyCeilingRp.toLocaleString("id-ID")}`
-                              : `Auto dari Harga Jual: ${fmtRp2(buyGuard.ceilingPrice)} (Jual - Rp ${config.minSpreadRp})`}
+                              : `Auto dari Pasar Kompetitor Jual: ${fmtRp2(buyGuard.ceilingPrice)} (Pasar ${fmtRp2(buyGuard.marketAnchorPrice || 0)} - Rp ${config.minSpreadRp})`}
                           </p>
                         </div>
                       </div>
