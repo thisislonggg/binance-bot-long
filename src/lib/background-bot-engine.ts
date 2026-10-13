@@ -88,10 +88,13 @@ export async function saveBotConfigServer(config: Partial<CompetitorFilterConfig
   if (!db) return true;
 
   try {
-    await db.from("user_settings").upsert({
-      key: "p2p_bot_config",
-      value: JSON.stringify(merged),
-    });
+    await db.from("user_settings").upsert(
+      {
+        key: "p2p_bot_config",
+        value: JSON.stringify(merged),
+      },
+      { onConflict: "key" },
+    );
     return true;
   } catch (err) {
     console.error("Gagal menyimpan bot config ke Supabase:", err);
@@ -238,7 +241,7 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
       buyRefAds,
       fairPrice,
       config,
-      stockHpp,
+      stockHpp: stockHpp > 0 ? stockHpp : (fairPrice > 0 ? fairPrice : 17_850),
       bankBalanceIdr,
       initialCapitalIdr,
       liveStockUsdt,
@@ -494,14 +497,20 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
     if (db) {
       try {
         await Promise.all([
-          db.from("user_settings").upsert({
-            key: "p2p_bot_last_pushed",
-            value: JSON.stringify(lastPushedPrices),
-          }),
-          db.from("user_settings").upsert({
-            key: "p2p_bot_last_cron_run",
-            value: JSON.stringify(tickResult),
-          }),
+          db.from("user_settings").upsert(
+            {
+              key: "p2p_bot_last_pushed",
+              value: JSON.stringify(lastPushedPrices),
+            },
+            { onConflict: "key" },
+          ),
+          db.from("user_settings").upsert(
+            {
+              key: "p2p_bot_last_cron_run",
+              value: JSON.stringify(tickResult),
+            },
+            { onConflict: "key" },
+          ),
         ]);
       } catch {
         // Abaikan

@@ -188,6 +188,21 @@ export function AutoPricingBotPanel({
         if (res.ok && res.config) {
           setConfig((prev) => {
             const merged = { ...prev, ...res.config };
+            // PENTING: Jangan biarkan server kosong/default menimpa batas pengaman (Floor/Ceiling/Bounds) lokal pengguna dengan 0!
+            if (prev.manualSellFloorRp && prev.manualSellFloorRp > 0 && (!res.config.manualSellFloorRp || res.config.manualSellFloorRp <= 0)) {
+              merged.manualSellFloorRp = prev.manualSellFloorRp;
+              merged.sellFloorMode = prev.sellFloorMode;
+            }
+            if (prev.manualBuyFloorRp && prev.manualBuyFloorRp > 0 && (!res.config.manualBuyFloorRp || res.config.manualBuyFloorRp <= 0)) {
+              merged.manualBuyFloorRp = prev.manualBuyFloorRp;
+              merged.buyFloorMode = prev.buyFloorMode;
+            }
+            if (prev.minPriceBoundRp && prev.minPriceBoundRp > 0 && (!res.config.minPriceBoundRp || res.config.minPriceBoundRp <= 0)) {
+              merged.minPriceBoundRp = prev.minPriceBoundRp;
+            }
+            if (prev.maxPriceBoundRp && prev.maxPriceBoundRp > 0 && (!res.config.maxPriceBoundRp || res.config.maxPriceBoundRp <= 0)) {
+              merged.maxPriceBoundRp = prev.maxPriceBoundRp;
+            }
             saveBotConfig(merged);
             return merged;
           });
@@ -3864,7 +3879,13 @@ export function AutoPricingBotPanel({
                         type="number"
                         min={0}
                         value={config.manualSellFloorRp}
-                        onChange={(e) => updateConfig({ manualSellFloorRp: Math.max(0, Number(e.target.value)) })}
+                        onChange={(e) => {
+                          const val = Math.max(0, Number(e.target.value));
+                          updateConfig({
+                            manualSellFloorRp: val,
+                            sellFloorMode: val > 0 ? "manual" : config.sellFloorMode,
+                          });
+                        }}
                         className="h-6.5 w-28 text-xs bg-surface text-right font-bold"
                       />
                     </div>

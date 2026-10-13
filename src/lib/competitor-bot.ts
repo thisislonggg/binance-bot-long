@@ -277,7 +277,9 @@ export type DisqualificationReason = {
     | "BLACKLISTED"
     | "NOT_IN_WHITELIST"
     | "PRICE_OUTLIER"
-    | "PRICE_OUT_OF_BOUNDS";
+    | "PRICE_OUT_OF_BOUNDS"
+    | "BELOW_SELL_FLOOR"
+    | "BELOW_BUY_FLOOR";
   message: string;
 };
 
@@ -374,6 +376,7 @@ export function evaluateCompetitorAds(
   ads: Ad[],
   config: CompetitorFilterConfig,
   side: "sell_ref" | "buy_ref",
+  effectiveFloor?: number,
 ): { qualified: Ad[]; evaluated: EvaluatedAd[] } {
   const evaluated: EvaluatedAd[] = [];
   const qualified: Ad[] = [];
@@ -409,7 +412,25 @@ export function evaluateCompetitorAds(
       });
     }
 
-    // 0b. Filter Whitelist / Blacklist Merchant (Dipisahkan antara Sisi JUAL vs BELI)
+    // 0b. Filter Proteksi Batas Bawah Jual (Sell Floor Guard)
+    // Jika ada kompetitor jual memasang harga di bawah batas bawah aman (modal/floor),
+    // DISKUALIFIKASI TOTAL kompetitor tersebut agar bot TIDAK PERNAH menjadikannya target ataupun memotong harganya!
+    if (side === "sell_ref" && effectiveFloor && effectiveFloor > 0 && ad.price < effectiveFloor) {
+      reasons.push({
+        code: "BELOW_SELL_FLOOR",
+        message: `Harga jual Rp ${ad.price.toLocaleString("id-ID")} di bawah batas bawah jual aman Anda (Floor Rp ${effectiveFloor.toLocaleString("id-ID")})`,
+      });
+    }
+
+    // 0c. Filter Proteksi Batas Bawah Beli (Buy Floor Guard)
+    if (side === "buy_ref" && effectiveFloor && effectiveFloor > 0 && ad.price < effectiveFloor) {
+      reasons.push({
+        code: "BELOW_BUY_FLOOR",
+        message: `Harga beli Rp ${ad.price.toLocaleString("id-ID")} di bawah batas bawah beli Anda (Floor Rp ${effectiveFloor.toLocaleString("id-ID")})`,
+      });
+    }
+
+    // 0d. Filter Whitelist / Blacklist Merchant (Dipisahkan antara Sisi JUAL vs BELI)
     const activeWhitelist = side === "sell_ref"
       ? (Array.isArray(config.whitelistedSellMerchants) && config.whitelistedSellMerchants.length > 0
           ? config.whitelistedSellMerchants
@@ -726,27 +747,6 @@ export function computeCompetitorPricing(input: {
     ? fallbackBuyPrice
     : (liveMarketAnchor - halfSpread);
 
-  // 1. Evaluasi dan Filter Merchant Kompetitor Jual & Beli
-  const { qualified: qualifiedSell, evaluated: evaluatedSell } = evaluateCompetitorAds(
-    sellRefAds,
-    config,
-    "sell_ref",
-  );
-  const { qualified: qualifiedBuy, evaluated: evaluatedBuy } = evaluateCompetitorAds(
-    buyRefAds,
-    config,
-    "buy_ref",
-  );
-
-  // 2. Pilih Target Merchant Sesuai Peringkat atau Agregasi Top N
-  const sellRankIdx = Math.min(Math.max(config.targetRank - 1, 0), Math.max(qualifiedSell.length - 1, 0));
-  const buyRankIdx = Math.min(Math.max(config.targetRank - 1, 0), Math.max(qualifiedBuy.length - 1, 0));
-
-  const sellTargetMerchant = qualifiedSell[sellRankIdx] ?? null;
-  const buyTargetMerchant = qualifiedBuy[buyRankIdx] ?? null;
-
-  const topNCount = Math.max(2, config.targetTopCount || 3);
-
   // Helper cek apakah iklan milik sendiri
   const cleanBuyAdvNo = config.merchantBuyAdvNo ? config.merchantBuyAdvNo.trim().replace(/^#/, "") : "";
   const cleanSellAdvNo = config.merchantSellAdvNo ? config.merchantSellAdvNo.trim().replace(/^#/, "") : "";
@@ -759,23 +759,20 @@ export function computeCompetitorPricing(input: {
     return false;
   };
 
-  // ── Hitung Batas Pengaman JUAL (Sell Floor Guard) & BELI (Buy Ceiling Guard) di Awal ──
+  // ── Hitung Batas Pengaman JUAL (Sell Floor Guard) & BELI (Buy Floor) di Awal ──
   const effectiveHpp = stockHpp > 0
     ? stockHpp
     : (fairPrice > 0 ? fairPrice : liveMarketAnchor);
 
   // Floor Jual: HPP + Fee Jual + Target Minimal Laba Bersih
-  // Hanya hitung jika ada data modal stockHpp riil. Jika tidak ada HPP (0), jangan ciptakan batas lantai semu.
-  let autoSellFloor = 0;
-  if (stockHpp > 0) {
-    autoSellFloor = Math.round(
-      (stockHpp + (config.minProfitMarginRp || 10)) / (1 - MAKER_FEE_RATE)
-    );
-  }
+  // Pastikan autoSellFloor selalu memiliki acuan modal aman dari effectiveHpp (tidak pernah 0)
+  const autoSellFloor = Math.round(
+    (effectiveHpp + (config.minProfitMarginRp || 10)) / (1 - MAKER_FEE_RATE)
+  );
 
   // Jika mode manual, gunakan manualSellFloorRp. Jika auto_hpp, gunakan autoSellFloor.
-  let calculatedSellFloor = config.sellFloorMode === "manual"
-    ? (config.manualSellFloorRp && config.manualSellFloorRp > 0 ? config.manualSellFloorRp : 0)
+  let calculatedSellFloor = config.sellFloorMode === "manual" && config.manualSellFloorRp && config.manualSellFloorRp > 0
+    ? config.manualSellFloorRp
     : autoSellFloor;
 
   // HARD FLOOR MUTLAK: Jika pengguna mengisi Batas Bawah Jual (manualSellFloorRp) atau minPriceBoundRp,
@@ -801,6 +798,30 @@ export function computeCompetitorPricing(input: {
   if (config.minPriceBoundRp && config.minPriceBoundRp > 0) {
     calculatedBuyFloor = Math.max(calculatedBuyFloor, config.minPriceBoundRp);
   }
+  calculatedBuyFloor = Math.round(calculatedBuyFloor);
+
+  // 1. Evaluasi dan Filter Merchant Kompetitor Jual & Beli dengan batas pengaman floor
+  const { qualified: qualifiedSell, evaluated: evaluatedSell } = evaluateCompetitorAds(
+    sellRefAds,
+    config,
+    "sell_ref",
+    calculatedSellFloor,
+  );
+  const { qualified: qualifiedBuy, evaluated: evaluatedBuy } = evaluateCompetitorAds(
+    buyRefAds,
+    config,
+    "buy_ref",
+    calculatedBuyFloor,
+  );
+
+  // 2. Pilih Target Merchant Sesuai Peringkat atau Agregasi Top N
+  const sellRankIdx = Math.min(Math.max(config.targetRank - 1, 0), Math.max(qualifiedSell.length - 1, 0));
+  const buyRankIdx = Math.min(Math.max(config.targetRank - 1, 0), Math.max(qualifiedBuy.length - 1, 0));
+
+  const sellTargetMerchant = qualifiedSell[sellRankIdx] ?? null;
+  const buyTargetMerchant = qualifiedBuy[buyRankIdx] ?? null;
+
+  const topNCount = Math.max(2, config.targetTopCount || 3);
 
   // Helper kalkulasi harga acuan dasar berdasarkan targetMode
   const computeBasePrice = (
