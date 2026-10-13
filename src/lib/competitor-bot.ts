@@ -727,6 +727,10 @@ export function computeCompetitorPricing(input: {
 
   // ── Hitung Batas Pengaman JUAL (Sell Floor Guard) & BELI (Buy Ceiling Guard) di Awal ──
   const MAKER_FEE_RATE = 0.0005;
+  const effectiveHpp = stockHpp > 0
+    ? stockHpp
+    : (fairPrice > 0 ? fairPrice : liveMarketAnchor);
+
   // Floor Jual: HPP + Fee Jual + Target Minimal Laba Bersih
   // Hanya hitung jika ada data modal stockHpp riil. Jika tidak ada HPP (0), jangan ciptakan batas lantai semu.
   let autoSellFloor = 0;
