@@ -67,12 +67,13 @@ export default {
     try {
       ensureServerAutoPricingLoop();
       const url = new URL(request.url);
+      const cleanPath = url.pathname.replace(/\/+/g, "/");
 
       // Webhook / Cron 24/7 Otomatisasi Auto-Pricing (Dapat dipanggil Vercel Cron, pg_cron, atau cron-job.org)
       if (
-        url.pathname === "/api/cron/auto-pricing" ||
-        url.pathname === "/api/bot/auto-pricing-tick" ||
-        url.pathname === "/api/bot/tick"
+        cleanPath === "/api/cron/auto-pricing" ||
+        cleanPath === "/api/bot/auto-pricing-tick" ||
+        cleanPath === "/api/bot/tick"
       ) {
         const result = await runBackgroundBotTick();
         return new Response(JSON.stringify(result, null, 2), {
