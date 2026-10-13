@@ -31,6 +31,7 @@ import {
   Target,
   Trash2,
   TrendingUp,
+  TrendingDown,
   Upload,
   UserCheck,
   UserX,
@@ -112,6 +113,7 @@ interface AutoPricingBotPanelProps {
   liveStockUsdt?: number;
   stockCapitalIdr?: number;
   sessionToken?: string | null;
+  indodaxSpotPrice?: number;
   onApplyPrice?: (payload: {
     buyPrice: number;
     sellPrice: number;
@@ -134,6 +136,7 @@ export function AutoPricingBotPanel({
   liveStockUsdt = 0,
   stockCapitalIdr = 0,
   sessionToken,
+  indodaxSpotPrice = 0,
   onApplyPrice,
   onRefresh,
   isRefreshing = false,
@@ -236,6 +239,7 @@ export function AutoPricingBotPanel({
   const importConfigFromJson = () => {
     try {
       const parsed = JSON.parse(importJsonInput);
+      const merged: CompetitorFilterConfig = { ...DEFAULT_BOT_CONFIG, ...parsed };
       if (!Array.isArray(merged.filterPaymentMethods)) merged.filterPaymentMethods = [];
       if (!Array.isArray(merged.blacklistedMerchants)) merged.blacklistedMerchants = [];
       if (!Array.isArray(merged.whitelistedMerchants)) merged.whitelistedMerchants = [];
@@ -392,6 +396,7 @@ export function AutoPricingBotPanel({
       stockCapitalIdr,
       activeBuyOrdersUsdt,
       activeBuyOrdersIdr,
+      indodaxSpotPrice,
     });
   }, [
     sellRefAds,
@@ -405,6 +410,7 @@ export function AutoPricingBotPanel({
     stockCapitalIdr,
     activeBuyOrdersUsdt,
     activeBuyOrdersIdr,
+    indodaxSpotPrice,
   ]);
 
   const {
@@ -430,6 +436,24 @@ export function AutoPricingBotPanel({
   } = pricingResult;
 
   const hasAnyGuardTriggered = sellGuard.triggered || buyGuard.triggered;
+
+  // Analisis Gap Trap antara Rank 1 dan Rank 2 sisi Beli (Live Orderbook)
+  const buySideGaps = useMemo(() => {
+    const sorted = [...buyRefAds].sort((a, b) => b.price - a.price);
+    if (sorted.length < 2) return null;
+    const rank1 = sorted[0];
+    const rank2 = sorted[1];
+    const gap = rank1.price - rank2.price;
+    const threshold = config.buyGapTrapThresholdRp || 20;
+    const isTrap = config.buyGapTrapEnabled !== false && gap >= threshold;
+    return {
+      rank1,
+      rank2,
+      gap,
+      threshold,
+      isTrap,
+    };
+  }, [buyRefAds, config.buyGapTrapEnabled, config.buyGapTrapThresholdRp]);
 
   const handleCopy = (price: number, side: "buy" | "sell") => {
     navigator.clipboard.writeText(String(Math.round(price)));
@@ -1155,6 +1179,38 @@ export function AutoPricingBotPanel({
                   )}
                 </div>
               ) : null}
+
+              {/* Indikator Gap Trap jika terdeteksi */}
+              {buySideGaps?.isTrap && (
+                <div className="flex items-center justify-between text-amber-400 font-semibold text-[0.68rem] bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1">
+                  <span className="flex items-center gap-1">
+                    <ShieldAlert className="size-3 text-amber-400 shrink-0" />
+                    <span>Gap Trap Terpicu (+Rp {buySideGaps.gap} &ge; Rp {buySideGaps.threshold}):</span>
+                  </span>
+                  <span className="font-bold text-sky-400">
+                    Abaikan Rank 1 &rarr; Bidik Rank #{buyRankUsed}
+                  </span>
+                </div>
+              )}
+
+              {/* Indikator Proteksi Dump Spot Indodax */}
+              {config.spotDumpProtectionEnabled && (
+                <div className="flex items-center justify-between text-[0.68rem] bg-surface-2/80 border border-border/70 rounded px-2 py-1">
+                  <span className="flex items-center gap-1 text-muted-foreground">
+                    <TrendingDown className="size-3 text-primary shrink-0" />
+                    <span>Spot Dump Guard (Indodax):</span>
+                  </span>
+                  {buyGuard.spotDumpTriggered ? (
+                    <span className="font-bold text-amber-400 flex items-center gap-1" title={buyGuard.reason}>
+                      <ShieldAlert className="size-3" /> Tertahan di Rp {fmtRp2(buyGuard.spotCeilingPrice || recommendedBuyPrice)}
+                    </span>
+                  ) : (
+                    <span className="font-semibold text-bid flex items-center gap-1">
+                      <ShieldCheck className="size-3" /> Aktif & Aman {indodaxSpotPrice > 10_000 ? `(Spot ${fmtRp(indodaxSpotPrice)} + Rp ${config.spotDumpBufferRp ?? 15})` : ""}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Fitur Otomatis Pasang Stok Sesuai Sisa Saldo Bank */}
@@ -3160,20 +3216,268 @@ export function AutoPricingBotPanel({
               </div>
             </TabsContent>
 
-            {/* TAB ANTI-SPOOFING & HARGA PASAR */}
+            {/* TAB ANTI-SPOOFING, GAP TRAP & PROTEKSI DUMP SPOT */}
             <TabsContent value="anti_spoof" className="mt-3.5 space-y-3.5">
               <div>
-                <h4 className="text-xs font-bold text-foreground">Proteksi Anti-Spoofing & Rentang Harga Pasar</h4>
+                <h4 className="text-xs font-bold text-foreground">Proteksi Anti-Spoofing, Gap Trap & Dump Pasar Spot</h4>
                 <p className="text-[0.7rem] text-muted-foreground">
-                  Mencegah bot terkecoh menurunkan harga jika ada kompetitor memasang harga pancingan fake di luar klaster wajar.
+                  Lindungi bot Anda dari taktik pancingan kompetitor, spoofing harga di pucuk, dan penurunan mendadak di pasar spot.
                 </p>
               </div>
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {/* 1. GAP TRAP FILTER (ANTI-PANCINGAN PUCUK BELI) */}
+                <div
+                  className={`rounded-lg border p-3 space-y-2.5 text-xs transition-all ${
+                    config.buyGapTrapEnabled !== false
+                      ? "border-primary/40 bg-surface-2/80 shadow-xs"
+                      : "border-border/70 bg-surface-2/40 opacity-80"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm">🪤</span>
+                      <Label className="font-bold text-foreground cursor-pointer">
+                        Gap Trap Filter (Anti-Pancingan Pucuk)
+                      </Label>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Badge
+                        variant="outline"
+                        className={`text-[0.62rem] px-1.5 py-0 font-bold ${
+                          config.buyGapTrapEnabled !== false
+                            ? "border-bid/40 bg-bid/10 text-bid"
+                            : "border-border bg-surface text-muted-foreground"
+                        }`}
+                      >
+                        {config.buyGapTrapEnabled !== false ? "AKTIF" : "OFF"}
+                      </Badge>
+                      <Switch
+                        checked={config.buyGapTrapEnabled !== false}
+                        onCheckedChange={(val) => updateConfig({ buyGapTrapEnabled: val })}
+                        className="scale-90 data-[state=checked]:bg-bid"
+                      />
+                    </div>
+                  </div>
+
+                  <p className="text-[0.68rem] text-muted-foreground leading-relaxed">
+                    Abaikan otomatis kompetitor Rank 1 jika harganya melonjak Rp X di atas Rank 2. Mencegah bot Anda terpancing memasang harga tinggi di pucuk oleh kompetitor nakal/spoofer yang sengaja memancing lalu kabur.
+                  </p>
+
+                  <div className="space-y-1.5 pt-1 border-t border-border/40">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground font-medium">Batas Toleransi Selisih Gap (Rank 1 vs 2):</span>
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs font-semibold">Rp</span>
+                        <Input
+                          type="number"
+                          min={5}
+                          step={5}
+                          value={config.buyGapTrapThresholdRp || 20}
+                          onChange={(e) =>
+                            updateConfig({ buyGapTrapThresholdRp: Math.max(5, Number(e.target.value)) })
+                          }
+                          className="h-6.5 w-20 text-xs bg-surface text-right font-bold"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 pt-0.5 flex-wrap">
+                      <span className="text-[0.6rem] text-muted-foreground mr-1">Rekomendasi:</span>
+                      {[
+                        { label: "10 Rp", val: 10 },
+                        { label: "15 Rp", val: 15 },
+                        { label: "20 Rp (Standar)", val: 20 },
+                        { label: "25 Rp", val: 25 },
+                        { label: "30 Rp", val: 30 },
+                      ].map((item) => (
+                        <button
+                          key={item.val}
+                          type="button"
+                          onClick={() => updateConfig({ buyGapTrapThresholdRp: item.val })}
+                          className={`rounded px-1.5 py-0.5 text-[0.62rem] font-semibold transition-colors ${
+                            (config.buyGapTrapThresholdRp || 20) === item.val
+                              ? "bg-primary text-primary-foreground font-bold shadow-xs"
+                              : "bg-surface-2 text-muted-foreground hover:bg-surface-3 hover:text-foreground"
+                          }`}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Monitor Live Gap Orderbook */}
+                  {buySideGaps && (
+                    <div className="rounded-md border border-border/60 bg-surface/70 p-2 space-y-1 text-[0.68rem]">
+                      <div className="flex items-center justify-between text-muted-foreground">
+                        <span>Rank 1 Beli Saat Ini:</span>
+                        <strong className="num text-foreground">
+                          Rp {fmtRp(buySideGaps.rank1.price)} (@{buySideGaps.rank1.merchant_name})
+                        </strong>
+                      </div>
+                      <div className="flex items-center justify-between text-muted-foreground">
+                        <span>Rank 2 Beli Saat Ini:</span>
+                        <strong className="num text-foreground">
+                          Rp {fmtRp(buySideGaps.rank2.price)} (@{buySideGaps.rank2.merchant_name})
+                        </strong>
+                      </div>
+                      <div className="flex items-center justify-between border-t border-border/40 pt-1 font-semibold">
+                        <span>Selisih Lonjakan Gap:</span>
+                        <span
+                          className={`num font-bold ${
+                            buySideGaps.isTrap ? "text-amber-400 font-extrabold" : "text-bid"
+                          }`}
+                        >
+                          Rp {buySideGaps.gap} {buySideGaps.isTrap ? `(>= Rp ${buySideGaps.threshold})` : `(< Rp ${buySideGaps.threshold})`}
+                        </span>
+                      </div>
+                      {buySideGaps.isTrap ? (
+                        <div className="text-amber-400 font-semibold pt-0.5 flex items-center gap-1">
+                          <ShieldAlert className="size-3 shrink-0" />
+                          <span>Pancingan terdeteksi! Bot otomatis membidik Rank 2 (+Rp {config.buyOffsetRp || 1}).</span>
+                        </div>
+                      ) : (
+                        <div className="text-bid font-medium pt-0.5 flex items-center gap-1">
+                          <CheckCircle2 className="size-3 shrink-0" />
+                          <span>Kondisi gap pasar rapat & wajar.</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* 2. PROTEKSI DUMP PASAR SPOT (INDODAX SPOT LEAD-INDICATOR) */}
+                <div
+                  className={`rounded-lg border p-3 space-y-2.5 text-xs transition-all ${
+                    config.spotDumpProtectionEnabled
+                      ? "border-amber-500/40 bg-amber-500/5 shadow-xs"
+                      : "border-border/70 bg-surface-2/40 opacity-80"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <TrendingDown className="size-4 text-primary shrink-0" />
+                      <Label className="font-bold text-foreground cursor-pointer">
+                        Proteksi Dump Pasar Spot (Indodax)
+                      </Label>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={config.spotDumpProtectionEnabled ? "default" : "outline"}
+                        onClick={() => updateConfig({ spotDumpProtectionEnabled: !config.spotDumpProtectionEnabled })}
+                        className={`h-6 text-[0.65rem] px-2 font-bold ${
+                          config.spotDumpProtectionEnabled
+                            ? "bg-bid hover:bg-bid/90 text-bid-foreground"
+                            : "border-border text-muted-foreground hover:bg-surface-3"
+                        }`}
+                      >
+                        {config.spotDumpProtectionEnabled ? "AKTIF" : "NONAKTIF"}
+                      </Button>
+                      <Switch
+                        checked={Boolean(config.spotDumpProtectionEnabled)}
+                        onCheckedChange={(val) => updateConfig({ spotDumpProtectionEnabled: val })}
+                        className="scale-90 data-[state=checked]:bg-bid"
+                      />
+                    </div>
+                  </div>
+
+                  <p className="text-[0.68rem] text-muted-foreground leading-relaxed">
+                    Pasar spot IDR (Indodax) seringkali turun (dump) 1–2 menit lebih cepat dibanding P2P Binance. Bot mengunci harga beli maksimal = Spot Indodax + Buffer agar Anda tidak terjebak membeli di harga mahal saat pasar sedang anjlok.
+                  </p>
+
+                  <div className="space-y-1.5 pt-1 border-t border-border/40">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-foreground font-medium">Buffer Toleransi di Atas Spot Indodax:</span>
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs font-semibold">+Rp</span>
+                        <Input
+                          type="number"
+                          min={0}
+                          step={5}
+                          value={config.spotDumpBufferRp !== undefined ? config.spotDumpBufferRp : 15}
+                          onChange={(e) =>
+                            updateConfig({ spotDumpBufferRp: Math.max(0, Number(e.target.value)) })
+                          }
+                          className="h-6.5 w-20 text-xs bg-surface text-right font-bold"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 pt-0.5 flex-wrap">
+                      <span className="text-[0.6rem] text-muted-foreground mr-1">Rekomendasi:</span>
+                      {[
+                        { label: "+5 Rp (Ketat)", val: 5 },
+                        { label: "+10 Rp", val: 10 },
+                        { label: "+15 Rp (Standar)", val: 15 },
+                        { label: "+20 Rp", val: 20 },
+                        { label: "+25 Rp (Longgar)", val: 25 },
+                      ].map((item) => (
+                        <button
+                          key={item.val}
+                          type="button"
+                          onClick={() => updateConfig({ spotDumpBufferRp: item.val })}
+                          className={`rounded px-1.5 py-0.5 text-[0.62rem] font-semibold transition-colors ${
+                            (config.spotDumpBufferRp ?? 15) === item.val
+                              ? "bg-primary text-primary-foreground font-bold shadow-xs"
+                              : "bg-surface-2 text-muted-foreground hover:bg-surface-3 hover:text-foreground"
+                          }`}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Monitor Live Spot Indodax & Plafon Beli */}
+                  <div className="rounded-md border border-border/60 bg-surface/70 p-2 space-y-1 text-[0.68rem]">
+                    <div className="flex items-center justify-between text-muted-foreground">
+                      <span className="flex items-center gap-1">
+                        <span>🇮🇩</span>
+                        <span>Spot Indodax USDT/IDR Live:</span>
+                      </span>
+                      <strong className="num text-primary font-bold">
+                        {indodaxSpotPrice > 10_000 ? `Rp ${fmtRp(indodaxSpotPrice)}` : "Mengambil data..."}
+                      </strong>
+                    </div>
+
+                    <div className="flex items-center justify-between text-muted-foreground">
+                      <span>Plafon Maksimal Beli (Spot + Buffer):</span>
+                      <strong className="num text-foreground font-bold">
+                        {indodaxSpotPrice > 10_000
+                          ? `Rp ${fmtRp(indodaxSpotPrice + (config.spotDumpBufferRp ?? 15))}`
+                          : "—"}
+                      </strong>
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-border/40 pt-1 font-semibold">
+                      <span>Status Proteksi:</span>
+                      {config.spotDumpProtectionEnabled ? (
+                        buyGuard.spotDumpTriggered ? (
+                          <span className="text-amber-400 font-extrabold flex items-center gap-1">
+                            <ShieldAlert className="size-3" /> MENAHAN HARGA BELI (Spot Dump Aktif)
+                          </span>
+                        ) : (
+                          <span className="text-bid font-bold flex items-center gap-1">
+                            <CheckCircle2 className="size-3" /> AMAN (Harga Beli di Bawah Plafon Spot)
+                          </span>
+                        )
+                      ) : (
+                        <span className="text-muted-foreground font-medium">
+                          Nonaktif (Bebas tanpa batas spot)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. ANTI-SPOOFING OUTLIER SPIKE GLOBAL */}
                 <div className="rounded-lg border border-border/70 bg-surface-2/60 p-3 space-y-2.5 text-xs">
                   <div className="flex items-center justify-between">
                     <Label className="font-semibold text-foreground cursor-pointer">
-                      Abaikan Lonjakan Pancingan Ekstrem (Outlier Gap)
+                      Abaikan Lonjakan Outlier Ekstrem (Global Gap)
                     </Label>
                     <Switch
                       checked={config.ignoreOutlierSpikes}
@@ -3183,11 +3487,11 @@ export function AutoPricingBotPanel({
                   </div>
 
                   <p className="text-[0.68rem] text-muted-foreground">
-                    Jika harga merchant teratas berselisih terlalu jauh dari merchant berikutnya, bot menandainya sebagai pancingan dan mengabaikannya.
+                    Jika harga merchant teratas berselisih terlalu jauh dari merchant berikutnya (sisi Jual maupun Beli), bot menandainya sebagai outlier dan mengabaikannya.
                   </p>
 
                   <div className="flex items-center justify-between pt-1 border-t border-border/40">
-                    <span className="text-muted-foreground">Ambang Batas Selisih Lonjakan:</span>
+                    <span className="text-muted-foreground">Batas Selisih Lonjakan:</span>
                     <div className="flex items-center gap-1">
                       <span className="text-xs font-semibold">Rp</span>
                       <Input
@@ -3202,17 +3506,18 @@ export function AutoPricingBotPanel({
                   </div>
                 </div>
 
+                {/* 4. MAX STEP CHANGE PER SIKLUS */}
                 <div className="rounded-lg border border-border/70 bg-surface-2/60 p-3 space-y-2.5 text-xs">
                   <div>
                     <Label className="font-semibold text-foreground">
                       Maksimal Perubahan Harga Per Siklus
                     </Label>
                     <p className="text-[0.68rem] text-muted-foreground mt-0.5">
-                      Membatasi pergerakan lompatan harga rekomendasi bot dalam 1 kali refresh.
+                      Membatasi pergerakan lompatan harga rekomendasi bot dalam 1 kali refresh agar tidak bergerak liar.
                     </p>
                   </div>
 
-                  <div className="flex items-center justify-between pt-1">
+                  <div className="flex items-center justify-between pt-1 border-t border-border/40">
                     <span className="text-muted-foreground">Max Step Change:</span>
                     <div className="flex items-center gap-1">
                       <span className="text-xs font-semibold">Rp</span>
@@ -3631,6 +3936,37 @@ export function AutoPricingBotPanel({
                       checked={config.autoFollowNextWhenLimitReached !== false}
                       onCheckedChange={(v) => updateConfig({ autoFollowNextWhenLimitReached: v })}
                     />
+                  </div>
+
+                  {/* Lead-Indicator Proteksi Dump Spot Indodax */}
+                  <div className="flex items-center justify-between pt-1 border-t border-border/40">
+                    <div className="flex flex-col">
+                      <span className="text-xs font-semibold text-foreground flex items-center gap-1">
+                        <TrendingDown className="size-3 text-primary" /> Proteksi Dump Spot (Indodax):
+                      </span>
+                      <span className="text-[0.65rem] text-muted-foreground">
+                        {config.spotDumpProtectionEnabled
+                          ? `Aktif (Maks Beli = Spot + Rp ${config.spotDumpBufferRp ?? 15})`
+                          : "Nonaktif (Kunci harga beli saat spot dump)"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Badge
+                        variant="outline"
+                        className={`text-[0.6rem] px-1 py-0 font-bold ${
+                          config.spotDumpProtectionEnabled
+                            ? "border-bid/40 bg-bid/10 text-bid"
+                            : "border-border text-muted-foreground"
+                        }`}
+                      >
+                        {config.spotDumpProtectionEnabled ? "AKTIF" : "OFF"}
+                      </Badge>
+                      <Switch
+                        checked={Boolean(config.spotDumpProtectionEnabled)}
+                        onCheckedChange={(v) => updateConfig({ spotDumpProtectionEnabled: v })}
+                        className="scale-90 data-[state=checked]:bg-bid"
+                      />
+                    </div>
                   </div>
                 </div>
 

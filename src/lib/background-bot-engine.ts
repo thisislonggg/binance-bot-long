@@ -7,7 +7,7 @@ import {
   computeCompetitorPricing,
   type CompetitorFilterConfig,
 } from "./competitor-bot";
-import { fetchP2pAds } from "./p2p.functions";
+import { fetchP2pAds, fetchCrossPlatform } from "./p2p.functions";
 import { fetchFundingBalanceInternal } from "./binance-sync";
 import { fetchActiveP2pSellOrdersInternal } from "./payment-verifier";
 import { updateMerchantAdInternal, toggleMerchantAdStatusInternal } from "./binance-merchant";
@@ -223,6 +223,15 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
         ? Math.round((bestSellPrice + bestBuyPrice) / 2)
         : liveAnchorEst;
 
+    // 4b. Ambil harga live cross platform (Indodax Spot) untuk proteksi dump pasar
+    let indodaxSpotPrice = 0;
+    try {
+      const crossPlatform = await fetchCrossPlatform();
+      indodaxSpotPrice = crossPlatform["indodax_usdt_idr_spot"] || 0;
+    } catch {
+      // Abaikan jika offline
+    }
+
     // 5. Jalankan kalkulator strategi kompetitor
     const pricing = computeCompetitorPricing({
       sellRefAds,
@@ -236,6 +245,7 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
       stockCapitalIdr: effectiveStockValuationIdr,
       activeBuyOrdersUsdt,
       activeBuyOrdersIdr,
+      indodaxSpotPrice,
     });
 
     // 6. Muat riwayat harga terakhir yang pernah di-push

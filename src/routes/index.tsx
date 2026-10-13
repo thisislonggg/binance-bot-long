@@ -974,6 +974,7 @@ function Dashboard() {
             liveStockUsdt={stockUsdt}
             stockCapitalIdr={stockCapitalIdr}
             sessionToken={sessionToken ?? undefined}
+            indodaxSpotPrice={s.cross_platform?.indodax_usdt_idr_spot || 0}
             onApplyPrice={(payload) => {
               const side = payload.targetSide || tradeSide;
               setTradeSide(side);

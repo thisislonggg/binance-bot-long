@@ -239,7 +239,7 @@ const FOREX_URL = "https://open.er-api.com/v6/latest/USD";
 let cachedCrossPlatform: { timestamp: number; data: Record<string, number> } | null = null;
 const CROSS_PLATFORM_CACHE_TTL_MS = 10_000; // 10 detik
 
-async function fetchCrossPlatform(): Promise<Record<string, number>> {
+export async function fetchCrossPlatform(): Promise<Record<string, number>> {
   const now = Date.now();
   if (cachedCrossPlatform && now - cachedCrossPlatform.timestamp < CROSS_PLATFORM_CACHE_TTL_MS) {
     return cachedCrossPlatform.data;

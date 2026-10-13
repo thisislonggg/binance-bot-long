@@ -41,6 +41,10 @@ export type CompetitorFilterConfig = {
   // ── Anti-Spoofing & Rentang Harga Pasar Absolut ───────────────────────────
   ignoreOutlierSpikes: boolean;   // Abaikan harga pancingan yang melompat ekstrem dari klaster pasar
   maxOutlierGapRp: number;        // Batas selisih lonjakan harga ekstrem (default: 40 Rp)
+  buyGapTrapEnabled: boolean;     // Filter Anti-Pancingan Pucuk Beli (Gap Trap): abaikan Rank 1 jika melonjak >= threshold dari Rank 2
+  buyGapTrapThresholdRp: number;  // Batas toleransi lonjakan gap beli dari rank di bawahnya (default: 20 Rp)
+  spotDumpProtectionEnabled: boolean; // Proteksi Dump Pasar Spot (Indodax Spot Lead-Indicator): tahan harga beli jika melebihi spot Indodax + buffer
+  spotDumpBufferRp: number;       // Toleransi buffer di atas harga spot Indodax (default: 15 Rp)
   minPriceBoundRp: number;        // Batas bawah absolut harga iklan (0 = Bebas)
   maxPriceBoundRp: number;        // Batas atas absolut harga iklan (0 = Bebas)
 
@@ -117,6 +121,10 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
 
   ignoreOutlierSpikes: true,
   maxOutlierGapRp: 40,
+  buyGapTrapEnabled: true,
+  buyGapTrapThresholdRp: 20,
+  spotDumpProtectionEnabled: false,
+  spotDumpBufferRp: 15,
   minPriceBoundRp: 0,
   maxPriceBoundRp: 0,
 
@@ -310,6 +318,9 @@ export type CompetitorPricingResult = {
     autoSwitched?: boolean;
     switchedToRank?: number;
     marketAnchorPrice?: number;
+    spotCeilingPrice?: number;
+    spotDumpTriggered?: boolean;
+    indodaxSpotPrice?: number;
   };
   spreadAbs: number;
   spreadPct: number;
@@ -587,14 +598,25 @@ export function evaluateCompetitorAds(
       });
     }
 
-    // 10. Filter Anti-Spoofing / Outlier Spike
-    if (config.ignoreOutlierSpikes && sortedAds.length >= 2) {
+    // 10. Filter Anti-Spoofing / Outlier Spike & Gap Trap Filter
+    if (sortedAds.length >= 2) {
       const adIndex = sortedAds.indexOf(ad);
       if (adIndex >= 0 && adIndex < sortedAds.length - 1) {
         const nextAd = sortedAds[adIndex + 1];
         if (nextAd) {
           const gap = Math.abs(ad.price - nextAd.price);
-          if (gap >= (config.maxOutlierGapRp || 40)) {
+          const isBuySide = side === "buy_ref";
+          const gapTrapActive = isBuySide && config.buyGapTrapEnabled !== false;
+          const gapThreshold = gapTrapActive
+            ? (config.buyGapTrapThresholdRp && config.buyGapTrapThresholdRp > 0 ? config.buyGapTrapThresholdRp : 20)
+            : (config.maxOutlierGapRp || 40);
+
+          if (gapTrapActive && ad.price > nextAd.price && gap >= gapThreshold) {
+            reasons.push({
+              code: "PRICE_OUTLIER",
+              message: `Gap Trap: Selisih beli Rp ${gap} dari Rank #${adIndex + 2} (${nextAd.merchant_name} @ Rp ${nextAd.price.toLocaleString("id-ID")}) melebihi batas Rp ${gapThreshold} (indikasi pancingan pucuk/spoofing)`,
+            });
+          } else if (config.ignoreOutlierSpikes && gap >= (config.maxOutlierGapRp || 40)) {
             reasons.push({
               code: "PRICE_OUTLIER",
               message: `Selisih Rp ${gap} dari rank berikutnya (indikasi pancingan/spoofing)`,
@@ -643,6 +665,7 @@ export function computeCompetitorPricing(input: {
   fallbackBuyPrice?: number;
   activeBuyOrdersUsdt?: number; // Jumlah stok USDT yang sedang aktif/berjalan di orderan beli Binance P2P
   activeBuyOrdersIdr?: number;  // Total nilai rupiah yang sedang terkunci oleh orderan beli aktif
+  indodaxSpotPrice?: number;    // Harga Spot USDT/IDR live Indodax sebagai lead-indicator proteksi dump pasar
 }): CompetitorPricingResult {
   const {
     sellRefAds = [],
@@ -658,6 +681,7 @@ export function computeCompetitorPricing(input: {
     fallbackBuyPrice,
     activeBuyOrdersUsdt = 0,
     activeBuyOrdersIdr = 0,
+    indodaxSpotPrice = 0,
   } = input;
 
   // 0. Tentukan Live Market Anchor dinamis dari data pasar riil saat ini (~17.800+)
@@ -1099,6 +1123,25 @@ export function computeCompetitorPricing(input: {
       buyGuard.reason = `Harga pasar (Rp ${rawBuyPrice.toLocaleString("id-ID")}) di bawah batas minimal beli yang ditentukan (Floor Rp ${calculatedBuyFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor.`;
       recommendedBuyPrice = calculatedBuyFloor;
     }
+
+    // 5b. Proteksi Dump Pasar Spot (Indodax Spot Lead-Indicator)
+    if (
+      config.spotDumpProtectionEnabled &&
+      indodaxSpotPrice &&
+      indodaxSpotPrice > 10_000
+    ) {
+      const buffer = typeof config.spotDumpBufferRp === "number" ? config.spotDumpBufferRp : 15;
+      const spotCeilingPrice = Math.round(indodaxSpotPrice + buffer);
+      buyGuard.spotCeilingPrice = spotCeilingPrice;
+      buyGuard.indodaxSpotPrice = indodaxSpotPrice;
+
+      if (recommendedBuyPrice > spotCeilingPrice) {
+        recommendedBuyPrice = spotCeilingPrice;
+        buyGuard.spotDumpTriggered = true;
+        buyGuard.triggered = true;
+        buyGuard.reason = `Proteksi Dump Spot Indodax: Harga rekomendasi beli (Rp ${rawBuyPrice.toLocaleString("id-ID")}) melebihi batas toleransi Spot Indodax (Spot: Rp ${indodaxSpotPrice.toLocaleString("id-ID")} + Buffer Rp ${buffer} = Max Rp ${spotCeilingPrice.toLocaleString("id-ID")}). Bot menahan harga beli agar tidak membeli kemahalan saat pasar spot dump.`;
+      }
+    }
   }
 
   // 6. Validasi Minimum Spread Guard (Pastikan Jual - Beli >= Min Spread)
@@ -1397,6 +1440,10 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (typeof merged.autoPushMinIntervalSec !== "number" || merged.autoPushMinIntervalSec < 1) merged.autoPushMinIntervalSec = 1;
     if (typeof merged.autoFollowNextWhenLimitReached !== "boolean") merged.autoFollowNextWhenLimitReached = true;
     if (typeof merged.ownMerchantNickname !== "string") merged.ownMerchantNickname = "";
+    if (typeof merged.buyGapTrapEnabled !== "boolean") merged.buyGapTrapEnabled = true;
+    if (typeof merged.buyGapTrapThresholdRp !== "number" || merged.buyGapTrapThresholdRp < 5) merged.buyGapTrapThresholdRp = 20;
+    if (typeof merged.spotDumpProtectionEnabled !== "boolean") merged.spotDumpProtectionEnabled = false;
+    if (typeof merged.spotDumpBufferRp !== "number" || merged.spotDumpBufferRp < 0) merged.spotDumpBufferRp = 15;
     return merged;
   } catch {
     return DEFAULT_BOT_CONFIG;
