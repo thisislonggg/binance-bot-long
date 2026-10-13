@@ -769,6 +769,11 @@ export function computeCompetitorPricing(input: {
     ? (config.manualSellFloorRp && config.manualSellFloorRp > 0 ? config.manualSellFloorRp : 0)
     : autoSellFloor;
 
+  // HARD FLOOR MUTLAK: Jika pengguna mengisi Batas Bawah Jual (manualSellFloorRp) atau minPriceBoundRp,
+  // keduanya WAJIB berlaku sebagai pengaman dasar tanpa syarat (apapun mode sellFloorMode-nya)!
+  if (config.manualSellFloorRp && config.manualSellFloorRp > 0) {
+    calculatedSellFloor = Math.max(calculatedSellFloor, config.manualSellFloorRp);
+  }
   if (config.minPriceBoundRp && config.minPriceBoundRp > 0) {
     calculatedSellFloor = Math.max(calculatedSellFloor, config.minPriceBoundRp);
   }
@@ -781,6 +786,9 @@ export function computeCompetitorPricing(input: {
       ? config.manualBuyFloorRp
       : 0
   );
+  if (config.manualBuyFloorRp && config.manualBuyFloorRp > 0) {
+    calculatedBuyFloor = Math.max(calculatedBuyFloor, config.manualBuyFloorRp);
+  }
   if (config.minPriceBoundRp && config.minPriceBoundRp > 0) {
     calculatedBuyFloor = Math.max(calculatedBuyFloor, config.minPriceBoundRp);
   }
@@ -1243,7 +1251,7 @@ export function computeCompetitorPricing(input: {
     }
   }
 
-  // 6. FINAL MUTLAK HARD CLAMP: Harga jual TIDAK BOLEH berada di bawah batas bawah apapun yang di-set user
+  // 6. FINAL MUTLAK HARD CLAMP: Harga jual & beli TIDAK BOLEH berada di bawah batas bawah apapun yang di-set user
   const absoluteSellFloor = Math.max(
     calculatedSellFloor || 0,
     config.manualSellFloorRp || 0,
@@ -1253,6 +1261,17 @@ export function computeCompetitorPricing(input: {
     recommendedSellPrice = absoluteSellFloor;
     sellGuard.triggered = true;
     sellGuard.reason = `Proteksi Mutlak Batas Bawah Jual: Harga jual terkunci di Batas Bawah (Rp ${absoluteSellFloor.toLocaleString("id-ID")}).`;
+  }
+
+  const absoluteBuyFloor = Math.max(
+    calculatedBuyFloor || 0,
+    config.manualBuyFloorRp || 0,
+    config.minPriceBoundRp || 0
+  );
+  if (absoluteBuyFloor > 0 && recommendedBuyPrice < absoluteBuyFloor) {
+    recommendedBuyPrice = absoluteBuyFloor;
+    buyGuard.triggered = true;
+    buyGuard.reason = `Proteksi Mutlak Batas Bawah Beli: Harga beli terkunci di Batas Bawah (Rp ${absoluteBuyFloor.toLocaleString("id-ID")}).`;
   }
 
   // 7. Bulatkan harga mutlak ke bilangan bulat (integer IDR untuk Binance C2C)

@@ -285,22 +285,49 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
       }
     }
 
-    // Proteksi Batas Bawah Beli (Buy Floor): JANGAN PERNAH pasang di bawah Floor yang di-set user!
+    // ── Cek Pesanan P2P Aktif pada Iklan Jual & Beli ─────────────────────────
+    const cleanBuyAdvNo = config.merchantBuyAdvNo?.trim().replace(/^#/, "");
+    const hasActiveBuyOrder = Boolean(
+      cleanBuyAdvNo &&
+      activeBuyOrders.some((o) => {
+        if (o.advNo) {
+          return o.advNo.trim().replace(/^#/, "") === cleanBuyAdvNo;
+        }
+        return true;
+      })
+    );
+
+    const cleanSellAdvNo = config.merchantSellAdvNo?.trim().replace(/^#/, "");
+    const activeSellOrders = activeOrders.filter((o) => o.tradeType === "SELL");
+    const hasActiveSellOrder = Boolean(
+      cleanSellAdvNo &&
+      activeSellOrders.some((o) => {
+        if (o.advNo) {
+          return o.advNo.trim().replace(/^#/, "") === cleanSellAdvNo;
+        }
+        return true;
+      })
+    );
+
+    // Proteksi Batas Bawah Beli (Buy Floor): HARD FLOOR MUTLAK!
     const effectiveBuyFloor = Math.max(
       pricing.buyGuard.floorPrice || 0,
-      config.buyFloorMode === "manual" && config.manualBuyFloorRp ? config.manualBuyFloorRp : 0,
+      config.manualBuyFloorRp || 0,
       config.minPriceBoundRp || 0
     );
     if (effectiveBuyFloor > 0 && roundedBuyPrice < effectiveBuyFloor) {
       roundedBuyPrice = effectiveBuyFloor;
     }
 
-    // Proteksi Batas Atas Beli (Buy Ceiling): JANGAN PERNAH pasang di atas Ceiling yang di-set user!
-    const effectiveBuyCeiling =
-      config.buyCeilingMode === "manual" && config.manualBuyCeilingRp > 0 && config.manualBuyCeilingRp < 999_999
+    // Proteksi Batas Atas Beli (Buy Ceiling): HARD CEILING MUTLAK!
+    const effectiveBuyCeiling = Math.min(
+      config.manualBuyCeilingRp && config.manualBuyCeilingRp > 0 && config.manualBuyCeilingRp < 999_999
         ? config.manualBuyCeilingRp
-        : (pricing.buyGuard.ceilingPrice || 0);
-    if (effectiveBuyCeiling > 0 && roundedBuyPrice > effectiveBuyCeiling) {
+        : 999_999,
+      pricing.buyGuard.ceilingPrice && pricing.buyGuard.ceilingPrice > 0 ? pricing.buyGuard.ceilingPrice : 999_999,
+      config.maxPriceBoundRp && config.maxPriceBoundRp > 0 ? config.maxPriceBoundRp : 999_999
+    );
+    if (effectiveBuyCeiling < 999_999 && roundedBuyPrice > effectiveBuyCeiling) {
       roundedBuyPrice = effectiveBuyCeiling;
     }
 
@@ -339,7 +366,7 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
             : pricing.bankAllocation.autoBuyStockUsdt;
 
         const priceChanged = lastPushedPrices.buy !== roundedBuyPrice;
-        const stockChanged = lastPushedPrices.buyStock !== currentBuyStock;
+        const stockChanged = !hasActiveBuyOrder && lastPushedPrices.buyStock !== currentBuyStock;
         const statusNeedsOnline = lastPushedPrices.buyStatus === "OFFLINE";
 
         if (priceChanged || stockChanged || statusNeedsOnline) {
@@ -347,18 +374,20 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
             advNo: config.merchantBuyAdvNo.trim(),
             side: "buy",
             price: roundedBuyPrice,
-            amount: currentBuyStock > 0 ? currentBuyStock : undefined,
-            minSingleTransAmount: config.manualBuyMinLimitIdr || 50_000_000,
-            maxSingleTransAmount: config.manualBuyMaxLimitIdr || 500_000_000,
+            amount: hasActiveBuyOrder ? undefined : (currentBuyStock > 0 ? currentBuyStock : undefined),
+            minSingleTransAmount: hasActiveBuyOrder ? undefined : (config.manualBuyMinLimitIdr || 50_000_000),
+            maxSingleTransAmount: hasActiveBuyOrder ? undefined : (config.manualBuyMaxLimitIdr || 500_000_000),
             floorPrice: effectiveBuyFloor > 0 ? effectiveBuyFloor : undefined,
-            ceilingPrice: effectiveBuyCeiling > 0 ? effectiveBuyCeiling : undefined,
+            ceilingPrice: effectiveBuyCeiling < 999_999 ? effectiveBuyCeiling : undefined,
+            hasActiveOrders: hasActiveBuyOrder,
+            priceOnly: hasActiveBuyOrder,
           });
 
           buyResult = buyRes as unknown as Record<string, unknown>;
           if (buyRes.ok) {
             buyPushed = true;
             lastPushedPrices.buy = roundedBuyPrice;
-            lastPushedPrices.buyStock = currentBuyStock;
+            if (!hasActiveBuyOrder) lastPushedPrices.buyStock = currentBuyStock;
             lastPushedPrices.buyStatus = "ONLINE";
           }
         }
@@ -366,9 +395,10 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
     }
 
     // ── Eksekusi Push Iklan Jual (SELL) ──────────────────────────────────────
+    // HARD FLOOR MUTLAK: manualSellFloorRp WAJIB berlaku tanpa syarat!
     const minSellFloor = Math.max(
       pricing.sellGuard.floorPrice || 0,
-      config.sellFloorMode === "manual" && config.manualSellFloorRp ? config.manualSellFloorRp : 0,
+      config.manualSellFloorRp || 0,
       config.minPriceBoundRp || 0
     );
     let targetSellPrice = pricing.recommendedSellPrice;
@@ -411,7 +441,9 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
           : undefined;
 
       const priceChanged = lastPushedPrices.sell !== roundedSellPrice;
-      const stockChanged = lastPushedPrices.sellStock !== effectiveSellStock;
+      // PENTING: Jika ada pesanan aktif (hasActiveSellOrder), JANGAN picu update hanya karena perubahan stok!
+      // Karena Binance mengunci kuota stok selama pesanan aktif berlangsung.
+      const stockChanged = !hasActiveSellOrder && lastPushedPrices.sellStock !== effectiveSellStock;
 
       if (priceChanged || stockChanged) {
         // Jika BUY baru saja di-push, beri jeda sejenak agar Binance API tidak bentrok timestamp / rate limit
@@ -423,21 +455,26 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
           advNo: config.merchantSellAdvNo.trim(),
           side: "sell",
           price: roundedSellPrice,
-          amount: effectiveSellStock,
-          minSingleTransAmount: config.manualSellMinLimitIdr,
-          maxSingleTransAmount:
-            config.manualSellMaxLimitIdr ||
-            (effectiveSellStock && roundedSellPrice > 0
-              ? Math.floor(effectiveSellStock * roundedSellPrice)
-              : undefined),
+          amount: hasActiveSellOrder ? undefined : effectiveSellStock,
+          minSingleTransAmount: hasActiveSellOrder ? undefined : config.manualSellMinLimitIdr,
+          maxSingleTransAmount: hasActiveSellOrder
+            ? undefined
+            : (config.manualSellMaxLimitIdr ||
+              (effectiveSellStock && roundedSellPrice > 0
+                ? Math.floor(effectiveSellStock * roundedSellPrice)
+                : undefined)),
           floorPrice: minSellFloor > 0 ? minSellFloor : undefined,
+          hasActiveOrders: hasActiveSellOrder,
+          priceOnly: hasActiveSellOrder,
         });
 
         sellResult = sellRes as unknown as Record<string, unknown>;
         if (sellRes.ok) {
           sellPushed = true;
           lastPushedPrices.sell = roundedSellPrice;
-          lastPushedPrices.sellStock = effectiveSellStock;
+          if (!hasActiveSellOrder) {
+            lastPushedPrices.sellStock = effectiveSellStock;
+          }
         }
       }
     }

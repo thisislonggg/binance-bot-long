@@ -619,6 +619,8 @@ const updateAdInputSchema = z.object({
   payMethods: z.array(z.string()).optional(),
   floorPrice: z.number().optional(),
   ceilingPrice: z.number().optional(),
+  hasActiveOrders: z.boolean().optional(),
+  priceOnly: z.boolean().optional(),
 });
 
 export type UpdateAdInternalParams = {
@@ -631,6 +633,8 @@ export type UpdateAdInternalParams = {
   payMethods?: string[];
   floorPrice?: number;
   ceilingPrice?: number;
+  hasActiveOrders?: boolean;
+  priceOnly?: boolean;
 };
 
 export async function toggleMerchantAdStatusInternal(
@@ -707,10 +711,10 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
       const botCfg = await getBotConfigServer();
 
       if (!isBuy) {
-        // Proteksi JUAL (SELL)
+        // Proteksi JUAL (SELL) - HARD FLOOR MUTLAK
         const hardMinSell = Math.max(
           data.floorPrice || 0,
-          botCfg.sellFloorMode === "manual" && botCfg.manualSellFloorRp ? botCfg.manualSellFloorRp : 0,
+          botCfg.manualSellFloorRp || 0,
           botCfg.minPriceBoundRp || 0
         );
         if (hardMinSell > 0 && newPrice < hardMinSell) {
@@ -721,10 +725,10 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
           newPrice = hardMinSell > 0 && botCfg.maxPriceBoundRp < hardMinSell ? hardMinSell : botCfg.maxPriceBoundRp;
         }
       } else {
-        // Proteksi BELI (BUY)
+        // Proteksi BELI (BUY) - HARD CEILING & FLOOR MUTLAK
         const hardMaxBuy = Math.min(
           data.ceilingPrice && data.ceilingPrice > 0 ? data.ceilingPrice : 999_999,
-          botCfg.buyCeilingMode === "manual" && botCfg.manualBuyCeilingRp && botCfg.manualBuyCeilingRp > 0 && botCfg.manualBuyCeilingRp < 999_999
+          botCfg.manualBuyCeilingRp && botCfg.manualBuyCeilingRp > 0 && botCfg.manualBuyCeilingRp < 999_999
             ? botCfg.manualBuyCeilingRp
             : 999_999,
           botCfg.maxPriceBoundRp && botCfg.maxPriceBoundRp > 0 ? botCfg.maxPriceBoundRp : 999_999
@@ -735,7 +739,7 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
         }
         const hardMinBuy = Math.max(
           data.floorPrice || 0,
-          botCfg.buyFloorMode === "manual" && botCfg.manualBuyFloorRp ? botCfg.manualBuyFloorRp : 0,
+          botCfg.manualBuyFloorRp || 0,
           botCfg.minPriceBoundRp || 0
         );
         if (hardMinBuy > 0 && newPrice < hardMinBuy) {
@@ -924,144 +928,50 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
     };
 
     // ─────────────────────────────────────────────────────────────────────────
-    // PERCOBAAN 1: STANDARD SAPI /sapi/v1/c2c/ads/update (Official Form-Urlencoded HMAC)
-    // Sesuai standar resmi Binance C2C Merchant API: kirim harga, stok, & batas limit
+    // PENGECEKAN JALUR HARGA SAJA (PRICE-ONLY / ONGOING ORDERS):
+    // Jika data.priceOnly atau data.hasActiveOrders bernilai true (sedang ada pesanan aktif
+    // yang mengunci kuota kripto di Binance), Binance menolak modifikasi stok & limit.
+    // Jalankan langsung jalur cepat Price-Only update tanpa membuang waktu.
     // ─────────────────────────────────────────────────────────────────────────
-    const stdParams: Record<string, any> = {
-      advNo: targetAdvNo,
-      adNo: targetAdvNo,
-      price: newPrice,
-      priceType: 1,
-    };
-    if (isStockUpdateRequested && targetStock > 0) {
-      stdParams.initAmount = totalInitAmount;
-      stdParams.amount = targetStock;
-      stdParams.minSingleTransAmount = minLimit;
-      stdParams.maxSingleTransAmount = maxLimit;
-    }
+    const isPriceOnlyMode = Boolean(data.priceOnly || data.hasActiveOrders);
 
-    const res1 = await binanceMerchantRequest({
-      endpoint: "/sapi/v1/c2c/ads/update",
-      method: "POST",
-      params: stdParams,
-    });
-    if (res1.ok && res1.data !== false) {
-      updateSucceeded = true;
-    } else {
-      lastError = res1;
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // PERCOBAAN 2: SAPI /sapi/v1/c2c/ad/update (Singular Route, Form-Urlencoded HMAC) dengan Stok
-    // ─────────────────────────────────────────────────────────────────────────
-    if (!updateSucceeded && isStockUpdateRequested) {
-      const res2 = await binanceMerchantRequest({
-        endpoint: "/sapi/v1/c2c/ad/update",
-        method: "POST",
-        params: {
-          advNo: targetAdvNo,
-          adNo: targetAdvNo,
-          price: newPrice,
-          priceType: 1,
-          initAmount: totalInitAmount,
-          amount: targetStock,
-          minSingleTransAmount: minLimit,
-          maxSingleTransAmount: maxLimit,
-        },
-      });
-      if (res2.ok && res2.data !== false) {
-        updateSucceeded = true;
-      } else {
-        lastError = res2;
-      }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // PERCOBAAN 3: AGENT SAPI /sapi/v1/c2c/agent/ads/update (Clean JSON Body dengan Stok & Limits)
-    // ─────────────────────────────────────────────────────────────────────────
-    if (!updateSucceeded && isStockUpdateRequested) {
-      const agentCleanPayload: Record<string, any> = {
-        advNo: targetAdvNo,
-        price: newPrice,
-        priceType: 1,
-        amount: targetStock,
-        initAmount: totalInitAmount,
-        minSingleTransAmount: minLimit,
-        maxSingleTransAmount: maxLimit,
-      };
-      if (effectiveTradeMethods && effectiveTradeMethods.length > 0) {
-        agentCleanPayload.tradeMethods = effectiveTradeMethods;
-      }
-
-      const res3 = await binanceAgentRequest({
-        endpoint: "/sapi/v1/c2c/agent/ads/update",
-        method: "POST",
-        body: agentCleanPayload,
-      });
-      if (res3.ok && res3.data !== false) {
-        updateSucceeded = true;
-      } else {
-        lastError = res3;
-      }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // PERCOBAAN 4: Full-DTO Agent SAPI (buildCleanPayload)
-    // ─────────────────────────────────────────────────────────────────────────
-    if (!updateSucceeded) {
-      const payload4 = buildCleanPayload(totalInitAmount, isBuy ? "0" : "1");
-      const res4 = await binanceAgentRequest({
-        endpoint: "/sapi/v1/c2c/agent/ads/update",
-        method: "POST",
-        body: payload4,
-      });
-      if (res4.ok && res4.data !== false) {
-        updateSucceeded = true;
-      } else {
-        lastError = res4;
-      }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // PERCOBAAN 5: FALLBACK HARGA SAJA (HANYA JIKA SEMUA PERCOBAAN STOK DI ATAS GAGAL)
-    // Jika modifikasi stok/limit ditolak Binance (misal ada order aktif yang sedang mengunci kuota stok),
-    // kita update HANYA harga agar bot tetap kompetitif di pasar.
-    // ─────────────────────────────────────────────────────────────────────────
-    if (!updateSucceeded) {
-      // 5a. Standard SAPI /sapi/v1/c2c/ads/update (Price Only)
-      const res5a = await binanceMerchantRequest({
+    if (isPriceOnlyMode) {
+      // 1a. Standard SAPI /sapi/v1/c2c/ads/update (Price Only)
+      const resPriceStd = await binanceMerchantRequest({
         endpoint: "/sapi/v1/c2c/ads/update",
         method: "POST",
         params: {
           advNo: targetAdvNo,
           adNo: targetAdvNo,
           price: newPrice,
+          priceType: 1,
         },
       });
-      if (res5a.ok && res5a.data !== false) {
+      if (resPriceStd.ok && resPriceStd.data !== false) {
         updateSucceeded = true;
-        if (isStockUpdateRequested) usedStockPreservedFallback = true;
+        usedStockPreservedFallback = true;
       } else {
-        lastError = res5a;
+        lastError = resPriceStd;
 
-        // 5b. SAPI Singular /sapi/v1/c2c/ad/update (Price Only)
-        const res5b = await binanceMerchantRequest({
+        // 1b. Singular SAPI /sapi/v1/c2c/ad/update (Price Only)
+        const resPriceSingular = await binanceMerchantRequest({
           endpoint: "/sapi/v1/c2c/ad/update",
           method: "POST",
           params: {
             advNo: targetAdvNo,
             adNo: targetAdvNo,
             price: newPrice,
+            priceType: 1,
           },
         });
-        if (res5b.ok && res5b.data !== false) {
+        if (resPriceSingular.ok && resPriceSingular.data !== false) {
           updateSucceeded = true;
-          if (isStockUpdateRequested) usedStockPreservedFallback = true;
+          usedStockPreservedFallback = true;
         } else {
-          lastError = res5b;
+          lastError = resPriceSingular;
 
-          // 5c. Agent SAPI JSON Body (Price Only)
-          const res5c = await binanceAgentRequest({
+          // 1c. Agent SAPI JSON Body (Price Only)
+          const resPriceAgent = await binanceAgentRequest({
             endpoint: "/sapi/v1/c2c/agent/ads/update",
             method: "POST",
             body: {
@@ -1070,26 +980,93 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
               priceType: 1,
             },
           });
-          if (res5c.ok && res5c.data !== false) {
+          if (resPriceAgent.ok && resPriceAgent.data !== false) {
+            updateSucceeded = true;
+            usedStockPreservedFallback = true;
+          } else {
+            lastError = resPriceAgent;
+          }
+        }
+      }
+    } else {
+      // ─────────────────────────────────────────────────────────────────────────
+      // MODE NORMAL: UPDATE HARGA & STOK
+      // ─────────────────────────────────────────────────────────────────────────
+      // Percobaan 1: Standard SAPI dengan stok & limit
+      const stdParams: Record<string, any> = {
+        advNo: targetAdvNo,
+        adNo: targetAdvNo,
+        price: newPrice,
+        priceType: 1,
+      };
+      if (isStockUpdateRequested && targetStock > 0) {
+        stdParams.initAmount = totalInitAmount;
+        stdParams.amount = targetStock;
+        stdParams.minSingleTransAmount = minLimit;
+        stdParams.maxSingleTransAmount = maxLimit;
+      }
+
+      const res1 = await binanceMerchantRequest({
+        endpoint: "/sapi/v1/c2c/ads/update",
+        method: "POST",
+        params: stdParams,
+      });
+      if (res1.ok && res1.data !== false) {
+        updateSucceeded = true;
+      } else {
+        lastError = res1;
+
+        // JIKA GAGAL (karena pesanan aktif mengunci saldo atau parameter limit):
+        // JANGAN buang waktu mencoba 4 permutasi stok yang akan ditolak!
+        // Langsung eksekusi fallback instan ke Price-Only agar harga segera terupdate di pasar!
+        const resFallbackStd = await binanceMerchantRequest({
+          endpoint: "/sapi/v1/c2c/ads/update",
+          method: "POST",
+          params: {
+            advNo: targetAdvNo,
+            adNo: targetAdvNo,
+            price: newPrice,
+            priceType: 1,
+          },
+        });
+        if (resFallbackStd.ok && resFallbackStd.data !== false) {
+          updateSucceeded = true;
+          if (isStockUpdateRequested) usedStockPreservedFallback = true;
+        } else {
+          lastError = resFallbackStd;
+
+          // Coba jalur SAPI singular price-only
+          const resFallbackSingular = await binanceMerchantRequest({
+            endpoint: "/sapi/v1/c2c/ad/update",
+            method: "POST",
+            params: {
+              advNo: targetAdvNo,
+              adNo: targetAdvNo,
+              price: newPrice,
+              priceType: 1,
+            },
+          });
+          if (resFallbackSingular.ok && resFallbackSingular.data !== false) {
             updateSucceeded = true;
             if (isStockUpdateRequested) usedStockPreservedFallback = true;
           } else {
-            lastError = res5c;
+            lastError = resFallbackSingular;
 
-            // 5d. Agent SAPI via Query Params (Price Only)
-            const res5d = await binanceAgentRequest({
+            // Coba jalur Agent SAPI price-only
+            const resFallbackAgent = await binanceAgentRequest({
               endpoint: "/sapi/v1/c2c/agent/ads/update",
               method: "POST",
-              queryParams: {
+              body: {
                 advNo: targetAdvNo,
                 price: newPrice,
+                priceType: 1,
               },
             });
-            if (res5d.ok && res5d.data !== false) {
+            if (resFallbackAgent.ok && resFallbackAgent.data !== false) {
               updateSucceeded = true;
               if (isStockUpdateRequested) usedStockPreservedFallback = true;
             } else {
-              lastError = res5d;
+              lastError = resFallbackAgent;
             }
           }
         }
@@ -1311,6 +1288,8 @@ const pushPriceInputSchema = z.object({
   minLimitIdr: z.number().optional(),
   floorPrice: z.number().optional(),
   ceilingPrice: z.number().optional(),
+  hasActiveOrders: z.boolean().optional(),
+  priceOnly: z.boolean().optional(),
 });
 
 export type PushPriceResult = {
@@ -1355,6 +1334,8 @@ export const pushPriceToBinanceAd = createServerFn({ method: "POST" })
         maxSingleTransAmount: data.maxLimitIdr,
         floorPrice: data.floorPrice,
         ceilingPrice: data.ceilingPrice,
+        hasActiveOrders: data.hasActiveOrders,
+        priceOnly: data.priceOnly,
       },
     });
 

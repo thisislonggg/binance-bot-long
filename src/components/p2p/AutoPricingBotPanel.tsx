@@ -370,6 +370,29 @@ export function AutoPricingBotPanel({
   const activeBuyOrdersUsdt = activeOrdersQuery.data?.totalActiveBuyUsdt || 0;
   const activeBuyOrdersIdr = activeOrdersQuery.data?.totalActiveBuyIdr || 0;
   const activeBuyOrdersList = activeOrdersQuery.data?.activeBuyOrders || [];
+  const activeSellOrdersList = activeOrdersQuery.data?.activeSellOrders || [];
+
+  const cleanSellAdvNo = config.merchantSellAdvNo?.trim().replace(/^#/, "");
+  const hasActiveSellOrder = Boolean(
+    cleanSellAdvNo &&
+    activeSellOrdersList.some((o) => {
+      if (o.advNo) {
+        return o.advNo.trim().replace(/^#/, "") === cleanSellAdvNo;
+      }
+      return true;
+    })
+  );
+
+  const cleanBuyAdvNo = config.merchantBuyAdvNo?.trim().replace(/^#/, "");
+  const hasActiveBuyOrder = Boolean(
+    cleanBuyAdvNo &&
+    activeBuyOrdersList.some((o) => {
+      if (o.advNo) {
+        return o.advNo.trim().replace(/^#/, "") === cleanBuyAdvNo;
+      }
+      return true;
+    })
+  );
 
   // Jika pesanan beli aktif selesai/berubah, picu sinkronisasi data saldo dan PnL
   const prevActiveBuyCountRef = useRef<number | null>(null);
@@ -647,10 +670,10 @@ export function AutoPricingBotPanel({
     const rawPrice = side === "buy" ? recommendedBuyPrice : recommendedSellPrice;
     let price = Math.round(rawPrice);
 
-    // Proteksi Batas Bawah Jual (Sell Floor & Min Price Bound):
+    // Proteksi Batas Bawah Jual (Sell Floor & Min Price Bound): HARD FLOOR MUTLAK!
     const effectiveSellFloor = Math.max(
       pricingResult.sellGuard.floorPrice || 0,
-      config.sellFloorMode === "manual" && config.manualSellFloorRp ? config.manualSellFloorRp : 0,
+      config.manualSellFloorRp || 0,
       config.minPriceBoundRp || 0
     );
     if (side === "sell" && effectiveSellFloor > 0 && price < effectiveSellFloor) {
@@ -660,10 +683,10 @@ export function AutoPricingBotPanel({
       );
     }
 
-    // Proteksi Batas Bawah Beli (Buy Floor & Min Price Bound):
+    // Proteksi Batas Bawah Beli (Buy Floor & Min Price Bound): HARD FLOOR MUTLAK!
     const effectiveBuyFloor = Math.max(
       pricingResult.buyGuard.floorPrice || 0,
-      config.buyFloorMode === "manual" && config.manualBuyFloorRp ? config.manualBuyFloorRp : 0,
+      config.manualBuyFloorRp || 0,
       config.minPriceBoundRp || 0
     );
     if (side === "buy" && effectiveBuyFloor > 0 && price < effectiveBuyFloor) {
@@ -746,6 +769,8 @@ export function AutoPricingBotPanel({
 
     const effectiveMinLimit = side === "buy" ? effectiveBuyMinLimit : effectiveSellMinLimit;
 
+    const hasActiveOrdersOnSide = side === "sell" ? hasActiveSellOrder : hasActiveBuyOrder;
+
     try {
       const res = await pushPriceFn({
         data: {
@@ -753,9 +778,9 @@ export function AutoPricingBotPanel({
           advNo: advNo.trim(),
           side,
           price,
-          amountUsdt: effectiveStock,
-          maxLimitIdr: effectiveMaxLimit,
-          minLimitIdr: effectiveMinLimit,
+          amountUsdt: hasActiveOrdersOnSide ? undefined : effectiveStock,
+          maxLimitIdr: hasActiveOrdersOnSide ? undefined : effectiveMaxLimit,
+          minLimitIdr: hasActiveOrdersOnSide ? undefined : effectiveMinLimit,
           floorPrice:
             side === "sell"
               ? effectiveSellFloor > 0
@@ -768,6 +793,8 @@ export function AutoPricingBotPanel({
             side === "buy" && effectiveBuyCeiling > 0
               ? effectiveBuyCeiling
               : undefined,
+          hasActiveOrders: hasActiveOrdersOnSide,
+          priceOnly: hasActiveOrdersOnSide,
         },
       });
 
@@ -871,11 +898,11 @@ export function AutoPricingBotPanel({
               : bankAllocation.autoBuyStockUsdt;
 
           const priceChanged = lastPushedPricesRef.current.buy !== roundedPrice;
-          const stockChanged = lastPushedStockRef.current.buy !== currentBuyStock;
+          const stockChanged = !hasActiveBuyOrder && lastPushedStockRef.current.buy !== currentBuyStock;
 
           if (priceChanged || stockChanged) {
             lastPushedPricesRef.current.buy = roundedPrice;
-            lastPushedStockRef.current.buy = currentBuyStock;
+            if (!hasActiveBuyOrder) lastPushedStockRef.current.buy = currentBuyStock;
             lastPushTimeRef.current = now;
             buyTriggered = true;
             handlePushPrice("buy");
@@ -902,11 +929,12 @@ export function AutoPricingBotPanel({
             : undefined;
 
         const sellPriceChanged = lastPushedPricesRef.current.sell !== roundedSellPrice;
-        const sellStockChanged = lastPushedStockRef.current.sell !== currentSellStock;
+        // PENTING: Jika ada pesanan aktif (hasActiveSellOrder), JANGAN picu push hanya karena perubahan stok!
+        const sellStockChanged = !hasActiveSellOrder && lastPushedStockRef.current.sell !== currentSellStock;
 
         if (sellPriceChanged || sellStockChanged) {
           lastPushedPricesRef.current.sell = roundedSellPrice;
-          lastPushedStockRef.current.sell = currentSellStock;
+          if (!hasActiveSellOrder) lastPushedStockRef.current.sell = currentSellStock;
           lastPushTimeRef.current = now;
 
           if (buyTriggered) {
