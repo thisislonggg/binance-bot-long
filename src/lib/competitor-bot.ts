@@ -120,7 +120,7 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   minProfitMarginRp: 15,
 
   buyCeilingMode: "auto_fair",
-  manualBuyCeilingRp: 999_999,
+  manualBuyCeilingRp: 0,
   buyFloorMode: "disabled",
   manualBuyFloorRp: 0,
   manualBuyPriceOverrideRp: 0,
@@ -715,25 +715,13 @@ export function computeCompetitorPricing(input: {
   let calculatedSellFloor = autoSellFloor;
   if (config.sellFloorMode === "manual" && config.manualSellFloorRp > 0) {
     calculatedSellFloor = config.manualSellFloorRp;
-  } else if (config.manualSellFloorRp > 0) {
-    calculatedSellFloor = Math.max(autoSellFloor, config.manualSellFloorRp);
   }
   if (config.minPriceBoundRp && config.minPriceBoundRp > 0) {
     calculatedSellFloor = Math.max(calculatedSellFloor, config.minPriceBoundRp);
   }
   calculatedSellFloor = Math.round(calculatedSellFloor);
 
-  let calculatedBuyCeiling = Math.round(
-    config.buyCeilingMode === "auto_fair"
-      ? (fairPrice > 0 ? fairPrice - config.minSpreadRp : liveMarketAnchor - config.minSpreadRp)
-      : (config.manualBuyCeilingRp > 0 ? config.manualBuyCeilingRp : 999_999)
-  );
-  if (config.manualBuyCeilingRp > 0 && config.manualBuyCeilingRp < 999_999) {
-    calculatedBuyCeiling = Math.min(calculatedBuyCeiling, config.manualBuyCeilingRp);
-  }
-  if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) {
-    calculatedBuyCeiling = Math.min(calculatedBuyCeiling, config.maxPriceBoundRp);
-  }
+  let calculatedBuyCeiling = 999_999;
 
   let calculatedBuyFloor = Math.round(
     config.manualBuyFloorRp && config.manualBuyFloorRp > 0 ? config.manualBuyFloorRp : 0
@@ -843,25 +831,15 @@ export function computeCompetitorPricing(input: {
     };
   };
 
+  // 1. Hitung Harga JUAL Dasar & Rekomendasi Terlebih Dahulu
+  // Batas Atas Beli (Buy Ceiling) diturunkan langsung dari Harga Jual (Harga Jual Bot - Min Spread Guard),
+  // sehingga Harga Jual harus dihitung dan diselesaikan terlebih dahulu.
   const sellBase = computeBasePrice("sell", qualifiedSell, sellRefAds, sellTargetMerchant, resolvedFallbackSell);
-  const buyBase = computeBasePrice("buy", qualifiedBuy, buyRefAds, buyTargetMerchant, resolvedFallbackBuy);
-
-  // 3. Hitung Harga Mentah (Raw Price) dengan Offset
-  // Untuk JUAL: periksa apakah target merchant berada di bawah batas floor modal
   const naturalSellTargetPrice = sellBase.isFallback
     ? sellBase.basePrice
     : sellBase.basePrice + config.sellOffsetRp;
 
   let rawSellPrice = Math.max(calculatedSellFloor, naturalSellTargetPrice);
-
-  // Untuk BELI: base price + buyOffsetRp (misal +1 overcut)
-  let rawBuyPrice = buyBase.basePrice + config.buyOffsetRp;
-  if (calculatedBuyFloor > 0) {
-    rawBuyPrice = Math.max(calculatedBuyFloor, rawBuyPrice);
-  }
-  if (calculatedBuyCeiling > 0) {
-    rawBuyPrice = Math.min(calculatedBuyCeiling, rawBuyPrice);
-  }
 
   const autoFollow = config.autoFollowNextWhenLimitReached !== false;
 
@@ -876,7 +854,7 @@ export function computeCompetitorPricing(input: {
 
   let recommendedSellPrice = rawSellPrice;
 
-  // 4. Hitung dan Terapkan Harga Jual
+  // 2. Terapkan Override Manual Jual atau Proteksi Floor Jual
   if (config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0) {
     const fixedSell = Math.round(config.manualSellPriceOverrideRp);
     if (calculatedSellFloor > 0 && fixedSell < calculatedSellFloor) {
@@ -930,13 +908,32 @@ export function computeCompetitorPricing(input: {
     }
   }
 
-  // 5. Hitung dan Terapkan Batas Pengaman BELI (Buy Ceiling & Floor Guard)
+  // 3. Hitung dan Terapkan Batas Pengaman BELI (Buy Ceiling Guard) dari Harga Jual
   // Ceiling Beli (Batas Atas): Mencegah beli kemahalan di pucuk yang mengikis spread minimal terhadap harga jual
   if (config.buyCeilingMode === "auto_fair") {
-    const dynamicCeiling = Math.round(
-      rawSellPrice > 0 ? rawSellPrice - config.minSpreadRp : (fairPrice > 0 ? fairPrice : liveMarketAnchor)
-    );
-    calculatedBuyCeiling = Math.min(calculatedBuyCeiling, dynamicCeiling);
+    // FORMULA RESMI: Batas Atas Beli = Harga Jual Bot Kita - Min Spread Guard
+    const effectiveSellForCeiling = recommendedSellPrice > 0
+      ? recommendedSellPrice
+      : (rawSellPrice > 0 ? rawSellPrice : (fairPrice > 0 ? fairPrice : liveMarketAnchor));
+
+    calculatedBuyCeiling = Math.round(effectiveSellForCeiling - config.minSpreadRp);
+  } else {
+    // Mode Manual: gunakan manualBuyCeilingRp jika diisi
+    calculatedBuyCeiling = config.manualBuyCeilingRp > 0 ? Math.round(config.manualBuyCeilingRp) : 999_999;
+  }
+
+  if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) {
+    calculatedBuyCeiling = Math.min(calculatedBuyCeiling, config.maxPriceBoundRp);
+  }
+  if (calculatedBuyFloor > 0 && calculatedBuyCeiling < calculatedBuyFloor) {
+    calculatedBuyCeiling = calculatedBuyFloor;
+  }
+
+  // 4. Hitung Acuan Dasar Beli (Buy Base) menggunakan Ceiling yang Sudah Akurat
+  const buyBase = computeBasePrice("buy", qualifiedBuy, buyRefAds, buyTargetMerchant, resolvedFallbackBuy);
+  let rawBuyPrice = buyBase.basePrice + config.buyOffsetRp;
+  if (calculatedBuyFloor > 0) {
+    rawBuyPrice = Math.max(calculatedBuyFloor, rawBuyPrice);
   }
 
   let activeBuyTargetMerchant = buyTargetMerchant;
@@ -951,12 +948,13 @@ export function computeCompetitorPricing(input: {
 
   let recommendedBuyPrice = rawBuyPrice;
 
+  // 5. Terapkan Override Manual Beli atau Proteksi Ceiling/Floor Beli
   if (config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0) {
     const fixedBuy = Math.round(config.manualBuyPriceOverrideRp);
-    if (config.manualBuyCeilingRp > 0 && config.manualBuyCeilingRp < 999_999 && fixedBuy > config.manualBuyCeilingRp) {
-      recommendedBuyPrice = config.manualBuyCeilingRp;
+    if (calculatedBuyCeiling > 0 && fixedBuy > calculatedBuyCeiling) {
+      recommendedBuyPrice = calculatedBuyCeiling;
       buyGuard.triggered = true;
-      buyGuard.reason = `Proteksi Ceiling: Harga override manual beli (Rp ${fixedBuy.toLocaleString("id-ID")}) melebihi batas atas yang Anda tentukan (Ceiling Rp ${config.manualBuyCeilingRp.toLocaleString("id-ID")}). Harga dikunci di batas Ceiling.`;
+      buyGuard.reason = `Proteksi Ceiling: Harga override manual beli (Rp ${fixedBuy.toLocaleString("id-ID")}) melebihi batas atas yang Anda tentukan (Ceiling Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}). Harga dikunci di batas Ceiling.`;
     } else if (calculatedBuyFloor > 0 && fixedBuy < calculatedBuyFloor) {
       recommendedBuyPrice = calculatedBuyFloor;
       buyGuard.triggered = true;
@@ -1067,6 +1065,19 @@ export function computeCompetitorPricing(input: {
         }
       }
     }
+  }
+
+  // Jika recommendedSellPrice disesuaikan di Step 6 dan mode auto_fair,
+  // sinkronisasikan ulang calculatedBuyCeiling agar konsisten
+  if (config.buyCeilingMode === "auto_fair") {
+    calculatedBuyCeiling = Math.round(recommendedSellPrice - config.minSpreadRp);
+    if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) {
+      calculatedBuyCeiling = Math.min(calculatedBuyCeiling, config.maxPriceBoundRp);
+    }
+    if (calculatedBuyFloor > 0 && calculatedBuyCeiling < calculatedBuyFloor) {
+      calculatedBuyCeiling = calculatedBuyFloor;
+    }
+    buyGuard.ceilingPrice = calculatedBuyCeiling;
   }
 
   // ── FINAL SAFEGUARDS: PENGAMAN MUTLAK SEMUA BATAS HARGA YANG DI-SET PENGGUNA ──

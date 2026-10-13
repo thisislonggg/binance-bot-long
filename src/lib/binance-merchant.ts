@@ -710,7 +710,7 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
         // Proteksi JUAL (SELL)
         const hardMinSell = Math.max(
           data.floorPrice || 0,
-          botCfg.manualSellFloorRp || 0,
+          botCfg.sellFloorMode === "manual" && botCfg.manualSellFloorRp ? botCfg.manualSellFloorRp : 0,
           botCfg.minPriceBoundRp || 0
         );
         if (hardMinSell > 0 && newPrice < hardMinSell) {
@@ -724,7 +724,9 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
         // Proteksi BELI (BUY)
         const hardMaxBuy = Math.min(
           data.ceilingPrice && data.ceilingPrice > 0 ? data.ceilingPrice : 999_999,
-          botCfg.manualBuyCeilingRp && botCfg.manualBuyCeilingRp > 0 ? botCfg.manualBuyCeilingRp : 999_999,
+          botCfg.buyCeilingMode === "manual" && botCfg.manualBuyCeilingRp && botCfg.manualBuyCeilingRp > 0 && botCfg.manualBuyCeilingRp < 999_999
+            ? botCfg.manualBuyCeilingRp
+            : 999_999,
           botCfg.maxPriceBoundRp && botCfg.maxPriceBoundRp > 0 ? botCfg.maxPriceBoundRp : 999_999
         );
         if (hardMaxBuy < 999_999 && newPrice > hardMaxBuy) {
@@ -733,7 +735,7 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
         }
         const hardMinBuy = Math.max(
           data.floorPrice || 0,
-          botCfg.manualBuyFloorRp || 0,
+          botCfg.buyFloorMode === "manual" && botCfg.manualBuyFloorRp ? botCfg.manualBuyFloorRp : 0,
           botCfg.minPriceBoundRp || 0
         );
         if (hardMinBuy > 0 && newPrice < hardMinBuy) {

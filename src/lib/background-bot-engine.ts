@@ -257,7 +257,7 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
     // Proteksi Batas Bawah Beli (Buy Floor): JANGAN PERNAH pasang di bawah Floor yang di-set user!
     const effectiveBuyFloor = Math.max(
       pricing.buyGuard.floorPrice || 0,
-      config.manualBuyFloorRp || 0,
+      config.buyFloorMode === "manual" && config.manualBuyFloorRp ? config.manualBuyFloorRp : 0,
       config.minPriceBoundRp || 0
     );
     if (effectiveBuyFloor > 0 && roundedBuyPrice < effectiveBuyFloor) {
@@ -265,9 +265,10 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
     }
 
     // Proteksi Batas Atas Beli (Buy Ceiling): JANGAN PERNAH pasang di atas Ceiling yang di-set user!
-    const effectiveBuyCeiling = config.manualBuyCeilingRp > 0 && config.manualBuyCeilingRp < 999_999
-      ? config.manualBuyCeilingRp
-      : (pricing.buyGuard.ceilingPrice || 0);
+    const effectiveBuyCeiling =
+      config.buyCeilingMode === "manual" && config.manualBuyCeilingRp > 0 && config.manualBuyCeilingRp < 999_999
+        ? config.manualBuyCeilingRp
+        : (pricing.buyGuard.ceilingPrice || 0);
     if (effectiveBuyCeiling > 0 && roundedBuyPrice > effectiveBuyCeiling) {
       roundedBuyPrice = effectiveBuyCeiling;
     }
@@ -336,7 +337,7 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
     // ── Eksekusi Push Iklan Jual (SELL) ──────────────────────────────────────
     const minSellFloor = Math.max(
       pricing.sellGuard.floorPrice || 0,
-      config.manualSellFloorRp || 0,
+      config.sellFloorMode === "manual" && config.manualSellFloorRp ? config.manualSellFloorRp : 0,
       config.minPriceBoundRp || 0
     );
     let targetSellPrice = pricing.recommendedSellPrice;

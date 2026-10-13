@@ -602,7 +602,7 @@ export function AutoPricingBotPanel({
 
     // Proteksi Batas Atas Beli (Buy Ceiling):
     const effectiveBuyCeiling =
-      config.manualBuyCeilingRp > 0 && config.manualBuyCeilingRp < 999_999
+      config.buyCeilingMode === "manual" && config.manualBuyCeilingRp > 0 && config.manualBuyCeilingRp < 999_999
         ? config.manualBuyCeilingRp
         : (pricingResult.buyGuard.ceilingPrice || 0);
     if (side === "buy" && effectiveBuyCeiling > 0 && price > effectiveBuyCeiling) {
@@ -3404,7 +3404,7 @@ export function AutoPricingBotPanel({
                       type="button"
                       variant={config.sellFloorMode === "auto_hpp" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => updateConfig({ sellFloorMode: "auto_hpp" })}
+                      onClick={() => updateConfig({ sellFloorMode: "auto_hpp", manualSellFloorRp: 0 })}
                       className="h-7 text-xs font-semibold"
                     >
                       Auto dari HPP Stok
@@ -3467,7 +3467,7 @@ export function AutoPricingBotPanel({
                       type="button"
                       variant={config.buyCeilingMode === "auto_fair" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => updateConfig({ buyCeilingMode: "auto_fair" })}
+                      onClick={() => updateConfig({ buyCeilingMode: "auto_fair", manualBuyCeilingRp: 0 })}
                       className="h-7 text-xs font-semibold"
                     >
                       Auto dari Harga Jual - Min Spread
@@ -3476,14 +3476,19 @@ export function AutoPricingBotPanel({
                       type="button"
                       variant={config.buyCeilingMode === "manual" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => updateConfig({ buyCeilingMode: "manual" })}
+                      onClick={() =>
+                        updateConfig({
+                          buyCeilingMode: "manual",
+                          manualBuyCeilingRp: config.manualBuyCeilingRp || buyGuard.ceilingPrice || 17825,
+                        })
+                      }
                       className="h-7 text-xs font-semibold"
                     >
                       Nominal Manual
                     </Button>
                   </div>
 
-                  {config.buyCeilingMode === "manual" && (
+                  {config.buyCeilingMode === "manual" ? (
                     <div className="flex items-center justify-between pt-1">
                       <span className="text-muted-foreground">Nominal Ceiling Tetap:</span>
                       <Input
@@ -3493,6 +3498,13 @@ export function AutoPricingBotPanel({
                         onChange={(e) => updateConfig({ manualBuyCeilingRp: Math.max(0, Number(e.target.value)) })}
                         className="h-6.5 w-28 text-xs bg-surface text-right font-bold"
                       />
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between pt-1 text-[0.68rem] text-muted-foreground">
+                      <span>Formula Ceiling Auto:</span>
+                      <strong className="num text-bid font-bold">
+                        {fmtRp2(pricingResult.recommendedSellPrice)} - Rp {config.minSpreadRp} = {fmtRp2(buyGuard.ceilingPrice)}
+                      </strong>
                     </div>
                   )}
 
@@ -3917,6 +3929,9 @@ export function AutoPricingBotPanel({
                         <div className="space-y-1">
                           <div className="flex items-center justify-between text-[0.65rem]">
                             <span className="text-muted-foreground font-semibold">Limit Atas (Max Rp):</span>
+                            {config.buyCeilingMode === "auto_fair" ? (
+                              <span className="text-bid font-bold text-[0.6rem]">Auto ({fmtRp2(buyGuard.ceilingPrice)})</span>
+                            ) : null}
                           </div>
                           <Input
                             type="number"
@@ -3926,16 +3941,16 @@ export function AutoPricingBotPanel({
                               const val = Number(e.target.value);
                               updateConfig({
                                 manualBuyCeilingRp: Number.isFinite(val) && val > 0 ? val : 0,
-                                buyCeilingMode: "manual",
+                                buyCeilingMode: Number.isFinite(val) && val > 0 ? "manual" : "auto_fair",
                               });
                             }}
-                            placeholder={buyGuard.ceilingPrice > 0 ? String(buyGuard.ceilingPrice) : "Auto"}
+                            placeholder={buyGuard.ceilingPrice > 0 ? `Auto (${buyGuard.ceilingPrice})` : "Auto"}
                             className="h-7 text-xs bg-surface font-mono text-right"
                           />
                           <p className="text-[0.6rem] text-muted-foreground">
-                            {config.manualBuyCeilingRp && config.manualBuyCeilingRp > 0
-                              ? `Max: Rp ${config.manualBuyCeilingRp.toLocaleString("id-ID")}`
-                              : `Auto: ${fmtRp2(buyGuard.ceilingPrice)}`}
+                            {config.buyCeilingMode === "manual" && config.manualBuyCeilingRp && config.manualBuyCeilingRp > 0
+                              ? `Manual Max: Rp ${config.manualBuyCeilingRp.toLocaleString("id-ID")}`
+                              : `Auto dari Harga Jual: ${fmtRp2(buyGuard.ceilingPrice)} (Jual - Rp ${config.minSpreadRp})`}
                           </p>
                         </div>
                       </div>
