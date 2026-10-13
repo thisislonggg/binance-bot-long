@@ -876,49 +876,57 @@ export function computeCompetitorPricing(input: {
 
   let recommendedSellPrice = rawSellPrice;
 
-  // Cek jika pengguna menetapkan override harga jual tetap manual
+  // 4. Hitung dan Terapkan Harga Jual
   if (config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0) {
-    recommendedSellPrice = Math.max(calculatedSellFloor, Math.round(config.manualSellPriceOverrideRp));
-  }
-
-  // Cek apakah target pasar berada di bawah batas aman floor modal yang di-set pengguna
-  const isMarketBelowFloor =
-    naturalSellTargetPrice < calculatedSellFloor ||
-    (config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0 && config.manualSellPriceOverrideRp < calculatedSellFloor);
-
-  if (isMarketBelowFloor || recommendedSellPrice < calculatedSellFloor) {
-    sellGuard.triggered = true;
-
-    // FITUR: Auto-Follow Iklan Jual Lain di Atas Floor Modal
-    if (autoFollow && qualifiedSell.length > 0 && (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0)) {
-      let candidateSell: Ad | null = null;
-      let candidateRank = 0;
-
-      for (let i = 0; i < qualifiedSell.length; i++) {
-        const adCandidate = qualifiedSell[i];
-        if (!adCandidate) continue;
-        if (adCandidate.price + config.sellOffsetRp >= calculatedSellFloor) {
-          candidateSell = adCandidate;
-          candidateRank = i + 1;
-          break;
-        }
-      }
-
-      if (candidateSell) {
-        activeSellTargetMerchant = candidateSell;
-        activeSellRankUsed = candidateRank;
-        recommendedSellPrice = Math.max(calculatedSellFloor, candidateSell.price + config.sellOffsetRp);
-        activeSellDesc = `Rank #${candidateRank} (${candidateSell.merchant_name}) [Otomatis alih target: batas Floor modal Rp ${calculatedSellFloor.toLocaleString("id-ID")} tercapai]`;
-        sellGuard.autoSwitched = true;
-        sellGuard.switchedToRank = candidateRank;
-        sellGuard.reason = `Batas Bawah Modal Terpenuhi: Target Rank #${sellRankIdx + 1} di bawah batas modal (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Bot otomatis beralih mengikuti iklan lain: Rank #${candidateRank} (@${candidateSell.merchant_name} - Rp ${candidateSell.price.toLocaleString("id-ID")}). Rekomendasi: Rp ${recommendedSellPrice.toLocaleString("id-ID")}.`;
-      } else {
-        recommendedSellPrice = calculatedSellFloor;
-        sellGuard.reason = `Semua iklan kompetitor (${qualifiedSell.length} iklan) menjual di bawah batas aman Floor (Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor modal.`;
-      }
-    } else {
-      sellGuard.reason = `Harga pasar (Rp ${naturalSellTargetPrice.toLocaleString("id-ID")}) di bawah batas aman modal (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci aman di batas Floor.`;
+    const fixedSell = Math.round(config.manualSellPriceOverrideRp);
+    if (calculatedSellFloor > 0 && fixedSell < calculatedSellFloor) {
       recommendedSellPrice = calculatedSellFloor;
+      sellGuard.triggered = true;
+      sellGuard.reason = `Proteksi Floor: Harga jual override manual (Rp ${fixedSell.toLocaleString("id-ID")}) di bawah batas aman Floor modal (Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor.`;
+    } else {
+      recommendedSellPrice = fixedSell;
+      sellGuard.triggered = false;
+      sellGuard.reason = undefined;
+    }
+    activeSellDesc = `Manual Override (Rp ${fixedSell.toLocaleString("id-ID")})`;
+  } else {
+    // Mode Auto Bot: periksa apakah target pasar berada di bawah batas aman floor modal yang di-set pengguna
+    const isMarketBelowFloor = naturalSellTargetPrice < calculatedSellFloor;
+
+    if (isMarketBelowFloor || recommendedSellPrice < calculatedSellFloor) {
+      sellGuard.triggered = true;
+
+      // FITUR: Auto-Follow Iklan Jual Lain di Atas Floor Modal
+      if (autoFollow && qualifiedSell.length > 0) {
+        let candidateSell: Ad | null = null;
+        let candidateRank = 0;
+
+        for (let i = 0; i < qualifiedSell.length; i++) {
+          const adCandidate = qualifiedSell[i];
+          if (!adCandidate) continue;
+          if (adCandidate.price + config.sellOffsetRp >= calculatedSellFloor) {
+            candidateSell = adCandidate;
+            candidateRank = i + 1;
+            break;
+          }
+        }
+
+        if (candidateSell) {
+          activeSellTargetMerchant = candidateSell;
+          activeSellRankUsed = candidateRank;
+          recommendedSellPrice = Math.max(calculatedSellFloor, candidateSell.price + config.sellOffsetRp);
+          activeSellDesc = `Rank #${candidateRank} (${candidateSell.merchant_name}) [Otomatis alih target: batas Floor modal Rp ${calculatedSellFloor.toLocaleString("id-ID")} tercapai]`;
+          sellGuard.autoSwitched = true;
+          sellGuard.switchedToRank = candidateRank;
+          sellGuard.reason = `Batas Bawah Modal Terpenuhi: Target Rank #${sellRankIdx + 1} di bawah batas modal (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Bot otomatis beralih mengikuti iklan lain: Rank #${candidateRank} (@${candidateSell.merchant_name} - Rp ${candidateSell.price.toLocaleString("id-ID")}). Rekomendasi: Rp ${recommendedSellPrice.toLocaleString("id-ID")}.`;
+        } else {
+          recommendedSellPrice = calculatedSellFloor;
+          sellGuard.reason = `Semua iklan kompetitor (${qualifiedSell.length} iklan) menjual di bawah batas aman Floor (Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor modal.`;
+        }
+      } else {
+        sellGuard.reason = `Harga pasar (Rp ${naturalSellTargetPrice.toLocaleString("id-ID")}) di bawah batas aman modal (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci aman di batas Floor.`;
+        recommendedSellPrice = calculatedSellFloor;
+      }
     }
   }
 
@@ -943,96 +951,120 @@ export function computeCompetitorPricing(input: {
 
   let recommendedBuyPrice = rawBuyPrice;
 
-  // Cek Batas Atas (Ceiling Guard)
-  // FITUR: Auto-Follow Iklan Lain Saat Batas Atas Beli Tercapai
-  // Jika harga beli melampaui batas atas (ceiling), bot otomatis mencari dan mengikuti
-  // iklan kompetitor lain di bawah limit atas (bukan cuma diam terkunci di ceiling).
-  if (calculatedBuyCeiling > 0 && recommendedBuyPrice > calculatedBuyCeiling) {
-    buyGuard.triggered = true;
+  if (config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0) {
+    const fixedBuy = Math.round(config.manualBuyPriceOverrideRp);
+    if (config.manualBuyCeilingRp > 0 && config.manualBuyCeilingRp < 999_999 && fixedBuy > config.manualBuyCeilingRp) {
+      recommendedBuyPrice = config.manualBuyCeilingRp;
+      buyGuard.triggered = true;
+      buyGuard.reason = `Proteksi Ceiling: Harga override manual beli (Rp ${fixedBuy.toLocaleString("id-ID")}) melebihi batas atas yang Anda tentukan (Ceiling Rp ${config.manualBuyCeilingRp.toLocaleString("id-ID")}). Harga dikunci di batas Ceiling.`;
+    } else if (calculatedBuyFloor > 0 && fixedBuy < calculatedBuyFloor) {
+      recommendedBuyPrice = calculatedBuyFloor;
+      buyGuard.triggered = true;
+      buyGuard.reason = `Proteksi Floor: Harga override manual beli (Rp ${fixedBuy.toLocaleString("id-ID")}) di bawah batas minimal beli (Floor Rp ${calculatedBuyFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor.`;
+    } else {
+      recommendedBuyPrice = fixedBuy;
+      buyGuard.triggered = false;
+      buyGuard.reason = undefined;
+    }
+    activeBuyDesc = `Manual Override (Rp ${fixedBuy.toLocaleString("id-ID")})`;
+  } else {
+    // Mode Auto Bot untuk Beli:
+    // Cek Batas Atas (Ceiling Guard)
+    // FITUR: Auto-Follow Iklan Lain Saat Batas Atas Beli Tercapai
+    if (calculatedBuyCeiling > 0 && recommendedBuyPrice > calculatedBuyCeiling) {
+      buyGuard.triggered = true;
 
-    if (autoFollow && qualifiedBuy.length > 0) {
-      let candidateBuy: Ad | null = null;
-      let candidateRank = 0;
+      if (autoFollow && qualifiedBuy.length > 0) {
+        let candidateBuy: Ad | null = null;
+        let candidateRank = 0;
 
-      // Prioritas 1: Cari iklan kompetitor di mana (harga + offset) <= limit atas (ceiling)
-      for (let i = 0; i < qualifiedBuy.length; i++) {
-        const adCandidate = qualifiedBuy[i];
-        if (!adCandidate) continue;
-        if (adCandidate.price + config.buyOffsetRp <= calculatedBuyCeiling) {
-          candidateBuy = adCandidate;
-          candidateRank = i + 1;
-          break;
-        }
-      }
-
-      // Prioritas 2: Jika tidak ada yang + offset <= ceiling, cari iklan yang harga dasarnya <= ceiling
-      if (!candidateBuy) {
+        // Prioritas 1: Cari iklan kompetitor di mana (harga + offset) <= limit atas (ceiling)
         for (let i = 0; i < qualifiedBuy.length; i++) {
           const adCandidate = qualifiedBuy[i];
           if (!adCandidate) continue;
-          if (adCandidate.price <= calculatedBuyCeiling) {
+          if (adCandidate.price + config.buyOffsetRp <= calculatedBuyCeiling) {
             candidateBuy = adCandidate;
             candidateRank = i + 1;
             break;
           }
         }
-      }
 
-      if (candidateBuy) {
-        activeBuyTargetMerchant = candidateBuy;
-        activeBuyRankUsed = candidateRank;
-        const targetPriceWithOffset = candidateBuy.price + config.buyOffsetRp;
-        recommendedBuyPrice = Math.min(calculatedBuyCeiling, targetPriceWithOffset);
-        activeBuyDesc = `Rank #${candidateRank} (${candidateBuy.merchant_name}) [Otomatis alih target: batas atas Rp ${calculatedBuyCeiling.toLocaleString("id-ID")} tercapai]`;
-        buyGuard.autoSwitched = true;
-        buyGuard.switchedToRank = candidateRank;
-        buyGuard.reason = `Batas Atas Terpenuhi: Target Rank #${buyRankIdx + 1} melampaui limit atas (Ceiling Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}). Bot otomatis beralih mengikuti iklan lain di bawah limit: Rank #${candidateRank} (@${candidateBuy.merchant_name} - Rp ${candidateBuy.price.toLocaleString("id-ID")}). Rekomendasi: Rp ${recommendedBuyPrice.toLocaleString("id-ID")}.`;
+        // Prioritas 2: Jika tidak ada yang + offset <= ceiling, cari iklan yang harga dasarnya <= ceiling
+        if (!candidateBuy) {
+          for (let i = 0; i < qualifiedBuy.length; i++) {
+            const adCandidate = qualifiedBuy[i];
+            if (!adCandidate) continue;
+            if (adCandidate.price <= calculatedBuyCeiling) {
+              candidateBuy = adCandidate;
+              candidateRank = i + 1;
+              break;
+            }
+          }
+        }
+
+        if (candidateBuy) {
+          activeBuyTargetMerchant = candidateBuy;
+          activeBuyRankUsed = candidateRank;
+          const targetPriceWithOffset = candidateBuy.price + config.buyOffsetRp;
+          recommendedBuyPrice = Math.min(calculatedBuyCeiling, targetPriceWithOffset);
+          activeBuyDesc = `Rank #${candidateRank} (${candidateBuy.merchant_name}) [Otomatis alih target: batas atas Rp ${calculatedBuyCeiling.toLocaleString("id-ID")} tercapai]`;
+          buyGuard.autoSwitched = true;
+          buyGuard.switchedToRank = candidateRank;
+          buyGuard.reason = `Batas Atas Terpenuhi: Target Rank #${buyRankIdx + 1} melampaui limit atas (Ceiling Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}). Bot otomatis beralih mengikuti iklan lain di bawah limit: Rank #${candidateRank} (@${candidateBuy.merchant_name} - Rp ${candidateBuy.price.toLocaleString("id-ID")}). Rekomendasi: Rp ${recommendedBuyPrice.toLocaleString("id-ID")}.`;
+        } else {
+          // Semua iklan kompetitor di pasar berada di atas limit atas
+          recommendedBuyPrice = calculatedBuyCeiling;
+          buyGuard.reason = `Semua iklan kompetitor (${qualifiedBuy.length} iklan) berada di atas limit atas (Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}). Harga dipatok di limit atas Rp ${calculatedBuyCeiling.toLocaleString("id-ID")} menunggu kompetitor lain muncul di bawah limit.`;
+        }
       } else {
-        // Semua iklan kompetitor di pasar berada di atas limit atas
+        buyGuard.reason = `Harga pasar (Rp ${rawBuyPrice.toLocaleString("id-ID")}) di atas batas atas wajar (Ceiling Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}). Harga dikunci di batas Ceiling.`;
         recommendedBuyPrice = calculatedBuyCeiling;
-        buyGuard.reason = `Semua iklan kompetitor (${qualifiedBuy.length} iklan) berada di atas limit atas (Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}). Harga dipatok di limit atas Rp ${calculatedBuyCeiling.toLocaleString("id-ID")} menunggu kompetitor lain muncul di bawah limit.`;
       }
-    } else {
-      buyGuard.reason = `Harga pasar (Rp ${rawBuyPrice.toLocaleString("id-ID")}) di atas batas atas wajar (Ceiling Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}). Harga dikunci di batas Ceiling.`;
-      recommendedBuyPrice = calculatedBuyCeiling;
+    }
+
+    // Cek Batas Bawah (Floor Guard)
+    if (calculatedBuyFloor > 0 && recommendedBuyPrice < calculatedBuyFloor) {
+      buyGuard.triggered = true;
+      buyGuard.reason = `Harga pasar (Rp ${rawBuyPrice.toLocaleString("id-ID")}) di bawah batas minimal beli yang ditentukan (Floor Rp ${calculatedBuyFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor.`;
+      recommendedBuyPrice = calculatedBuyFloor;
     }
   }
 
-  // Cek jika pengguna menetapkan override harga beli tetap manual
-  if (config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0) {
-    recommendedBuyPrice = Math.round(config.manualBuyPriceOverrideRp);
-  }
-
-  // Cek Batas Bawah (Floor Guard)
-  if (calculatedBuyFloor > 0 && recommendedBuyPrice < calculatedBuyFloor) {
-    buyGuard.triggered = true;
-    buyGuard.reason = `Harga pasar (Rp ${rawBuyPrice.toLocaleString("id-ID")}) di bawah batas minimal beli yang ditentukan (Floor Rp ${calculatedBuyFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor.`;
-    recommendedBuyPrice = calculatedBuyFloor;
-  }
-
   // 6. Validasi Minimum Spread Guard (Pastikan Jual - Beli >= Min Spread)
-  if (recommendedSellPrice - recommendedBuyPrice < config.minSpreadRp) {
-    const sellIsFallback = sellBase.isFallback;
-    const buyIsFallback = buyBase.isFallback;
+  const isSellManual = Boolean(config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0);
+  const isBuyManual = Boolean(config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0);
 
-    if (sellIsFallback && !buyIsFallback) {
-      // Sisi Jual tidak memiliki kompetitor riil (fallback), sedangkan sisi Beli riil ada kompetitor valid.
-      // JANGAN rusak harga beli riil! Sesuaikan harga jual ke atas agar spread terpenuhi:
-      recommendedSellPrice = Math.max(calculatedSellFloor, Math.round(recommendedBuyPrice + config.minSpreadRp));
-    } else if (!sellIsFallback && buyIsFallback) {
-      // Sisi Beli tidak memiliki kompetitor riil (fallback), sedangkan sisi Jual riil ada kompetitor valid.
-      // Sesuaikan harga beli ke bawah dari harga jual riil:
+  if (recommendedSellPrice - recommendedBuyPrice < config.minSpreadRp) {
+    if (isSellManual && !isBuyManual) {
+      // User menentukan harga jual manual tetap: sesuaikan harga beli otomatis ke bawah
       const adjustedBuyPrice = Math.round(recommendedSellPrice - config.minSpreadRp);
       recommendedBuyPrice = calculatedBuyFloor > 0 ? Math.max(calculatedBuyFloor, adjustedBuyPrice) : adjustedBuyPrice;
+    } else if (!isSellManual && isBuyManual) {
+      // User menentukan harga beli manual tetap: sesuaikan harga jual otomatis ke atas
+      recommendedSellPrice = Math.max(calculatedSellFloor, Math.round(recommendedBuyPrice + config.minSpreadRp));
+    } else if (isSellManual && isBuyManual) {
+      // Keduanya manual override: pertahankan input eksplisit pengguna
     } else {
-      // Keduanya kompetitor riil, atau keduanya fallback.
-      // Coba turunkan harga beli selama tidak menembus floor beli
-      const adjustedBuyPrice = Math.round(recommendedSellPrice - config.minSpreadRp);
-      if (calculatedBuyFloor > 0 && adjustedBuyPrice < calculatedBuyFloor) {
-        recommendedBuyPrice = calculatedBuyFloor;
+      // Keduanya Auto Bot:
+      const sellIsFallback = sellBase.isFallback;
+      const buyIsFallback = buyBase.isFallback;
+
+      if (sellIsFallback && !buyIsFallback) {
+        // Sisi Jual tidak memiliki kompetitor riil (fallback), sedangkan sisi Beli riil ada kompetitor valid.
         recommendedSellPrice = Math.max(calculatedSellFloor, Math.round(recommendedBuyPrice + config.minSpreadRp));
+      } else if (!sellIsFallback && buyIsFallback) {
+        // Sisi Beli tidak memiliki kompetitor riil (fallback), sedangkan sisi Jual riil ada kompetitor valid.
+        const adjustedBuyPrice = Math.round(recommendedSellPrice - config.minSpreadRp);
+        recommendedBuyPrice = calculatedBuyFloor > 0 ? Math.max(calculatedBuyFloor, adjustedBuyPrice) : adjustedBuyPrice;
       } else {
-        recommendedBuyPrice = adjustedBuyPrice;
+        // Keduanya kompetitor riil, atau keduanya fallback.
+        const adjustedBuyPrice = Math.round(recommendedSellPrice - config.minSpreadRp);
+        if (calculatedBuyFloor > 0 && adjustedBuyPrice < calculatedBuyFloor) {
+          recommendedBuyPrice = calculatedBuyFloor;
+          recommendedSellPrice = Math.max(calculatedSellFloor, Math.round(recommendedBuyPrice + config.minSpreadRp));
+        } else {
+          recommendedBuyPrice = adjustedBuyPrice;
+        }
       }
     }
   }
@@ -1095,6 +1127,10 @@ export function computeCompetitorPricing(input: {
     sellGuard.triggered = true;
     sellGuard.reason = `Proteksi Mutlak Batas Bawah Jual: Harga jual terkunci di Batas Bawah (Rp ${absoluteSellFloor.toLocaleString("id-ID")}).`;
   }
+
+  // 7. Bulatkan harga mutlak ke bilangan bulat (integer IDR untuk Binance C2C)
+  recommendedSellPrice = Math.round(recommendedSellPrice);
+  recommendedBuyPrice = Math.round(recommendedBuyPrice);
 
   // 7. Kalkulasi Fee & Estimasi Laba Bersih
   const makerFeeSellPerUsdt = Math.round(recommendedSellPrice * MAKER_FEE_RATE * 100) / 100;

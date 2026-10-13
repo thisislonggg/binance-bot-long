@@ -318,6 +318,8 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
             amount: currentBuyStock > 0 ? currentBuyStock : undefined,
             minSingleTransAmount: config.manualBuyMinLimitIdr || 50_000_000,
             maxSingleTransAmount: config.manualBuyMaxLimitIdr || 500_000_000,
+            floorPrice: effectiveBuyFloor > 0 ? effectiveBuyFloor : undefined,
+            ceilingPrice: effectiveBuyCeiling > 0 ? effectiveBuyCeiling : undefined,
           });
 
           buyResult = buyRes as unknown as Record<string, unknown>;
@@ -366,6 +368,11 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
       const stockChanged = lastPushedPrices.sellStock !== effectiveSellStock;
 
       if (priceChanged || stockChanged) {
+        // Jika BUY baru saja di-push, beri jeda sejenak agar Binance API tidak bentrok timestamp / rate limit
+        if (buyPushed) {
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+
         const sellRes = await updateMerchantAdInternal({
           advNo: config.merchantSellAdvNo.trim(),
           side: "sell",
@@ -377,6 +384,7 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
             (effectiveSellStock && roundedSellPrice > 0
               ? Math.floor(effectiveSellStock * roundedSellPrice)
               : undefined),
+          floorPrice: minSellFloor > 0 ? minSellFloor : undefined,
         });
 
         sellResult = sellRes as unknown as Record<string, unknown>;

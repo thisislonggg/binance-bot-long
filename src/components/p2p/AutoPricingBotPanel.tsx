@@ -515,14 +515,33 @@ export function AutoPricingBotPanel({
   const buyAdOfflinedRef = useRef(false);
   const [isPushingBuy, setIsPushingBuy] = useState(false);
   const [isPushingSell, setIsPushingSell] = useState(false);
+  const isPushingBuyRef = useRef(false);
+  const isPushingSellRef = useRef(false);
   const [lastPushLog, setLastPushLog] = useState<PushPriceResult | null>(null);
 
   const handlePushPrice = async (side: "buy" | "sell") => {
+    if (side === "buy") {
+      if (isPushingBuyRef.current) return;
+      isPushingBuyRef.current = true;
+      setIsPushingBuy(true);
+    } else {
+      if (isPushingSellRef.current) return;
+      isPushingSellRef.current = true;
+      setIsPushingSell(true);
+    }
+
     const advNo = side === "buy" ? config.merchantBuyAdvNo : config.merchantSellAdvNo;
     if (!advNo || !advNo.trim()) {
       toast.error(
         `Nomor Iklan ${side === "buy" ? "Beli" : "Jual"} (advNo) belum diisi. Buka tab "🔌 C2C Merchant API" di bawah untuk mengisinya.`
       );
+      if (side === "buy") {
+        isPushingBuyRef.current = false;
+        setIsPushingBuy(false);
+      } else {
+        isPushingSellRef.current = false;
+        setIsPushingSell(false);
+      }
       return;
     }
 
@@ -544,6 +563,10 @@ export function AutoPricingBotPanel({
             advStatus: "OFFLINE",
           },
         }).catch(() => {});
+        if (side === "buy") {
+          isPushingBuyRef.current = false;
+          setIsPushingBuy(false);
+        }
         return;
       }
     }
@@ -597,9 +620,6 @@ export function AutoPricingBotPanel({
         price = config.maxPriceBoundRp;
       }
     }
-
-    if (side === "buy") setIsPushingBuy(true);
-    else setIsPushingSell(true);
 
     const effectiveBuyStock =
       side === "buy"
@@ -663,6 +683,18 @@ export function AutoPricingBotPanel({
           amountUsdt: effectiveStock,
           maxLimitIdr: effectiveMaxLimit,
           minLimitIdr: effectiveMinLimit,
+          floorPrice:
+            side === "sell"
+              ? effectiveSellFloor > 0
+                ? effectiveSellFloor
+                : undefined
+              : effectiveBuyFloor > 0
+              ? effectiveBuyFloor
+              : undefined,
+          ceilingPrice:
+            side === "buy" && effectiveBuyCeiling > 0
+              ? effectiveBuyCeiling
+              : undefined,
         },
       });
 
@@ -685,8 +717,13 @@ export function AutoPricingBotPanel({
       const errStr = err instanceof Error ? err.message : String(err);
       toast.error(`Gagal mengirim update ke Binance: ${errStr}`);
     } finally {
-      if (side === "buy") setIsPushingBuy(false);
-      else setIsPushingSell(false);
+      if (side === "buy") {
+        isPushingBuyRef.current = false;
+        setIsPushingBuy(false);
+      } else {
+        isPushingSellRef.current = false;
+        setIsPushingSell(false);
+      }
     }
   };
 
@@ -703,7 +740,9 @@ export function AutoPricingBotPanel({
       const now = Date.now();
       if (now - lastPushTimeRef.current < minIntervalMs) return;
 
-      if (config.merchantBuyAdvNo && recommendedBuyPrice > 0) {
+      let buyTriggered = false;
+
+      if (config.merchantBuyAdvNo && recommendedBuyPrice > 0 && !isPushingBuyRef.current) {
         // Cek proteksi kas beli: jika kas tidak cukup atau di bawah minimal limit, JANGAN buat/push iklan beli!
         const isBuyBlocked =
           (!config.manualBuyStockUsdt || config.manualBuyStockUsdt <= 0) &&
@@ -765,12 +804,13 @@ export function AutoPricingBotPanel({
             lastPushedPricesRef.current.buy = roundedPrice;
             lastPushedStockRef.current.buy = currentBuyStock;
             lastPushTimeRef.current = now;
+            buyTriggered = true;
             handlePushPrice("buy");
           }
         }
       }
 
-      if (config.merchantSellAdvNo && recommendedSellPrice > 0) {
+      if (config.merchantSellAdvNo && recommendedSellPrice > 0 && !isPushingSellRef.current) {
         const effectiveSellFloor = Math.max(
           pricingResult.sellGuard.floorPrice || 0,
           config.manualSellFloorRp || 0,
@@ -795,7 +835,17 @@ export function AutoPricingBotPanel({
           lastPushedPricesRef.current.sell = roundedSellPrice;
           lastPushedStockRef.current.sell = currentSellStock;
           lastPushTimeRef.current = now;
-          handlePushPrice("sell");
+
+          if (buyTriggered) {
+            // Beri jeda 1000ms jika BUY baru saja dipicu agar request tidak bertabrakan di Binance SAPI
+            setTimeout(() => {
+              if (!isPushingSellRef.current) {
+                handlePushPrice("sell");
+              }
+            }, 1000);
+          } else {
+            handlePushPrice("sell");
+          }
         }
       }
     };
@@ -1321,8 +1371,15 @@ export function AutoPricingBotPanel({
 
             <div className="mt-2 flex items-baseline justify-between">
               <div>
-                <div className="text-[0.68rem] text-muted-foreground font-medium uppercase tracking-wider">
-                  Harga Iklan Jual Anda
+                <div className="flex items-center gap-1.5">
+                  <div className="text-[0.68rem] text-muted-foreground font-medium uppercase tracking-wider">
+                    Harga Iklan Jual Anda
+                  </div>
+                  {config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0 ? (
+                    <Badge variant="outline" className="text-[0.58rem] py-0 px-1 border-ask/40 text-ask font-bold">
+                      Override Manual
+                    </Badge>
+                  ) : null}
                 </div>
                 <div className="num text-2xl sm:text-3xl font-extrabold text-foreground">
                   {fmtRp2(recommendedSellPrice)}
@@ -1332,8 +1389,11 @@ export function AutoPricingBotPanel({
               <div className="text-right">
                 <div className="text-[0.68rem] text-muted-foreground">Offset Strategi</div>
                 <div className="text-xs font-bold text-ask num">
-                  {config.sellOffsetRp <= 0 ? `-Rp ${Math.abs(config.sellOffsetRp)}` : `+Rp ${config.sellOffsetRp}`}
-                  {config.sellOffsetRp === 0 ? " (Match)" : " (Undercut)"}
+                  {config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0
+                    ? "Harga Tetap"
+                    : config.sellOffsetRp <= 0
+                    ? `-Rp ${Math.abs(config.sellOffsetRp)} ${config.sellOffsetRp === 0 ? "(Match)" : "(Undercut)"}`
+                    : `+Rp ${config.sellOffsetRp} (Markup)`}
                 </div>
               </div>
             </div>
@@ -1343,14 +1403,16 @@ export function AutoPricingBotPanel({
               <div className="flex items-center justify-between text-muted-foreground">
                 <span className="font-medium text-[0.72rem]">Dasar Acuan:</span>
                 <span className="font-bold text-foreground inline-flex items-center gap-1">
-                  {targetMethodDescription.sell}
+                  {config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0
+                    ? `Manual Override (Rp ${config.manualSellPriceOverrideRp.toLocaleString("id-ID")})`
+                    : targetMethodDescription.sell}
                   {sellTargetMerchant?.is_verified && (
                     <span className="size-1.5 rounded-full bg-amber-400" title="Verified Merchant" />
                   )}
                 </span>
               </div>
 
-              {sellTargetMerchant && (
+              {sellTargetMerchant && !config.manualSellPriceOverrideRp && (
                 <div className="flex items-center justify-between text-[0.72rem] text-muted-foreground pt-0.5 border-t border-border/40">
                   <span>
                     Stok: <strong className="text-foreground">{Math.round(sellTargetMerchant.available_usdt || (sellTargetMerchant.price > 0 ? sellTargetMerchant.available_idr / sellTargetMerchant.price : 0))} USDT</strong>

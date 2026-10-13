@@ -617,6 +617,8 @@ const updateAdInputSchema = z.object({
   maxSingleTransAmount: z.number().optional(), // Max limit IDR (dari saldo bank)
   side: z.enum(["buy", "sell", "BUY", "SELL"]).optional(),
   payMethods: z.array(z.string()).optional(),
+  floorPrice: z.number().optional(),
+  ceilingPrice: z.number().optional(),
 });
 
 export type UpdateAdInternalParams = {
@@ -627,6 +629,8 @@ export type UpdateAdInternalParams = {
   maxSingleTransAmount?: number;
   side?: "buy" | "sell" | "BUY" | "SELL";
   payMethods?: string[];
+  floorPrice?: number;
+  ceilingPrice?: number;
 };
 
 export async function toggleMerchantAdStatusInternal(
@@ -697,12 +701,15 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
       isBuy = false;
     }
 
-    // ── DEFENSE-IN-DEPTH: Proteksi Batas Bawah Iklan Jual (Hard Floor Clamp Mutlak) ──
-    if (!isBuy) {
-      try {
-        const { getBotConfigServer } = await import("./background-bot-engine");
-        const botCfg = await getBotConfigServer();
+    // ── DEFENSE-IN-DEPTH: Proteksi Batas Bawah Iklan Jual & Batas Iklan Beli (Hard Floor/Ceiling Clamp) ──
+    try {
+      const { getBotConfigServer } = await import("./background-bot-engine");
+      const botCfg = await getBotConfigServer();
+
+      if (!isBuy) {
+        // Proteksi JUAL (SELL)
         const hardMinSell = Math.max(
+          data.floorPrice || 0,
           botCfg.manualSellFloorRp || 0,
           botCfg.minPriceBoundRp || 0
         );
@@ -710,10 +717,43 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
           console.warn(`[BinanceMerchant] Hard floor triggered for SELL ad #${cleanAdvNo}: Rp ${newPrice} < Rp ${hardMinSell}. Clamped to Rp ${hardMinSell}.`);
           newPrice = hardMinSell;
         }
-      } catch {
-        // Abaikan jika config belum terbaca
+        if (botCfg.maxPriceBoundRp && botCfg.maxPriceBoundRp > 0 && newPrice > botCfg.maxPriceBoundRp) {
+          newPrice = hardMinSell > 0 && botCfg.maxPriceBoundRp < hardMinSell ? hardMinSell : botCfg.maxPriceBoundRp;
+        }
+      } else {
+        // Proteksi BELI (BUY)
+        const hardMaxBuy = Math.min(
+          data.ceilingPrice && data.ceilingPrice > 0 ? data.ceilingPrice : 999_999,
+          botCfg.manualBuyCeilingRp && botCfg.manualBuyCeilingRp > 0 ? botCfg.manualBuyCeilingRp : 999_999,
+          botCfg.maxPriceBoundRp && botCfg.maxPriceBoundRp > 0 ? botCfg.maxPriceBoundRp : 999_999
+        );
+        if (hardMaxBuy < 999_999 && newPrice > hardMaxBuy) {
+          console.warn(`[BinanceMerchant] Hard ceiling triggered for BUY ad #${cleanAdvNo}: Rp ${newPrice} > Rp ${hardMaxBuy}. Clamped to Rp ${hardMaxBuy}.`);
+          newPrice = hardMaxBuy;
+        }
+        const hardMinBuy = Math.max(
+          data.floorPrice || 0,
+          botCfg.manualBuyFloorRp || 0,
+          botCfg.minPriceBoundRp || 0
+        );
+        if (hardMinBuy > 0 && newPrice < hardMinBuy) {
+          newPrice = hardMinBuy;
+        }
+      }
+    } catch {
+      // Fallback lokal jika import config gagal
+      if (!isBuy && data.floorPrice && data.floorPrice > 0 && newPrice < data.floorPrice) {
+        newPrice = data.floorPrice;
+      } else if (isBuy) {
+        if (data.ceilingPrice && data.ceilingPrice > 0 && newPrice > data.ceilingPrice) {
+          newPrice = data.ceilingPrice;
+        }
+        if (data.floorPrice && data.floorPrice > 0 && newPrice < data.floorPrice) {
+          newPrice = data.floorPrice;
+        }
       }
     }
+    newPrice = Math.round(newPrice);
 
     // Hitung status jumlah/stok:
     const origInit = Number(existingAd["initAmount"] ?? existingAd["amount"] ?? 0);
@@ -1267,6 +1307,8 @@ const pushPriceInputSchema = z.object({
   amountUsdt: z.number().optional(),
   maxLimitIdr: z.number().optional(),
   minLimitIdr: z.number().optional(),
+  floorPrice: z.number().optional(),
+  ceilingPrice: z.number().optional(),
 });
 
 export type PushPriceResult = {
@@ -1309,6 +1351,8 @@ export const pushPriceToBinanceAd = createServerFn({ method: "POST" })
         amount: data.amountUsdt,
         minSingleTransAmount: data.minLimitIdr,
         maxSingleTransAmount: data.maxLimitIdr,
+        floorPrice: data.floorPrice,
+        ceilingPrice: data.ceilingPrice,
       },
     });
 
