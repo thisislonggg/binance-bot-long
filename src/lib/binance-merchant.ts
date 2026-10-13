@@ -663,7 +663,7 @@ export async function toggleMerchantAdStatusInternal(
 
 export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Promise<MerchantApiResponse> {
   const cleanAdvNo = data.advNo.trim().replace(/^#/, "");
-  const newPrice = Math.round(data.price);
+    let newPrice = Math.round(data.price);
 
     // =========================================================================
     // PROTOKOL UTAMA: Binance P2P Skill Agent SAPI (Full-Object Update)
@@ -695,6 +695,24 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
     const tt = existingAd["tradeType"];
     if (tt === "SELL" || tt === 1 || tt === "1") {
       isBuy = false;
+    }
+
+    // ── DEFENSE-IN-DEPTH: Proteksi Batas Bawah Iklan Jual (Hard Floor Clamp Mutlak) ──
+    if (!isBuy) {
+      try {
+        const { getBotConfigServer } = await import("./background-bot-engine");
+        const botCfg = await getBotConfigServer();
+        const hardMinSell = Math.max(
+          botCfg.manualSellFloorRp || 0,
+          botCfg.minPriceBoundRp || 0
+        );
+        if (hardMinSell > 0 && newPrice < hardMinSell) {
+          console.warn(`[BinanceMerchant] Hard floor triggered for SELL ad #${cleanAdvNo}: Rp ${newPrice} < Rp ${hardMinSell}. Clamped to Rp ${hardMinSell}.`);
+          newPrice = hardMinSell;
+        }
+      } catch {
+        // Abaikan jika config belum terbaca
+      }
     }
 
     // Hitung status jumlah/stok:
@@ -793,17 +811,19 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
       ? Math.round(Number(existingAd["minSingleTransAmount"]))
       : 50000;
 
-    // ATURAN MUTLAK BINANCE C2C:
-    // 1. minSingleTransAmount HARUS selalu lebih kecil (<) dari maxSingleTransAmount!
-    // 2. minSingleTransAmount TIDAK BOLEH lebih besar dari total kapasitas fiat iklan (fiatCap)!
+    // ATURAN MUTLAK BINANCE C2C IDR:
+    // 1. Batas transaksi minimum IDR resmi Binance C2C adalah Rp 50.000 (tidak boleh < 50.000).
+    // 2. minSingleTransAmount HARUS selalu lebih kecil (<) dari maxSingleTransAmount!
+    // 3. minSingleTransAmount TIDAK BOLEH lebih besar dari total kapasitas fiat iklan (fiatCap)!
+    const BINANCE_IDR_MIN_TX = 50_000;
     if (fiatCap > 0 && minLimit >= fiatCap) {
-      minLimit = Math.max(10_000, Math.floor(fiatCap * 0.2));
+      minLimit = Math.max(BINANCE_IDR_MIN_TX, Math.floor(fiatCap * 0.2));
+    }
+    if (minLimit < BINANCE_IDR_MIN_TX) {
+      minLimit = BINANCE_IDR_MIN_TX;
     }
     if (minLimit >= maxLimit) {
-      minLimit = Math.max(10_000, Math.floor(maxLimit * 0.2));
-      if (minLimit >= maxLimit) {
-        minLimit = Math.max(10_000, maxLimit - 10_000);
-      }
+      maxLimit = Math.max(minLimit + 10_000, fiatCap);
     }
 
     let lastError: MerchantApiResponse | null = null;

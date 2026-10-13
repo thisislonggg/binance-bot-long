@@ -847,10 +847,12 @@ export function computeCompetitorPricing(input: {
   const buyBase = computeBasePrice("buy", qualifiedBuy, buyRefAds, buyTargetMerchant, resolvedFallbackBuy);
 
   // 3. Hitung Harga Mentah (Raw Price) dengan Offset
-  // Untuk JUAL: jangan biarkan rawSellPrice tembus ke bawah calculatedSellFloor
-  let rawSellPrice = sellBase.isFallback
-    ? Math.max(calculatedSellFloor, sellBase.basePrice)
-    : Math.max(calculatedSellFloor, sellBase.basePrice + config.sellOffsetRp);
+  // Untuk JUAL: periksa apakah target merchant berada di bawah batas floor modal
+  const naturalSellTargetPrice = sellBase.isFallback
+    ? sellBase.basePrice
+    : sellBase.basePrice + config.sellOffsetRp;
+
+  let rawSellPrice = Math.max(calculatedSellFloor, naturalSellTargetPrice);
 
   // Untuk BELI: base price + buyOffsetRp (misal +1 overcut)
   let rawBuyPrice = buyBase.basePrice + config.buyOffsetRp;
@@ -879,11 +881,16 @@ export function computeCompetitorPricing(input: {
     recommendedSellPrice = Math.max(calculatedSellFloor, Math.round(config.manualSellPriceOverrideRp));
   }
 
-  if (recommendedSellPrice < calculatedSellFloor) {
+  // Cek apakah target pasar berada di bawah batas aman floor modal yang di-set pengguna
+  const isMarketBelowFloor =
+    naturalSellTargetPrice < calculatedSellFloor ||
+    (config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0 && config.manualSellPriceOverrideRp < calculatedSellFloor);
+
+  if (isMarketBelowFloor || recommendedSellPrice < calculatedSellFloor) {
     sellGuard.triggered = true;
 
     // FITUR: Auto-Follow Iklan Jual Lain di Atas Floor Modal
-    if (autoFollow && qualifiedSell.length > 0) {
+    if (autoFollow && qualifiedSell.length > 0 && (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0)) {
       let candidateSell: Ad | null = null;
       let candidateRank = 0;
 
@@ -907,10 +914,10 @@ export function computeCompetitorPricing(input: {
         sellGuard.reason = `Batas Bawah Modal Terpenuhi: Target Rank #${sellRankIdx + 1} di bawah batas modal (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Bot otomatis beralih mengikuti iklan lain: Rank #${candidateRank} (@${candidateSell.merchant_name} - Rp ${candidateSell.price.toLocaleString("id-ID")}). Rekomendasi: Rp ${recommendedSellPrice.toLocaleString("id-ID")}.`;
       } else {
         recommendedSellPrice = calculatedSellFloor;
-        sellGuard.reason = `Semua iklan kompetitor (${qualifiedSell.length} iklan) menjual di bawah modal Floor (Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor modal.`;
+        sellGuard.reason = `Semua iklan kompetitor (${qualifiedSell.length} iklan) menjual di bawah batas aman Floor (Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor modal.`;
       }
     } else {
-      sellGuard.reason = `Harga pasar (Rp ${rawSellPrice.toLocaleString("id-ID")}) di bawah batas aman modal (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor.`;
+      sellGuard.reason = `Harga pasar (Rp ${naturalSellTargetPrice.toLocaleString("id-ID")}) di bawah batas aman modal (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci aman di batas Floor.`;
       recommendedSellPrice = calculatedSellFloor;
     }
   }
@@ -1065,11 +1072,28 @@ export function computeCompetitorPricing(input: {
   // 5. Batas Maksimum Absolut Pasar (Max Price Bound): Berlaku untuk Jual & Beli
   if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) {
     if (recommendedSellPrice > config.maxPriceBoundRp) {
-      recommendedSellPrice = config.maxPriceBoundRp;
+      // PENTING: Max bound TIDAK BOLEH memangkas harga jual di bawah Batas Bawah Sell Floor!
+      if (calculatedSellFloor > 0 && config.maxPriceBoundRp < calculatedSellFloor) {
+        recommendedSellPrice = calculatedSellFloor;
+      } else {
+        recommendedSellPrice = config.maxPriceBoundRp;
+      }
     }
     if (recommendedBuyPrice > config.maxPriceBoundRp) {
       recommendedBuyPrice = config.maxPriceBoundRp;
     }
+  }
+
+  // 6. FINAL MUTLAK HARD CLAMP: Harga jual TIDAK BOLEH berada di bawah batas bawah apapun yang di-set user
+  const absoluteSellFloor = Math.max(
+    calculatedSellFloor || 0,
+    config.manualSellFloorRp || 0,
+    config.minPriceBoundRp || 0
+  );
+  if (absoluteSellFloor > 0 && recommendedSellPrice < absoluteSellFloor) {
+    recommendedSellPrice = absoluteSellFloor;
+    sellGuard.triggered = true;
+    sellGuard.reason = `Proteksi Mutlak Batas Bawah Jual: Harga jual terkunci di Batas Bawah (Rp ${absoluteSellFloor.toLocaleString("id-ID")}).`;
   }
 
   // 7. Kalkulasi Fee & Estimasi Laba Bersih

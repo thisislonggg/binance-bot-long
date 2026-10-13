@@ -337,9 +337,20 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
       config.manualSellFloorRp || 0,
       config.minPriceBoundRp || 0
     );
-    let roundedSellPrice = Math.round(Math.max(minSellFloor, pricing.recommendedSellPrice));
+    let targetSellPrice = pricing.recommendedSellPrice;
+    if (config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0) {
+      targetSellPrice = Math.max(minSellFloor, Math.round(config.manualSellPriceOverrideRp));
+    }
+    let roundedSellPrice = Math.round(Math.max(minSellFloor, targetSellPrice));
     if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0 && roundedSellPrice > config.maxPriceBoundRp) {
-      roundedSellPrice = config.maxPriceBoundRp;
+      if (minSellFloor > 0 && config.maxPriceBoundRp < minSellFloor) {
+        roundedSellPrice = minSellFloor;
+      } else {
+        roundedSellPrice = config.maxPriceBoundRp;
+      }
+    }
+    if (minSellFloor > 0 && roundedSellPrice < minSellFloor) {
+      roundedSellPrice = minSellFloor;
     }
     if (config.merchantSellAdvNo && roundedSellPrice > 0) {
       const maxAvailableSellStockUsdt =

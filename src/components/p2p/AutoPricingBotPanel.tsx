@@ -549,6 +549,7 @@ export function AutoPricingBotPanel({
     }
 
     const rawPrice = side === "buy" ? recommendedBuyPrice : recommendedSellPrice;
+    let price = Math.round(rawPrice);
 
     // Proteksi Batas Bawah Jual (Sell Floor & Min Price Bound):
     const effectiveSellFloor = Math.max(
@@ -556,11 +557,11 @@ export function AutoPricingBotPanel({
       config.manualSellFloorRp || 0,
       config.minPriceBoundRp || 0
     );
-    if (side === "sell" && effectiveSellFloor > 0 && rawPrice < effectiveSellFloor) {
-      toast.error(
-        `Ditolak Sistem: Harga jual (Rp ${rawPrice.toLocaleString("id-ID")}) berada di bawah Batas Bawah (Rp ${effectiveSellFloor.toLocaleString("id-ID")}). Bot dicegah memasang harga di bawah batas yang Anda tentukan!`
+    if (side === "sell" && effectiveSellFloor > 0 && price < effectiveSellFloor) {
+      price = effectiveSellFloor;
+      toast.info(
+        `Harga jual otomatis dikunci di Batas Bawah Aman (Rp ${effectiveSellFloor.toLocaleString("id-ID")}) agar tidak memasang harga di bawah batas yang Anda set.`
       );
-      return;
     }
 
     // Proteksi Batas Bawah Beli (Buy Floor & Min Price Bound):
@@ -569,11 +570,11 @@ export function AutoPricingBotPanel({
       config.manualBuyFloorRp || 0,
       config.minPriceBoundRp || 0
     );
-    if (side === "buy" && effectiveBuyFloor > 0 && rawPrice < effectiveBuyFloor) {
-      toast.error(
-        `Ditolak Sistem: Harga beli (Rp ${rawPrice.toLocaleString("id-ID")}) berada di bawah Batas Bawah Beli (Rp ${effectiveBuyFloor.toLocaleString("id-ID")}). Bot dicegah memasang harga di bawah batas yang Anda tentukan!`
+    if (side === "buy" && effectiveBuyFloor > 0 && price < effectiveBuyFloor) {
+      price = effectiveBuyFloor;
+      toast.info(
+        `Harga beli dikunci di Batas Bawah Beli (Rp ${effectiveBuyFloor.toLocaleString("id-ID")}) agar tidak menawar di bawah batas minimal.`
       );
-      return;
     }
 
     // Proteksi Batas Atas Beli (Buy Ceiling):
@@ -581,22 +582,21 @@ export function AutoPricingBotPanel({
       config.manualBuyCeilingRp > 0 && config.manualBuyCeilingRp < 999_999
         ? config.manualBuyCeilingRp
         : (pricingResult.buyGuard.ceilingPrice || 0);
-    if (side === "buy" && effectiveBuyCeiling > 0 && rawPrice > effectiveBuyCeiling) {
-      toast.error(
-        `Ditolak Sistem: Harga beli (Rp ${rawPrice.toLocaleString("id-ID")}) berada di atas Batas Atas Beli (Rp ${effectiveBuyCeiling.toLocaleString("id-ID")}). Bot dicegah menawar di atas batas yang Anda tentukan!`
+    if (side === "buy" && effectiveBuyCeiling > 0 && price > effectiveBuyCeiling) {
+      price = effectiveBuyCeiling;
+      toast.info(
+        `Harga beli dikunci di Batas Atas Beli (Rp ${effectiveBuyCeiling.toLocaleString("id-ID")}) agar tidak membeli kemahalan.`
       );
-      return;
     }
 
     // Proteksi Batas Maksimum Pasar (Max Price Bound):
-    if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0 && rawPrice > config.maxPriceBoundRp) {
-      toast.error(
-        `Ditolak Sistem: Harga (Rp ${rawPrice.toLocaleString("id-ID")}) melampaui Batas Maksimum Pasar (Rp ${config.maxPriceBoundRp.toLocaleString("id-ID")}).`
-      );
-      return;
+    if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0 && price > config.maxPriceBoundRp) {
+      if (side === "sell" && effectiveSellFloor > 0 && config.maxPriceBoundRp < effectiveSellFloor) {
+        price = effectiveSellFloor;
+      } else {
+        price = config.maxPriceBoundRp;
+      }
     }
-
-    const price = rawPrice;
 
     if (side === "buy") setIsPushingBuy(true);
     else setIsPushingSell(true);
@@ -771,14 +771,14 @@ export function AutoPricingBotPanel({
       }
 
       if (config.merchantSellAdvNo && recommendedSellPrice > 0) {
-        const roundedSellPrice = Math.round(recommendedSellPrice);
         const effectiveSellFloor = Math.max(
           pricingResult.sellGuard.floorPrice || 0,
           config.manualSellFloorRp || 0,
           config.minPriceBoundRp || 0
         );
+        let roundedSellPrice = Math.round(recommendedSellPrice);
         if (effectiveSellFloor > 0 && roundedSellPrice < effectiveSellFloor) {
-          return; // JANGAN PUSH JIKA DI BAWAH SELL FLOOR
+          roundedSellPrice = effectiveSellFloor;
         }
 
         const currentSellStock =
@@ -4162,7 +4162,7 @@ export function AutoPricingBotPanel({
 
                     {/* Jika Mode Harga Tetap (Override) */}
                     {config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0 ? (
-                      <div className="space-y-1 pt-1">
+                      <div className="space-y-1.5 pt-1">
                         <div className="flex items-center justify-between text-[0.68rem]">
                           <span className="text-muted-foreground font-semibold">Harga Jual Tetap (Rp):</span>
                           <button
@@ -4194,17 +4194,54 @@ export function AutoPricingBotPanel({
                       </div>
                     ) : (
                       /* Mode Auto Bot */
-                      <div className="space-y-1 pt-1 text-xs">
-                        <div className="flex justify-between text-muted-foreground text-[0.68rem]">
-                          <span>Floor Margin HPP:</span>
-                          <strong className="num text-ask">{fmtRp2(sellGuard.floorPrice)}</strong>
+                      <div className="space-y-2 pt-1 text-xs">
+                        <div className="flex justify-between items-center text-muted-foreground text-[0.68rem]">
+                          <span>Floor Margin HPP Otomatis:</span>
+                          <strong className="num text-ask font-bold">{fmtRp2(sellGuard.floorPrice)}</strong>
                         </div>
-                        <div className="flex justify-between text-muted-foreground text-[0.68rem]">
+                        <div className="flex justify-between items-center text-muted-foreground text-[0.68rem]">
                           <span>Strategi Offset:</span>
                           <strong className="text-foreground">{config.sellOffsetRp} Rp Undercut</strong>
                         </div>
                       </div>
                     )}
+
+                    {/* Input Batas Bawah Jual Aman (Sell Floor) Langsung */}
+                    <div className="border-t border-border/50 pt-2 space-y-1.5">
+                      <div className="flex items-center justify-between text-[0.68rem]">
+                        <span className="font-semibold text-ask flex items-center gap-1">
+                          <ShieldCheck className="size-3 text-emerald-500" />
+                          <span>Batas Bawah Jual Aman (Floor):</span>
+                        </span>
+                        <span className="num font-bold text-emerald-400 text-[0.68rem]">
+                          {config.manualSellFloorRp && config.manualSellFloorRp > 0
+                            ? `Terkunci ≥ Rp ${config.manualSellFloorRp.toLocaleString("id-ID")}`
+                            : `Auto ≥ ${fmtRp2(sellGuard.floorPrice)}`}
+                        </span>
+                      </div>
+                      <div className="relative">
+                        <Input
+                          type="number"
+                          min={0}
+                          value={config.manualSellFloorRp || ""}
+                          onChange={(e) => {
+                            const val = Math.max(0, Number(e.target.value));
+                            updateConfig({
+                              manualSellFloorRp: val,
+                              sellFloorMode: val > 0 ? "manual" : "auto_hpp",
+                            });
+                          }}
+                          placeholder={`0 = Auto HPP (${Math.round(sellGuard.floorPrice || 17850)})`}
+                          className="h-7 text-xs bg-surface text-foreground font-mono font-bold pr-12"
+                        />
+                        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[0.65rem] text-muted-foreground font-semibold">
+                          IDR
+                        </span>
+                      </div>
+                      <p className="text-[0.62rem] text-muted-foreground leading-tight">
+                        🛡️ Proteksi Mutlak: Bot TIDAK AKAN PERNAH memasang harga jual di bawah batas ini.
+                      </p>
+                    </div>
                   </div>
 
                   {/* 3. Otomatis Pasang All Stok Saldo USDT */}
