@@ -858,8 +858,9 @@ function Dashboard() {
   const effectiveCost =
     pnl && pnl.open_position_avg_cost_idr > 0
       ? pnl.open_position_avg_cost_idr
-      : (s?.fair_price && s.fair_price > 0 ? s.fair_price : 17_850);
-  const stockCapitalIdr = stockUsdt > 0 ? Math.round(stockUsdt * effectiveCost) : 0;
+      : 0;
+  const stockValuationCost = effectiveCost > 0 ? effectiveCost : (s?.fair_price && s.fair_price > 0 ? s.fair_price : 17_850);
+  const stockCapitalIdr = stockUsdt > 0 ? Math.round(stockUsdt * stockValuationCost) : 0;
   const allTimeProfit = pnl?.all_time_profit_idr ?? 0;
   const freeCashIdr = Math.max(0, initialCapital - stockCapitalIdr + allTimeProfit);
 

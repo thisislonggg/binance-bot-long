@@ -241,7 +241,7 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
       buyRefAds,
       fairPrice,
       config,
-      stockHpp: stockHpp > 0 ? stockHpp : (fairPrice > 0 ? fairPrice : 17_850),
+      stockHpp,
       bankBalanceIdr,
       initialCapitalIdr,
       liveStockUsdt,

@@ -760,20 +760,25 @@ export function computeCompetitorPricing(input: {
   };
 
   // ── Hitung Batas Pengaman JUAL (Sell Floor Guard) & BELI (Buy Floor) di Awal ──
-  const effectiveHpp = stockHpp > 0
-    ? stockHpp
-    : (fairPrice > 0 ? fairPrice : liveMarketAnchor);
+  // Floor Jual Otomatis: HANYA dihitung jika ADA data modal HPP stok riil (> 0).
+  // JANGAN PERNAH mengambil fairPrice + margin saat stockHpp = 0 karena akan menciptakan
+  // batas lantai semu di atas pasar yang memicu harga jual terus naik sendiri (runaway feedback loop).
+  const autoSellFloor = stockHpp > 0
+    ? Math.round((stockHpp + (config.minProfitMarginRp || 10)) / (1 - MAKER_FEE_RATE))
+    : 0;
 
-  // Floor Jual: HPP + Fee Jual + Target Minimal Laba Bersih
-  // Pastikan autoSellFloor selalu memiliki acuan modal aman dari effectiveHpp (tidak pernah 0)
-  const autoSellFloor = Math.round(
-    (effectiveHpp + (config.minProfitMarginRp || 10)) / (1 - MAKER_FEE_RATE)
-  );
-
-  // Jika mode manual, gunakan manualSellFloorRp. Jika auto_hpp, gunakan autoSellFloor.
-  let calculatedSellFloor = config.sellFloorMode === "manual" && config.manualSellFloorRp && config.manualSellFloorRp > 0
-    ? config.manualSellFloorRp
-    : autoSellFloor;
+  // Tentukan calculatedSellFloor:
+  // 1. Jika mode manual dan manualSellFloorRp diisi, utamakan manualSellFloorRp.
+  // 2. Jika mode auto_hpp dan autoSellFloor > 0, gunakan autoSellFloor.
+  // 3. Fallback: jika manualSellFloorRp diisi (> 0), gunakan manualSellFloorRp.
+  let calculatedSellFloor = 0;
+  if (config.sellFloorMode === "manual" && config.manualSellFloorRp && config.manualSellFloorRp > 0) {
+    calculatedSellFloor = config.manualSellFloorRp;
+  } else if (config.sellFloorMode === "auto_hpp" && autoSellFloor > 0) {
+    calculatedSellFloor = autoSellFloor;
+  } else if (config.manualSellFloorRp && config.manualSellFloorRp > 0) {
+    calculatedSellFloor = config.manualSellFloorRp;
+  }
 
   // HARD FLOOR MUTLAK: Jika pengguna mengisi Batas Bawah Jual (manualSellFloorRp) atau minPriceBoundRp,
   // keduanya WAJIB berlaku sebagai pengaman dasar tanpa syarat (apapun mode sellFloorMode-nya)!
@@ -851,11 +856,11 @@ export function computeCompetitorPricing(input: {
         }
 
         // Jika semua kompetitor di pasar berada di bawah batas modal Floor atau tidak ada iklan:
-        // KUNCI LANGSUNG di batas aman Batas Bawah Floor HPP:
-        const safeFloorPrice = Math.max(calculatedSellFloor, fallback);
+        // KUNCI LANGSUNG di batas aman Batas Bawah Floor HPP (jangan menambah margin/fallback agar harga tidak naik):
+        const safeFloorPrice = calculatedSellFloor > 0 ? calculatedSellFloor : fallback;
         return {
           basePrice: safeFloorPrice,
-          desc: `Terkunci Aman di Batas Bawah Floor HPP (Rp ${safeFloorPrice.toLocaleString("id-ID")}) [Tidak ada kompetitor lolos filter]`,
+          desc: `Terkunci Aman di Batas Bawah Floor HPP (Rp ${safeFloorPrice.toLocaleString("id-ID")}) [Semua kompetitor di bawah floor]`,
           isFallback: true,
         };
       } else {
@@ -974,52 +979,14 @@ export function computeCompetitorPricing(input: {
     activeSellDesc = `Manual Override (Rp ${fixedSell.toLocaleString("id-ID")})`;
   } else {
     // Mode Auto Bot: periksa apakah target pasar berada di bawah batas aman floor modal yang di-set pengguna
-    const isMarketBelowFloor = naturalSellTargetPrice < calculatedSellFloor;
+    const isMarketBelowFloor = calculatedSellFloor > 0 && naturalSellTargetPrice < calculatedSellFloor;
 
-    if (isMarketBelowFloor || recommendedSellPrice < calculatedSellFloor) {
+    if (isMarketBelowFloor || (calculatedSellFloor > 0 && recommendedSellPrice < calculatedSellFloor)) {
       sellGuard.triggered = true;
-
-      // FITUR: Auto-Follow Iklan Jual Lain di Atas Floor Modal
-      if (autoFollow && qualifiedSell.length > 0) {
-        let candidateSell: Ad | null = null;
-        let candidateRank = 0;
-
-        for (let i = 0; i < qualifiedSell.length; i++) {
-          const adCandidate = qualifiedSell[i];
-          if (!adCandidate) continue;
-          if (adCandidate.price + config.sellOffsetRp >= calculatedSellFloor) {
-            candidateSell = adCandidate;
-            candidateRank = i + 1;
-            break;
-          }
-        }
-
-        if (candidateSell) {
-          activeSellTargetMerchant = candidateSell;
-          activeSellRankUsed = candidateRank;
-          // BATAS LONJAKAN AUTO-FOLLOW JUAL:
-          // Jika candidateSell harganya jauh di atas calculatedSellFloor (misal iklan pasif/tertinggi),
-          // jangan melompat tinggi! Kunci di batas wajar (+30 Rp di atas floor).
-          const candidateUndercut = candidateSell.price + config.sellOffsetRp;
-          const maxAllowedFollow = calculatedSellFloor > 0
-            ? calculatedSellFloor + Math.max(15, config.maxPriceStepRp || 30)
-            : candidateUndercut;
-          recommendedSellPrice = Math.min(candidateUndercut, maxAllowedFollow);
-          if (calculatedSellFloor > 0 && recommendedSellPrice < calculatedSellFloor) {
-            recommendedSellPrice = calculatedSellFloor;
-          }
-          activeSellDesc = `Rank #${candidateRank} (${candidateSell.merchant_name}) [Otomatis alih target: batas Floor modal Rp ${calculatedSellFloor.toLocaleString("id-ID")} tercapai]`;
-          sellGuard.autoSwitched = true;
-          sellGuard.switchedToRank = candidateRank;
-          sellGuard.reason = `Batas Bawah Modal Terpenuhi: Target Rank #${sellRankIdx + 1} di bawah batas modal (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Bot otomatis beralih mengikuti iklan lain: Rank #${candidateRank} (@${candidateSell.merchant_name} - Rp ${candidateSell.price.toLocaleString("id-ID")}). Rekomendasi: Rp ${recommendedSellPrice.toLocaleString("id-ID")}.`;
-        } else {
-          recommendedSellPrice = calculatedSellFloor;
-          sellGuard.reason = `Semua iklan kompetitor (${qualifiedSell.length} iklan) menjual di bawah batas aman Floor (Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci di batas Floor modal.`;
-        }
-      } else {
-        sellGuard.reason = `Harga pasar (Rp ${naturalSellTargetPrice.toLocaleString("id-ID")}) di bawah batas aman modal (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci aman di batas Floor.`;
-        recommendedSellPrice = calculatedSellFloor;
-      }
+      // Kunci rapat di batas aman Floor modal agar bot tidak menjual rugi,
+      // tapi JANGAN melompat ke iklan rank atas yang lebih mahal agar harga tidak naik-naik sendiri!
+      recommendedSellPrice = calculatedSellFloor;
+      sellGuard.reason = `Batas Bawah Modal Terpenuhi: Harga pasar/target (Rp ${naturalSellTargetPrice.toLocaleString("id-ID")}) berada di bawah batas aman Floor (Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci tepat di batas Floor modal agar tidak menjual rugi namun tetap paling kompetitif.`;
     }
   }
 
