@@ -571,13 +571,30 @@ export function AutoPricingBotPanel({
       }
     }
 
+    // Proteksi Mock / Offline Orderbook: JANGAN izinkan push jika orderbook Binance adalah mock
+    const refAds = side === "sell" ? sellRefAds : buyRefAds;
+    const isMock = Array.isArray(refAds) && refAds.some((a) => a.adv_no?.startsWith("mock_"));
+    if (isMock) {
+      toast.error(
+        "Data pasar orderbook Binance P2P saat ini adalah mock / offline fallback. Push ke Binance dibatalkan demi keamanan harga riil."
+      );
+      if (side === "buy") {
+        isPushingBuyRef.current = false;
+        setIsPushingBuy(false);
+      } else {
+        isPushingSellRef.current = false;
+        setIsPushingSell(false);
+      }
+      return;
+    }
+
     const rawPrice = side === "buy" ? recommendedBuyPrice : recommendedSellPrice;
     let price = Math.round(rawPrice);
 
     // Proteksi Batas Bawah Jual (Sell Floor & Min Price Bound):
     const effectiveSellFloor = Math.max(
       pricingResult.sellGuard.floorPrice || 0,
-      config.manualSellFloorRp || 0,
+      config.sellFloorMode === "manual" && config.manualSellFloorRp ? config.manualSellFloorRp : 0,
       config.minPriceBoundRp || 0
     );
     if (side === "sell" && effectiveSellFloor > 0 && price < effectiveSellFloor) {
@@ -590,7 +607,7 @@ export function AutoPricingBotPanel({
     // Proteksi Batas Bawah Beli (Buy Floor & Min Price Bound):
     const effectiveBuyFloor = Math.max(
       pricingResult.buyGuard.floorPrice || 0,
-      config.manualBuyFloorRp || 0,
+      config.buyFloorMode === "manual" && config.manualBuyFloorRp ? config.manualBuyFloorRp : 0,
       config.minPriceBoundRp || 0
     );
     if (side === "buy" && effectiveBuyFloor > 0 && price < effectiveBuyFloor) {

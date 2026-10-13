@@ -26,7 +26,7 @@ let lastLiveSellAds: Ad[] = [];
 let lastLiveBuyAds: Ad[] = [];
 const inFlightP2p: { BUY: Promise<Ad[]> | null; SELL: Promise<Ad[]> | null } = { BUY: null, SELL: null };
 
-export async function fetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: number = 17650): Promise<Ad[]> {
+export async function fetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: number = 16850): Promise<Ad[]> {
   if (inFlightP2p[tradeType]) {
     return inFlightP2p[tradeType]!;
   }
@@ -41,7 +41,7 @@ export async function fetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice:
   return promise;
 }
 
-async function doFetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: number = 17650): Promise<Ad[]> {
+async function doFetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: number = 16850): Promise<Ad[]> {
   const customProxy = process.env.BINANCE_P2P_PROXY_URL || process.env.BINANCE_PROXY_URL;
   const urls = customProxy
     ? [customProxy, ...DEFAULT_BINANCE_P2P_URLS]
@@ -144,7 +144,7 @@ async function doFetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: numb
   return generateFallbackAds(tradeType, benchmarkBasePrice);
 }
 
-function generateFallbackAds(tradeType: "BUY" | "SELL", basePrice: number = 17650): Ad[] {
+function generateFallbackAds(tradeType: "BUY" | "SELL", basePrice: number = 16850): Ad[] {
   // Acuan harga USDT/IDR wajar pasar dinamis dengan 50 merchant realistik (Gold, Silver, Bronze, Regular)
   const merchants = [
     // 🥇 Gold Tier (14 Merchants)
@@ -469,7 +469,7 @@ export const getMarketSnapshot = createServerFn({ method: "POST" })
       crossPlatform["indodax_usdt_idr_spot"] ||
       crossPlatform["coingecko_usdt_idr"] ||
       crossPlatform["forex_usd_idr"] ||
-      17650;
+      16850;
 
     const [sellRefRaw, buyRefRaw] = await Promise.all([
       fetchP2pAds("BUY", dynamicBase), // kompetitor JUAL -> acuan iklan JUAL saya

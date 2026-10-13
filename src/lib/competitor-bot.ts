@@ -650,20 +650,20 @@ export function computeCompetitorPricing(input: {
   }
   if (stockHpp && stockHpp > 10_000) candidatePrices.push(stockHpp);
 
-  // Jika tidak ada data harga sama sekali, gunakan acuan pasar wajar saat ini (~17.800), bukan nilai usang 16.200
+  // Jika tidak ada data harga sama sekali, gunakan acuan pasar wajar saat ini (~16.850)
   const liveMarketAnchor = candidatePrices.length > 0
     ? Math.round(candidatePrices.reduce((a, b) => a + b, 0) / candidatePrices.length)
-    : 17_800;
+    : 16_850;
 
   const minSpread = Math.max(10, config.minSpreadRp || 25);
   const halfSpread = Math.max(5, Math.round(minSpread / 2));
 
-  // Dynamic fallback: JANGAN PERNAH gunakan angka kuno (< 17.000)
-  const resolvedFallbackSell = (fallbackSellPrice && fallbackSellPrice >= 17_000)
+  // Dynamic fallback: gunakan fallback jika valid (> 10.000)
+  const resolvedFallbackSell = (fallbackSellPrice && fallbackSellPrice >= 10_000)
     ? fallbackSellPrice
     : (liveMarketAnchor + halfSpread);
 
-  const resolvedFallbackBuy = (fallbackBuyPrice && fallbackBuyPrice >= 17_000)
+  const resolvedFallbackBuy = (fallbackBuyPrice && fallbackBuyPrice >= 10_000)
     ? fallbackBuyPrice
     : (liveMarketAnchor - halfSpread);
 
@@ -702,20 +702,20 @@ export function computeCompetitorPricing(input: {
 
   // ── Hitung Batas Pengaman JUAL (Sell Floor Guard) & BELI (Buy Ceiling Guard) di Awal ──
   const MAKER_FEE_RATE = 0.0005;
-  const effectiveHpp = stockHpp > 0
-    ? stockHpp
-    : (fairPrice > 0 ? fairPrice : liveMarketAnchor);
-
   // Floor Jual: HPP + Fee Jual + Target Minimal Laba Bersih
-  const autoSellFloor = Math.round(
-    (effectiveHpp + (config.minProfitMarginRp || 10)) / (1 - MAKER_FEE_RATE)
-  );
-
-  // Jika user menginput manualSellFloorRp atau minPriceBoundRp, jadikan itu batas bawah minimum mutlak!
-  let calculatedSellFloor = autoSellFloor;
-  if (config.sellFloorMode === "manual" && config.manualSellFloorRp > 0) {
-    calculatedSellFloor = config.manualSellFloorRp;
+  // Hanya hitung jika ada data modal stockHpp riil. Jika tidak ada HPP (0), jangan ciptakan batas lantai semu.
+  let autoSellFloor = 0;
+  if (stockHpp > 0) {
+    autoSellFloor = Math.round(
+      (stockHpp + (config.minProfitMarginRp || 10)) / (1 - MAKER_FEE_RATE)
+    );
   }
+
+  // Jika mode manual, gunakan manualSellFloorRp. Jika auto_hpp, gunakan autoSellFloor.
+  let calculatedSellFloor = config.sellFloorMode === "manual"
+    ? (config.manualSellFloorRp && config.manualSellFloorRp > 0 ? config.manualSellFloorRp : 0)
+    : autoSellFloor;
+
   if (config.minPriceBoundRp && config.minPriceBoundRp > 0) {
     calculatedSellFloor = Math.max(calculatedSellFloor, config.minPriceBoundRp);
   }
@@ -724,7 +724,9 @@ export function computeCompetitorPricing(input: {
   let calculatedBuyCeiling = 999_999;
 
   let calculatedBuyFloor = Math.round(
-    config.manualBuyFloorRp && config.manualBuyFloorRp > 0 ? config.manualBuyFloorRp : 0
+    config.buyFloorMode === "manual" && config.manualBuyFloorRp && config.manualBuyFloorRp > 0
+      ? config.manualBuyFloorRp
+      : 0
   );
   if (config.minPriceBoundRp && config.minPriceBoundRp > 0) {
     calculatedBuyFloor = Math.max(calculatedBuyFloor, config.minPriceBoundRp);
@@ -892,7 +894,17 @@ export function computeCompetitorPricing(input: {
         if (candidateSell) {
           activeSellTargetMerchant = candidateSell;
           activeSellRankUsed = candidateRank;
-          recommendedSellPrice = Math.max(calculatedSellFloor, candidateSell.price + config.sellOffsetRp);
+          // BATAS LONJAKAN AUTO-FOLLOW JUAL:
+          // Jika candidateSell harganya jauh di atas calculatedSellFloor (misal iklan pasif/tertinggi),
+          // jangan melompat tinggi! Kunci di batas wajar (+30 Rp di atas floor).
+          const candidateUndercut = candidateSell.price + config.sellOffsetRp;
+          const maxAllowedFollow = calculatedSellFloor > 0
+            ? calculatedSellFloor + Math.max(15, config.maxPriceStepRp || 30)
+            : candidateUndercut;
+          recommendedSellPrice = Math.min(candidateUndercut, maxAllowedFollow);
+          if (calculatedSellFloor > 0 && recommendedSellPrice < calculatedSellFloor) {
+            recommendedSellPrice = calculatedSellFloor;
+          }
           activeSellDesc = `Rank #${candidateRank} (${candidateSell.merchant_name}) [Otomatis alih target: batas Floor modal Rp ${calculatedSellFloor.toLocaleString("id-ID")} tercapai]`;
           sellGuard.autoSwitched = true;
           sellGuard.switchedToRank = candidateRank;
@@ -904,6 +916,22 @@ export function computeCompetitorPricing(input: {
       } else {
         sellGuard.reason = `Harga pasar (Rp ${naturalSellTargetPrice.toLocaleString("id-ID")}) di bawah batas aman modal (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci aman di batas Floor.`;
         recommendedSellPrice = calculatedSellFloor;
+      }
+    }
+  }
+
+  // ── Proteksi Maksimal Harga Jual Pasar (Sell Sanity Guard) ──
+  // Mencegah harga jual melompat tidak wajar ke pucuk (misal akibat anomali orderbook atau iklan pasif).
+  // Di mode Auto Bot, harga jual tidak boleh melompat lebih dari +50 Rp di atas kompetitor jual terbaik,
+  // kecuali jika diproteksi oleh batas bawah Floor modal pengguna.
+  if (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0) {
+    const bestMarketSell = Array.isArray(sellRefAds) && sellRefAds.length > 0 && sellRefAds[0]?.price > 10_000
+      ? sellRefAds[0].price
+      : 0;
+    if (bestMarketSell > 0) {
+      const maxSensibleSell = Math.max(calculatedSellFloor, bestMarketSell + 50);
+      if (recommendedSellPrice > maxSensibleSell) {
+        recommendedSellPrice = maxSensibleSell;
       }
     }
   }

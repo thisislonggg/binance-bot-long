@@ -145,13 +145,19 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
       fetchP2pAds("SELL"), // acuan beli saya
     ]);
 
-    if (!sellRefAds.length && !buyRefAds.length) {
+    const isMock =
+      sellRefAds.some((a) => a.adv_no?.startsWith("mock_")) ||
+      buyRefAds.some((a) => a.adv_no?.startsWith("mock_"));
+
+    if (isMock || (!sellRefAds.length && !buyRefAds.length)) {
       return {
         ok: false,
         timestamp: now,
         botEnabled: true,
         autoPushEnabled: true,
-        message: "Gagal mengambil data live orderbook dari Binance P2P. Coba beberapa saat lagi.",
+        message: isMock
+          ? "Orderbook Binance P2P offline / mock fallback terdeteksi. Melewati push ke Binance untuk menjaga akurasi harga riil."
+          : "Gagal mengambil data live orderbook dari Binance P2P. Coba beberapa saat lagi.",
       };
     }
 
@@ -188,9 +194,14 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
       }
     }
 
+    // Ambil harga terbaik untuk estimasi valuasi jika HPP belum diisi
+    const bestSellPrice = sellRefAds.length > 0 ? sellRefAds[0].price : 0;
+    const bestBuyPrice = buyRefAds.length > 0 ? buyRefAds[0].price : 0;
+    const liveAnchorEst = bestSellPrice || bestBuyPrice || 16_850;
+
     // Hitung valuasi modal live stok dan sisa kas bank bebas (Free Cash IDR)
     const effectiveStockValuationIdr = Math.round(
-      liveStockUsdt * (stockHpp > 0 ? stockHpp : 17_850)
+      liveStockUsdt * (stockHpp > 0 ? stockHpp : liveAnchorEst)
     );
     const computedFreeCashIdr = Math.max(0, initialCapitalIdr - effectiveStockValuationIdr);
     bankBalanceIdr =
@@ -207,12 +218,10 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
       Math.round(activeBuyOrders.reduce((s, o) => s + (o.totalPriceIdr || 0), 0));
 
     // 4. Hitung harga pasar wajar (fair price) live dari orderbook P2P
-    const bestSellPrice = sellRefAds.length > 0 ? sellRefAds[0].price : 0;
-    const bestBuyPrice = buyRefAds.length > 0 ? buyRefAds[0].price : 0;
     const fairPrice =
       bestSellPrice > 0 && bestBuyPrice > 0
         ? Math.round((bestSellPrice + bestBuyPrice) / 2)
-        : (bestSellPrice || bestBuyPrice || 17_850);
+        : liveAnchorEst;
 
     // 5. Jalankan kalkulator strategi kompetitor
     const pricing = computeCompetitorPricing({
@@ -253,6 +262,18 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
 
     // ── Eksekusi Push Iklan Beli (BUY) ───────────────────────────────────────
     let roundedBuyPrice = Math.round(pricing.recommendedBuyPrice);
+
+    // Slew-rate limiter / Proteksi Anti-Lonjakan Beli (Anti-Spike Jump):
+    if (
+      (!config.manualBuyPriceOverrideRp || config.manualBuyPriceOverrideRp <= 0) &&
+      lastPushedPrices.buy &&
+      lastPushedPrices.buy > 10_000
+    ) {
+      const maxAllowedJump = Math.max(50, (config.maxPriceStepRp || 30) * 2);
+      if (roundedBuyPrice > lastPushedPrices.buy + maxAllowedJump) {
+        roundedBuyPrice = lastPushedPrices.buy + maxAllowedJump;
+      }
+    }
 
     // Proteksi Batas Bawah Beli (Buy Floor): JANGAN PERNAH pasang di bawah Floor yang di-set user!
     const effectiveBuyFloor = Math.max(
@@ -345,6 +366,20 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
       targetSellPrice = Math.max(minSellFloor, Math.round(config.manualSellPriceOverrideRp));
     }
     let roundedSellPrice = Math.round(Math.max(minSellFloor, targetSellPrice));
+
+    // Slew-rate limiter / Proteksi Anti-Lonjakan Jual (Anti-Spike Jump):
+    // Jika di mode auto bot dan sebelumnya sudah ada harga jual yang ter-push, batasi lonjakan liar dalam 1 siklus
+    if (
+      (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0) &&
+      lastPushedPrices.sell &&
+      lastPushedPrices.sell > 10_000
+    ) {
+      const maxAllowedJump = Math.max(50, (config.maxPriceStepRp || 30) * 2);
+      if (roundedSellPrice > lastPushedPrices.sell + maxAllowedJump) {
+        roundedSellPrice = lastPushedPrices.sell + maxAllowedJump;
+      }
+    }
+
     if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0 && roundedSellPrice > config.maxPriceBoundRp) {
       if (minSellFloor > 0 && config.maxPriceBoundRp < minSellFloor) {
         roundedSellPrice = minSellFloor;
