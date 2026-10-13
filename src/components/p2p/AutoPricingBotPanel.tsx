@@ -51,6 +51,7 @@ import {
   Activity,
   Play,
   Server,
+  Calculator,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -82,6 +83,7 @@ import {
   loadBotConfig,
   saveBotConfig,
   STRATEGY_PRESETS,
+  MAKER_FEE_RATE,
   type CompetitorFilterConfig,
   type DisqualificationReason,
   type EvaluatedAd,
@@ -3878,6 +3880,98 @@ export function AutoPricingBotPanel({
                       />
                     </div>
                   )}
+
+                  {/* Rincian Komponen Modal, Fee, & Margin Batas Bawah Jual */}
+                  <div className="mt-2 rounded-lg border border-ask/25 bg-ask/5 p-2.5 space-y-2">
+                    <div className="flex items-center justify-between text-[0.68rem] font-bold text-ask">
+                      <span className="flex items-center gap-1.5">
+                        <Calculator className="size-3.5 text-ask" />
+                        <span>Rincian Modal & Komponen Batas Bawah:</span>
+                      </span>
+                      <Badge variant="outline" className="text-[0.6rem] border-ask/30 bg-surface/80 text-ask font-mono font-semibold">
+                        Fee Maker: {(MAKER_FEE_RATE * 100).toFixed(2)}%
+                      </Badge>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-1.5 text-[0.68rem] font-mono">
+                      {/* 1. Modal Pokok HPP */}
+                      <div className="rounded border border-border/60 bg-surface/90 p-2 space-y-0.5">
+                        <div className="text-[0.6rem] text-muted-foreground font-sans font-medium">
+                          1. Modal Pokok (HPP)
+                        </div>
+                        <div className="font-bold text-foreground text-xs">
+                          {stockHpp > 0 ? fmtRp(stockHpp) : "Belum diisi (Rp 0)"}
+                        </div>
+                        <div className="text-[0.58rem] text-muted-foreground font-sans">
+                          {stockHpp > 0 ? "modal rata-rata" : "isi di Form HPP"}
+                        </div>
+                      </div>
+
+                      {/* 2. Total Fee Maker Binance */}
+                      <div className="rounded border border-border/60 bg-surface/90 p-2 space-y-0.5">
+                        <div className="text-[0.6rem] text-muted-foreground font-sans font-medium">
+                          2. Total Fee (0.05%)
+                        </div>
+                        <div className="font-bold text-amber-400 text-xs">
+                          +{fmtRp(sellGuard.makerFeeRp || Math.round((sellGuard.floorPrice || 17000) * MAKER_FEE_RATE))}
+                        </div>
+                        <div className="text-[0.58rem] text-muted-foreground font-sans">
+                          potongan Binance
+                        </div>
+                      </div>
+
+                      {/* 3. Min Margin Laba */}
+                      <div className="rounded border border-border/60 bg-surface/90 p-2 space-y-0.5">
+                        <div className="text-[0.6rem] text-muted-foreground font-sans font-medium">
+                          3. Min Margin Laba
+                        </div>
+                        <div className="font-bold text-emerald-400 text-xs">
+                          +{fmtRp(config.minProfitMarginRp || 10)}
+                        </div>
+                        <div className="text-[0.58rem] text-muted-foreground font-sans">
+                          target cuan bersih
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Ringkasan Total Floor & Estimasi Hasil Bersih */}
+                    <div className="rounded border border-ask/20 bg-surface/60 p-2 space-y-1 text-[0.68rem]">
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">
+                          Total Batas Bawah Auto HPP:
+                        </span>
+                        <span className="font-bold text-ask font-mono text-xs">
+                          {sellGuard.autoHppFloorPrice > 0 ? fmtRp(sellGuard.autoHppFloorPrice) : fmtRp(sellGuard.floorPrice)} / USDT
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-[0.64rem] text-muted-foreground border-t border-border/40 pt-1">
+                        <span>Estimasi Diterima Bersih:</span>
+                        <span className="font-mono text-foreground font-bold">
+                          {sellGuard.netFloorProceeds > 0 ? fmtRp(sellGuard.netFloorProceeds) : fmtRp(sellGuard.floorPrice)} / USDT
+                        </span>
+                      </div>
+                      {stockHpp > 0 && (
+                        <div className="flex items-center justify-between text-[0.64rem] text-muted-foreground">
+                          <span>Estimasi Laba Bersih di Floor:</span>
+                          <span className="font-mono text-emerald-400 font-bold">
+                            +{fmtRp(sellGuard.netProfitPerUsdtAtFloor || (config.minProfitMarginRp || 10))} / USDT
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {config.manualSellFloorRp && config.manualSellFloorRp > 0 ? (
+                      <div className="rounded bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5 flex items-center justify-between text-[0.68rem]">
+                        <span className="text-emerald-400 font-medium flex items-center gap-1">
+                          <ShieldCheck className="size-3 text-emerald-400" />
+                          <span>Hard Floor Manual Terkunci:</span>
+                        </span>
+                        <span className="font-bold font-mono text-emerald-400 text-xs">
+                          Rp {config.manualSellFloorRp.toLocaleString("id-ID")}
+                        </span>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
 
                 {/* Batas Atas Beli (Ceiling Guard) */}
@@ -4777,6 +4871,33 @@ export function AutoPricingBotPanel({
                           IDR
                         </span>
                       </div>
+
+                      {/* Rincian Ringkas Modal HPP, Fee Maker, & Min Margin */}
+                      <div className="rounded border border-ask/25 bg-ask/5 p-1.5 space-y-1 text-[0.62rem]">
+                        <div className="grid grid-cols-3 gap-1 font-mono">
+                          <div className="rounded bg-surface/80 p-1 border border-border/40 text-center">
+                            <span className="text-[0.55rem] text-muted-foreground block font-sans">1. Modal HPP</span>
+                            <span className="font-bold text-foreground block text-[0.65rem]">{stockHpp > 0 ? fmtRp(stockHpp) : "Rp 0"}</span>
+                          </div>
+                          <div className="rounded bg-surface/80 p-1 border border-border/40 text-center">
+                            <span className="text-[0.55rem] text-muted-foreground block font-sans">2. Fee Maker</span>
+                            <span className="font-bold text-amber-400 block text-[0.65rem]">+{fmtRp(sellGuard.makerFeeRp || Math.round((sellGuard.floorPrice || 17000) * MAKER_FEE_RATE))}</span>
+                          </div>
+                          <div className="rounded bg-surface/80 p-1 border border-border/40 text-center">
+                            <span className="text-[0.55rem] text-muted-foreground block font-sans">3. Min Margin</span>
+                            <span className="font-bold text-emerald-400 block text-[0.65rem]">+{fmtRp(config.minProfitMarginRp || 10)}</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between text-[0.6rem] pt-0.5 text-muted-foreground">
+                          <span>Total Batas Bawah:</span>
+                          <span className="font-bold font-mono text-ask">
+                            {config.manualSellFloorRp && config.manualSellFloorRp > 0
+                              ? `Terkunci: Rp ${config.manualSellFloorRp.toLocaleString("id-ID")}`
+                              : `Auto Floor: ${fmtRp(sellGuard.floorPrice)}`}
+                          </span>
+                        </div>
+                      </div>
+
                       <p className="text-[0.62rem] text-muted-foreground leading-tight">
                         🛡️ Proteksi Mutlak: Bot TIDAK AKAN PERNAH memasang harga jual di bawah batas ini.
                       </p>

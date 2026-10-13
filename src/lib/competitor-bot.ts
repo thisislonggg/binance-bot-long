@@ -309,6 +309,14 @@ export type CompetitorPricingResult = {
     floorPrice: number;
     autoSwitched?: boolean;
     switchedToRank?: number;
+    stockHpp: number;
+    makerFeeRp: number;
+    minProfitMarginRp: number;
+    autoHppFloorPrice: number;
+    manualFloorPrice: number;
+    effectiveFloorPrice: number;
+    netFloorProceeds: number;
+    netProfitPerUsdtAtFloor: number;
   };
   buyGuard: {
     triggered: boolean;
@@ -910,9 +918,21 @@ export function computeCompetitorPricing(input: {
   let activeSellRankUsed = sellTargetMerchant ? sellRankIdx + 1 : 0;
   let activeSellDesc = sellBase.desc;
 
+  const estimatedFloorFee = Math.round(calculatedSellFloor * MAKER_FEE_RATE * 100) / 100;
+  const netFloor = Math.round((calculatedSellFloor - estimatedFloorFee) * 100) / 100;
+  const netProfitFloor = stockHpp > 0 ? Math.round((netFloor - stockHpp) * 100) / 100 : 0;
+
   const sellGuard: CompetitorPricingResult["sellGuard"] = {
     triggered: false,
     floorPrice: calculatedSellFloor,
+    stockHpp: stockHpp > 0 ? stockHpp : 0,
+    makerFeeRp: estimatedFloorFee,
+    minProfitMarginRp: config.minProfitMarginRp || 10,
+    autoHppFloorPrice: autoSellFloor,
+    manualFloorPrice: config.manualSellFloorRp && config.manualSellFloorRp > 0 ? config.manualSellFloorRp : 0,
+    effectiveFloorPrice: calculatedSellFloor,
+    netFloorProceeds: netFloor,
+    netProfitPerUsdtAtFloor: netProfitFloor,
   };
 
   let recommendedSellPrice = rawSellPrice;
@@ -1261,6 +1281,13 @@ export function computeCompetitorPricing(input: {
     recommendedSellPrice = absoluteSellFloor;
     sellGuard.triggered = true;
     sellGuard.reason = `Proteksi Mutlak Batas Bawah Jual: Harga jual terkunci di Batas Bawah (Rp ${absoluteSellFloor.toLocaleString("id-ID")}).`;
+  }
+  sellGuard.floorPrice = absoluteSellFloor;
+  sellGuard.effectiveFloorPrice = absoluteSellFloor;
+  sellGuard.makerFeeRp = Math.round(absoluteSellFloor * MAKER_FEE_RATE * 100) / 100;
+  sellGuard.netFloorProceeds = Math.round((absoluteSellFloor - sellGuard.makerFeeRp) * 100) / 100;
+  if (stockHpp > 0) {
+    sellGuard.netProfitPerUsdtAtFloor = Math.round((sellGuard.netFloorProceeds - stockHpp) * 100) / 100;
   }
 
   const absoluteBuyFloor = Math.max(
