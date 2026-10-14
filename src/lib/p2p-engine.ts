@@ -32,7 +32,7 @@ export const CFG = {
   HISTORY_MAX_POINTS: 100,
 };
 
-export type MerchantLevel = "gold" | "silver" | "bronze" | "regular";
+export type MerchantLevel = "block" | "gold" | "silver" | "bronze" | "regular";
 
 export type Ad = {
   adv_no: string | null;
@@ -181,40 +181,70 @@ export function parseAds(rawAds: any[]): Ad[] {
     const effectiveQty = tradableQty > 0 ? tradableQty : surplus;
     const availableIdr = effectiveMaxLimit > 0 ? Math.min(effectiveQty * price, effectiveMaxLimit) : effectiveQty * price;
 
-    // Deteksi Level Merchant: Gold, Silver, Bronze, atau Regular
-    const userGrade = Number(seller.userGrade ?? 0);
-    const badges: string[] = Array.isArray(seller.badges)
-      ? seller.badges.map(String)
+    // Deteksi Level Merchant Sebenarnya (Real Binance Merchant Level): Block, Gold, Silver, Bronze, atau Regular
+    const badgesRaw = Array.isArray(seller.badges)
+      ? seller.badges
       : Array.isArray(seller.userBadges)
-      ? seller.userBadges.map(String)
+      ? seller.userBadges
       : [];
-    const tagIconUrls: string[] = Array.isArray(seller.tagIconUrls)
-      ? seller.tagIconUrls.map(String)
-      : [];
+    const tagIconsRaw = Array.isArray(seller.tagIconUrls) ? seller.tagIconUrls : [];
+    const advTagsRaw = Array.isArray(adv.tags) ? adv.tags : [];
+
+    const stringifyMeta = (items: any[]): string => {
+      return items
+        .map((x) => (typeof x === "string" ? x : x && typeof x === "object" ? JSON.stringify(x) : String(x ?? "")))
+        .join(" ")
+        .toLowerCase();
+    };
+
+    const allMetadataText = [
+      stringifyMeta(badgesRaw),
+      stringifyMeta(tagIconsRaw),
+      stringifyMeta(advTagsRaw),
+      String(adv.classify ?? "").toLowerCase(),
+      String(adv.tradeType ?? "").toLowerCase(),
+      String(seller.userType ?? "").toLowerCase(),
+      String(seller.userIdentity ?? "").toLowerCase(),
+      String(seller.vipLevel ?? "").toLowerCase(),
+    ].join(" ");
+
+    const userGrade = Number(seller.userGrade ?? 0);
+    const vipLevel = Number(seller.vipLevel ?? 0);
     const isPro = Boolean(seller.proMerchant || seller.isPro || seller.userType === "pro");
 
-    let merchantLevel: MerchantLevel = "regular";
-    const allBadgeText = [...badges, ...tagIconUrls].join(" ").toLowerCase();
+    // 1. Level BLOCK: Pedagang Block Trade (Diamond Badge / Block Trade Zone di Binance)
+    const isBlock =
+      adv.classify === "block" ||
+      seller.userType === "block" ||
+      Boolean(adv.isBlock) ||
+      Boolean(adv.isBlockTrade) ||
+      Boolean(seller.isBlockMerchant) ||
+      allMetadataText.includes("block") ||
+      allMetadataText.includes("diamond");
 
-    if (
+    let merchantLevel: MerchantLevel = "regular";
+
+    if (isBlock) {
+      merchantLevel = "block";
+    } else if (
       userGrade >= 3 ||
-      allBadgeText.includes("gold") ||
-      isPro ||
-      (Number(seller.monthOrderCount) >= 1500 && completionRate !== null && completionRate >= 98)
+      vipLevel >= 3 ||
+      allMetadataText.includes("gold")
     ) {
       merchantLevel = "gold";
     } else if (
       userGrade === 2 ||
-      allBadgeText.includes("silver") ||
-      (Number(seller.monthOrderCount) >= 400 && completionRate !== null && completionRate >= 97)
+      vipLevel === 2 ||
+      allMetadataText.includes("silver")
     ) {
       merchantLevel = "silver";
     } else if (
       userGrade === 1 ||
-      allBadgeText.includes("bronze") ||
+      vipLevel === 1 ||
+      allMetadataText.includes("bronze") ||
       seller.userType === "merchant" ||
       Boolean(seller.userIdentity) ||
-      Boolean(seller.userGrade)
+      isPro
     ) {
       merchantLevel = "bronze";
     } else {

@@ -16,7 +16,7 @@ export type CompetitorFilterConfig = {
   minMaxLimitIdr: number;         // Min Transaksi: kapasitas order merchant harus >= nominal ini (0 = Bebas)
   verifiedOnly: boolean;          // Hanya ikuti Verified Merchant (centang kuning)
   userTypeFilter: "all" | "merchant_only" | "user_only"; // Filter tipe user Binance
-  allowedMerchantLevels: ("gold" | "silver" | "bronze" | "regular")[]; // Filter level merchant: Gold, Silver, Bronze, Regular
+  allowedMerchantLevels: ("block" | "gold" | "silver" | "bronze" | "regular")[]; // Filter level merchant: Block, Gold, Silver, Bronze, Regular
   scanAdLimit: number;            // Batas kedalaman scan iklan/user dari orderbook (20, 50, 100, default: 100)
   minCompletionRate: number;      // Minimal % penyelesaian 30 hari (misal: 95%)
   minMonthOrders: number;         // Minimal total order 30 hari (misal: 50)
@@ -100,7 +100,7 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   minMaxLimitIdr: 0,
   verifiedOnly: true,
   userTypeFilter: "all",
-  allowedMerchantLevels: ["gold", "silver", "bronze", "regular"],
+  allowedMerchantLevels: ["block", "gold", "silver", "bronze", "regular"],
   scanAdLimit: 100,
   minCompletionRate: 95,
   minMonthOrders: 50,
@@ -531,16 +531,17 @@ export function evaluateCompetitorAds(
       });
     }
 
-    // 4b. Filter Level Merchant (Gold, Silver, Bronze, Regular)
+    // 4b. Filter Level Merchant (Block, Gold, Silver, Bronze, Regular)
     if (
       config.allowedMerchantLevels &&
       Array.isArray(config.allowedMerchantLevels) &&
       config.allowedMerchantLevels.length > 0 &&
-      config.allowedMerchantLevels.length < 4
+      config.allowedMerchantLevels.length < 5
     ) {
       const adLevel = ad.merchant_level ?? (ad.is_verified ? "bronze" : "regular");
       if (!config.allowedMerchantLevels.includes(adLevel)) {
         const levelLabels: Record<string, string> = {
+          block: "💎 Block",
           gold: "🥇 Gold",
           silver: "🥈 Silver",
           bronze: "🥉 Bronze",
@@ -1472,7 +1473,14 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (!merged.paymentMatchMode) merged.paymentMatchMode = "any";
     if (typeof merged.excludeEwallets !== "boolean") merged.excludeEwallets = false;
     if (!Array.isArray(merged.allowedMerchantLevels) || merged.allowedMerchantLevels.length === 0) {
-      merged.allowedMerchantLevels = ["gold", "silver", "bronze", "regular"];
+      merged.allowedMerchantLevels = ["block", "gold", "silver", "bronze", "regular"];
+    } else if (
+      merged.allowedMerchantLevels.includes("gold") &&
+      merged.allowedMerchantLevels.includes("silver") &&
+      merged.allowedMerchantLevels.includes("bronze") &&
+      !merged.allowedMerchantLevels.includes("block")
+    ) {
+      merged.allowedMerchantLevels.unshift("block");
     }
     if (typeof merged.scanAdLimit !== "number" || merged.scanAdLimit <= 0) {
       merged.scanAdLimit = 100;

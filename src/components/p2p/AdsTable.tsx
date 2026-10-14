@@ -79,6 +79,11 @@ export function AdsTable({
                     <span className="font-medium text-foreground/90 group-hover:text-foreground">
                       {a?.merchant_name ?? "—"}
                     </span>
+                    {a?.merchant_level === "block" && (
+                      <span className="inline-flex items-center gap-0.5 rounded bg-purple-500/20 border border-purple-500/50 px-1 py-0.2 text-[0.6rem] font-bold text-purple-300 shadow-xs" title="Block Merchant (Diamond Badge / Block Trade Zone)">
+                        💎 Block
+                      </span>
+                    )}
                     {a?.merchant_level === "gold" && (
                       <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/20 border border-amber-500/50 px-1 py-0.2 text-[0.6rem] font-bold text-amber-300 shadow-xs" title="Gold Merchant (VIP 3 / Volume > 60 BTC)">
                         🥇 Gold

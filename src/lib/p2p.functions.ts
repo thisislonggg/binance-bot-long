@@ -147,6 +147,10 @@ async function doFetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: numb
 function generateFallbackAds(tradeType: "BUY" | "SELL", basePrice: number = 16850): Ad[] {
   // Acuan harga USDT/IDR wajar pasar dinamis dengan 50 merchant realistik (Gold, Silver, Bronze, Regular)
   const merchants = [
+    // 💎 Block Tier (Block Trade Merchants)
+    { name: "BlockTrade_Indonesia", verified: true, level: "block" as const, rate: 100.0, orders: 4800, banks: ["BCA", "Mandiri", "Bank Transfer"] },
+    { name: "DiamondWhale_JKT", verified: true, level: "block" as const, rate: 99.9, orders: 5200, banks: ["BCA", "CIMB Niaga"] },
+
     // 🥇 Gold Tier (14 Merchants)
     { name: "ProTrader_ID", verified: true, level: "gold" as const, rate: 99.8, orders: 3420, banks: ["BCA", "Mandiri", "Bank Transfer"] },
     { name: "MasterCrypto_JKT", verified: true, level: "gold" as const, rate: 99.7, orders: 5600, banks: ["BCA", "Mandiri", "BNI"] },

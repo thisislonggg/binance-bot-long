@@ -150,7 +150,7 @@ export function AutoPricingBotPanel({
   const [radarTab, setRadarTab] = useState<"sell" | "buy">("sell");
   const [radarSearch, setRadarSearch] = useState("");
   const [radarFilterStatus, setRadarFilterStatus] = useState<"all" | "qualified" | "disqualified">("all");
-  const [radarLevelFilter, setRadarLevelFilter] = useState<"all" | "gold" | "silver" | "bronze" | "regular">("all");
+  const [radarLevelFilter, setRadarLevelFilter] = useState<"all" | "block" | "gold" | "silver" | "bronze" | "regular">("all");
 
   const [blacklistInput, setBlacklistInput] = useState("");
   const [whitelistInput, setWhitelistInput] = useState("");
@@ -1814,6 +1814,7 @@ export function AutoPricingBotPanel({
                   <span className="text-muted-foreground text-[0.7rem]">Level:</span>
                   {[
                     { id: "all" as const, label: "Semua Tier" },
+                    { id: "block" as const, label: "💎 Block" },
                     { id: "gold" as const, label: "🥇 Gold" },
                     { id: "silver" as const, label: "🥈 Silver" },
                     { id: "bronze" as const, label: "🥉 Bronze" },
@@ -1980,6 +1981,11 @@ export function AutoPricingBotPanel({
                           <td className="p-2">
                             <div className="flex items-center gap-1.5 flex-wrap">
                               <span className="font-semibold text-foreground">{item.ad.merchant_name}</span>
+                              {item.ad.merchant_level === "block" && (
+                                <span className="inline-flex items-center gap-0.5 rounded bg-purple-500/20 border border-purple-500/50 px-1 py-0.2 text-[0.6rem] font-bold text-purple-300 shadow-xs" title="Block Merchant (Diamond Badge / Block Trade Zone)">
+                                  💎 Block
+                                </span>
+                              )}
                               {item.ad.merchant_level === "gold" && (
                                 <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/20 border border-amber-500/50 px-1 py-0.2 text-[0.6rem] font-bold text-amber-300 shadow-xs" title="Gold Merchant (VIP 3 / Volume > 60 BTC)">
                                   🥇 Gold
@@ -2493,7 +2499,7 @@ export function AutoPricingBotPanel({
                         Filter Level Merchant (Tier)
                       </Label>
                       <span className="text-[0.65rem] text-primary font-medium">
-                        ({(config.allowedMerchantLevels ?? ["gold", "silver", "bronze", "regular"]).length} dari 4 aktif)
+                        ({(config.allowedMerchantLevels ?? ["block", "gold", "silver", "bronze", "regular"]).length} dari 5 aktif)
                       </span>
                     </div>
                     <p className="text-[0.68rem] text-muted-foreground">
@@ -2506,17 +2512,24 @@ export function AutoPricingBotPanel({
                     <span className="text-[0.65rem] text-muted-foreground mr-1">Preset:</span>
                     <button
                       type="button"
-                      onClick={() => updateConfig({ allowedMerchantLevels: ["gold", "silver", "bronze", "regular"] })}
+                      onClick={() => updateConfig({ allowedMerchantLevels: ["block", "gold", "silver", "bronze", "regular"] })}
                       className="rounded border border-border/60 bg-surface-2 px-1.5 py-0.5 text-[0.62rem] font-semibold text-muted-foreground hover:text-foreground hover:bg-surface-3 transition-colors"
                     >
                       Semua
                     </button>
                     <button
                       type="button"
-                      onClick={() => updateConfig({ allowedMerchantLevels: ["gold", "silver", "bronze"] })}
+                      onClick={() => updateConfig({ allowedMerchantLevels: ["block", "gold", "silver", "bronze"] })}
                       className="rounded border border-border/60 bg-surface-2 px-1.5 py-0.5 text-[0.62rem] font-semibold text-amber-500 hover:bg-surface-3 transition-colors"
                     >
                       Merchant Saja
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateConfig({ allowedMerchantLevels: ["block"] })}
+                      className="rounded border border-border/60 bg-surface-2 px-1.5 py-0.5 text-[0.62rem] font-semibold text-purple-400 hover:bg-surface-3 transition-colors"
+                    >
+                      Block Saja
                     </button>
                     <button
                       type="button"
@@ -2535,21 +2548,28 @@ export function AutoPricingBotPanel({
                   </div>
                 </div>
 
-                {/* Grid 4 Level Cards */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {/* Grid 5 Level Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                   {[
+                    {
+                      id: "block" as const,
+                      name: "Block Merchant",
+                      badge: "💎 Block",
+                      desc: "Block Trade / Diamond",
+                      activeBorder: "border-purple-500 bg-purple-500/15",
+                    },
                     {
                       id: "gold" as const,
                       name: "Gold Merchant",
                       badge: "🥇 Gold",
-                      desc: "VIP 3 / Vol >60 BTC / 98%+",
+                      desc: "VIP 3+ / Vol >60 BTC",
                       activeBorder: "border-amber-500 bg-amber-500/15",
                     },
                     {
                       id: "silver" as const,
                       name: "Silver Merchant",
                       badge: "🥈 Silver",
-                      desc: "VIP 2 / Vol >6 BTC / 98%+",
+                      desc: "VIP 2 / Vol >6 BTC",
                       activeBorder: "border-slate-300 bg-slate-300/15",
                     },
                     {
@@ -2563,18 +2583,18 @@ export function AutoPricingBotPanel({
                       id: "regular" as const,
                       name: "Regular User",
                       badge: "👤 Regular",
-                      desc: "Retail / User tanpa badge",
+                      desc: "Retail / Tanpa badge",
                       activeBorder: "border-foreground/50 bg-surface-3",
                     },
                   ].map((tier) => {
-                    const currentLevels = config.allowedMerchantLevels ?? ["gold", "silver", "bronze", "regular"];
+                    const currentLevels = config.allowedMerchantLevels ?? ["block", "gold", "silver", "bronze", "regular"];
                     const isSelected = currentLevels.includes(tier.id);
                     return (
                       <button
                         key={tier.id}
                         type="button"
                         onClick={() => {
-                          let nextLevels: ("gold" | "silver" | "bronze" | "regular")[];
+                          let nextLevels: ("block" | "gold" | "silver" | "bronze" | "regular")[];
                           if (isSelected) {
                             if (currentLevels.length === 1) return;
                             nextLevels = currentLevels.filter((lvl) => lvl !== tier.id);
