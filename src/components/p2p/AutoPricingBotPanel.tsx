@@ -4043,7 +4043,7 @@ export function AutoPricingBotPanel({
                         </strong>
                       </div>
                       <span className="text-[0.6rem] text-muted-foreground/80">
-                        Pure harga pasar jual terendah (tanpa filter blokir merchant &amp; tanpa filter batas bawah Floor jual).
+                        Harga pasar jual terendah kompetitor valid (filter akun &amp; modal tetap aktif, tanpa filter blokir merchant).
                       </span>
                     </div>
                   )}

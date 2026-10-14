@@ -378,6 +378,10 @@ export function evaluateCompetitorAds(
   config: CompetitorFilterConfig,
   side: "sell_ref" | "buy_ref",
   effectiveFloor?: number,
+  options?: {
+    ignoreMerchantBlacklist?: boolean;
+    ignoreFloor?: boolean;
+  },
 ): { qualified: Ad[]; evaluated: EvaluatedAd[] } {
   const evaluated: EvaluatedAd[] = [];
   const qualified: Ad[] = [];
@@ -416,7 +420,7 @@ export function evaluateCompetitorAds(
     // 0b. Filter Proteksi Batas Bawah Jual (Sell Floor Guard)
     // Jika ada kompetitor jual memasang harga di bawah batas bawah aman (modal/floor),
     // DISKUALIFIKASI TOTAL kompetitor tersebut agar bot TIDAK PERNAH menjadikannya target ataupun memotong harganya!
-    if (side === "sell_ref" && effectiveFloor && effectiveFloor > 0 && ad.price < effectiveFloor) {
+    if (!options?.ignoreFloor && side === "sell_ref" && effectiveFloor && effectiveFloor > 0 && ad.price < effectiveFloor) {
       reasons.push({
         code: "BELOW_SELL_FLOOR",
         message: `Harga jual Rp ${ad.price.toLocaleString("id-ID")} di bawah batas bawah jual aman Anda (Floor Rp ${effectiveFloor.toLocaleString("id-ID")})`,
@@ -424,7 +428,7 @@ export function evaluateCompetitorAds(
     }
 
     // 0c. Filter Proteksi Batas Bawah Beli (Buy Floor Guard)
-    if (side === "buy_ref" && effectiveFloor && effectiveFloor > 0 && ad.price < effectiveFloor) {
+    if (!options?.ignoreFloor && side === "buy_ref" && effectiveFloor && effectiveFloor > 0 && ad.price < effectiveFloor) {
       reasons.push({
         code: "BELOW_BUY_FLOOR",
         message: `Harga beli Rp ${ad.price.toLocaleString("id-ID")} di bawah batas bawah beli Anda (Floor Rp ${effectiveFloor.toLocaleString("id-ID")})`,
@@ -432,42 +436,44 @@ export function evaluateCompetitorAds(
     }
 
     // 0d. Filter Whitelist / Blacklist Merchant (Dipisahkan antara Sisi JUAL vs BELI)
-    const activeWhitelist = side === "sell_ref"
-      ? (Array.isArray(config.whitelistedSellMerchants) && config.whitelistedSellMerchants.length > 0
-          ? config.whitelistedSellMerchants
-          : (config.whitelistedMerchants || []))
-      : (Array.isArray(config.whitelistedBuyMerchants) && config.whitelistedBuyMerchants.length > 0
-          ? config.whitelistedBuyMerchants
-          : (config.whitelistedMerchants || []));
+    if (!options?.ignoreMerchantBlacklist) {
+      const activeWhitelist = side === "sell_ref"
+        ? (Array.isArray(config.whitelistedSellMerchants) && config.whitelistedSellMerchants.length > 0
+            ? config.whitelistedSellMerchants
+            : (config.whitelistedMerchants || []))
+        : (Array.isArray(config.whitelistedBuyMerchants) && config.whitelistedBuyMerchants.length > 0
+            ? config.whitelistedBuyMerchants
+            : (config.whitelistedMerchants || []));
 
-    const activeBlacklist = side === "sell_ref"
-      ? (Array.isArray(config.blacklistedSellMerchants) && config.blacklistedSellMerchants.length > 0
-          ? config.blacklistedSellMerchants
-          : (config.blacklistedMerchants || []))
-      : (Array.isArray(config.blacklistedBuyMerchants) && config.blacklistedBuyMerchants.length > 0
-          ? config.blacklistedBuyMerchants
-          : (config.blacklistedMerchants || []));
+      const activeBlacklist = side === "sell_ref"
+        ? (Array.isArray(config.blacklistedSellMerchants) && config.blacklistedSellMerchants.length > 0
+            ? config.blacklistedSellMerchants
+            : (config.blacklistedMerchants || []))
+        : (Array.isArray(config.blacklistedBuyMerchants) && config.blacklistedBuyMerchants.length > 0
+            ? config.blacklistedBuyMerchants
+            : (config.blacklistedMerchants || []));
 
-    if (config.merchantFilterMode === "whitelist_only") {
-      const isWhitelisted = activeWhitelist.some(
-        (w) => w && w.trim().toLowerCase() === ad.merchant_name.trim().toLowerCase(),
-      );
-      if (!isWhitelisted) {
-        reasons.push({
-          code: "NOT_IN_WHITELIST",
-          message: `Merchant tidak ada di daftar Whitelist ${side === "sell_ref" ? "Jual" : "Beli"} pilihan Anda`,
-        });
-      }
-    } else {
-      if (activeBlacklist.length > 0) {
-        const isBlacklisted = activeBlacklist.some(
-          (b) => b && b.trim().toLowerCase() === ad.merchant_name.trim().toLowerCase(),
+      if (config.merchantFilterMode === "whitelist_only") {
+        const isWhitelisted = activeWhitelist.some(
+          (w) => w && w.trim().toLowerCase() === ad.merchant_name.trim().toLowerCase(),
         );
-        if (isBlacklisted) {
+        if (!isWhitelisted) {
           reasons.push({
-            code: "BLACKLISTED",
-            message: `Merchant ada di daftar blacklist ${side === "sell_ref" ? "Jual" : "Beli"} Anda`,
+            code: "NOT_IN_WHITELIST",
+            message: `Merchant tidak ada di daftar Whitelist ${side === "sell_ref" ? "Jual" : "Beli"} pilihan Anda`,
           });
+        }
+      } else {
+        if (activeBlacklist.length > 0) {
+          const isBlacklisted = activeBlacklist.some(
+            (b) => b && b.trim().toLowerCase() === ad.merchant_name.trim().toLowerCase(),
+          );
+          if (isBlacklisted) {
+            reasons.push({
+              code: "BLACKLISTED",
+              message: `Merchant ada di daftar blacklist ${side === "sell_ref" ? "Jual" : "Beli"} Anda`,
+            });
+          }
         }
       }
     }
@@ -617,7 +623,7 @@ export function evaluateCompetitorAds(
     }
 
     // 9. Filter Rentang Harga Pasar Absolut (Bounds)
-    if (config.minPriceBoundRp > 0 && ad.price < config.minPriceBoundRp) {
+    if (!options?.ignoreFloor && config.minPriceBoundRp > 0 && ad.price < config.minPriceBoundRp) {
       reasons.push({
         code: "PRICE_OUT_OF_BOUNDS",
         message: `Harga Rp ${ad.price.toLocaleString("id-ID")} < batas min Rp ${config.minPriceBoundRp.toLocaleString("id-ID")}`,
@@ -1021,25 +1027,22 @@ export function computeCompetitorPricing(input: {
 
   if (config.buyCeilingMode === "auto_fair") {
     // Acuan pasar jual kompetitor murni (Pure Market Sell Price):
-    // Mengambil harga jual terendah riil di orderbook TANPA filter blokir/blacklist merchant,
-    // agar Ceiling beli mencerminkan harga pasar murni sesungguhnya bagi pembeli di Binance P2P.
-    const pureNonOwnSellAds = (sellRefAds || [])
-      .filter((ad) => {
-        // Hanya abaikan iklan milik sendiri
-        if (isOwnAd(ad)) return false;
-        // Harga harus valid (> Rp 10.000 dan wajar < Rp 50.000)
-        if (!ad.price || ad.price < 10_000 || ad.price > 50_000) return false;
-        // PENTING: JANGAN PERNAH filter berdasarkan batas bawah jual aman (Sell Floor / BELOW_SELL_FLOOR) ataupun minPriceBoundRp!
-        // Iklan kompetitor yang harganya di bawah batas bawah jual aman kita (misalnya Rp 17.843 di bawah Floor Rp 17.844)
-        // TETAP WAJIB dimasukkan sebagai acuan pasar jual murni agar Formula Ceiling Beli tidak kemahalan.
-        // Abaikan hanya iklan dust murni (< 2 USDT) agar tidak terkena spoofing ekstrem
-        const usdtAmount = ad.available_usdt || (ad.price > 0 ? ad.available_idr / ad.price : 0);
-        if (usdtAmount > 0 && usdtAmount < 2) return false;
-        return true;
-      })
-      .sort((a, b) => a.price - b.price);
+    // Tetap TERPENGARUH oleh filter akun dan modal (verified, user type, tier level, completion rate,
+    // order 30 hari, stok USDT min/max, dan batas limit nominal pesanan IDR),
+    // TETAPI TIDAK TERPENGARUH oleh filter blokir merchant (blacklist / whitelist)
+    // dan TIDAK TERPENGARUH oleh batas bawah Floor modal jual kita sendiri.
+    const { qualified: pureMarketSellAds } = evaluateCompetitorAds(
+      sellRefAds,
+      config,
+      "sell_ref",
+      0,
+      {
+        ignoreMerchantBlacklist: true,
+        ignoreFloor: true,
+      },
+    );
 
-    const pureTopAd = pureNonOwnSellAds.length > 0 ? pureNonOwnSellAds[0] : null;
+    const pureTopAd = pureMarketSellAds.length > 0 ? pureMarketSellAds[0] : null;
 
     if (pureTopAd && pureTopAd.price > 0) {
       marketSellAnchor = pureTopAd.price;
