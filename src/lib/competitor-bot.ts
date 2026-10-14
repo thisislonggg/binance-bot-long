@@ -1340,6 +1340,8 @@ export function computeCompetitorPricing(input: {
       ? stockHpp
       : (fairPrice > 0 ? fairPrice : (recommendedBuyPrice > 0 ? recommendedBuyPrice : liveMarketAnchor));
 
+  const effectiveHpp = effectiveValuationPerUsdt;
+
   const stockCapitalValuationIdr =
     stockCapitalIdr !== undefined && stockCapitalIdr > 0
       ? stockCapitalIdr
