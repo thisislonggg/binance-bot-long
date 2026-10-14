@@ -330,6 +330,7 @@ export type CompetitorPricingResult = {
     autoSwitched?: boolean;
     switchedToRank?: number;
     marketAnchorPrice?: number;
+    marketAnchorMerchantName?: string;
     spotCeilingPrice?: number;
     spotDumpTriggered?: boolean;
     indodaxSpotPrice?: number;
@@ -1006,23 +1007,37 @@ export function computeCompetitorPricing(input: {
     }
   }
 
-  // 3. Hitung dan Terapkan Batas Pengaman BELI (Buy Ceiling Guard) dari Harga Pasar Kompetitor
-  // Ceiling Beli (Batas Atas): Mengikuti harga pasar kompetitor jual dikurangi minSpreadRp,
-  // BUKAN dari batas bawah jual (Floor modal) kita sendiri.
+  // 3. Hitung dan Terapkan Batas Pengaman BELI (Buy Ceiling Guard) dari Harga Pasar Kompetitor Murni
+  // Ceiling Beli (Batas Atas): Mengikuti harga pasar kompetitor jual murni dikurangi minSpreadRp,
+  // PURE harga pasar: TIDAK DIPENGARUHI oleh filter merchant yang diblokir/blacklist, whitelist, ataupun batas bawah sell.
   let marketSellAnchor = 0;
-  if (config.buyCeilingMode === "auto_fair") {
-    // Acuan pasar kompetitor murni:
-    // 1. Target kompetitor jual alami (naturalSellTargetPrice: harga acuan kompetitor target sebelum terbentur floor)
-    // 2. Atau harga jual terbaik kompetitor di orderbook (bestMarketSell)
-    // 3. Atau fair price pasar live
-    const bestMarketSell = Array.isArray(sellRefAds) && sellRefAds.length > 0 && sellRefAds[0]?.price > 10_000
-      ? sellRefAds[0].price
-      : 0;
+  let marketSellAnchorMerchantName: string | undefined = undefined;
 
-    if (naturalSellTargetPrice > 0 && !sellBase.isFallback) {
-      marketSellAnchor = naturalSellTargetPrice;
-    } else if (bestMarketSell > 0) {
-      marketSellAnchor = bestMarketSell;
+  if (config.buyCeilingMode === "auto_fair") {
+    // Acuan pasar jual kompetitor murni (Pure Market Sell Price):
+    // Mengambil harga jual terendah riil di orderbook TANPA filter blokir/blacklist merchant,
+    // agar Ceiling beli mencerminkan harga pasar murni sesungguhnya bagi pembeli di Binance P2P.
+    const pureNonOwnSellAds = (sellRefAds || [])
+      .filter((ad) => {
+        // Hanya abaikan iklan milik sendiri
+        if (isOwnAd(ad)) return false;
+        // Harga harus valid (> Rp 10.000)
+        if (!ad.price || ad.price < 10_000) return false;
+        // Filter rentang batas harga absolut pasar jika di-set pengguna
+        if (config.minPriceBoundRp > 0 && ad.price < config.minPriceBoundRp) return false;
+        if (config.maxPriceBoundRp > 0 && ad.price > config.maxPriceBoundRp) return false;
+        // Abaikan iklan receh / dust di bawah batas minimal USDT (atau minimal 10 USDT) agar tidak terkena spoofing
+        const usdtAmount = ad.available_usdt || (ad.price > 0 ? ad.available_idr / ad.price : 0);
+        if (usdtAmount > 0 && usdtAmount < 10) return false;
+        return true;
+      })
+      .sort((a, b) => a.price - b.price);
+
+    const pureTopAd = pureNonOwnSellAds.length > 0 ? pureNonOwnSellAds[0] : null;
+
+    if (pureTopAd && pureTopAd.price > 0) {
+      marketSellAnchor = pureTopAd.price;
+      marketSellAnchorMerchantName = pureTopAd.merchant_name;
     } else if (fairPrice > 0) {
       marketSellAnchor = fairPrice;
     } else {
@@ -1058,6 +1073,7 @@ export function computeCompetitorPricing(input: {
     ceilingPrice: calculatedBuyCeiling,
     floorPrice: calculatedBuyFloor,
     marketAnchorPrice: marketSellAnchor > 0 ? marketSellAnchor : undefined,
+    marketAnchorMerchantName: marketSellAnchorMerchantName,
   };
 
   let recommendedBuyPrice = rawBuyPrice;
@@ -1200,7 +1216,7 @@ export function computeCompetitorPricing(input: {
     }
   }
 
-  // Jika mode auto_fair, pastikan calculatedBuyCeiling tetap konsisten terhadap harga pasar kompetitor
+  // Jika mode auto_fair, pastikan calculatedBuyCeiling tetap konsisten terhadap harga pasar kompetitor murni
   if (config.buyCeilingMode === "auto_fair" && marketSellAnchor > 0) {
     calculatedBuyCeiling = Math.round(marketSellAnchor - config.minSpreadRp);
     if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) {
@@ -1211,6 +1227,7 @@ export function computeCompetitorPricing(input: {
     }
     buyGuard.ceilingPrice = calculatedBuyCeiling;
     buyGuard.marketAnchorPrice = marketSellAnchor;
+    buyGuard.marketAnchorMerchantName = marketSellAnchorMerchantName;
   }
 
   // ── FINAL SAFEGUARDS: PENGAMAN MUTLAK SEMUA BATAS HARGA YANG DI-SET PENGGUNA ──

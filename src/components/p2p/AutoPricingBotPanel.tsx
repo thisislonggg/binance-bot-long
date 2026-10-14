@@ -4038,7 +4038,7 @@ export function AutoPricingBotPanel({
                     <div className="flex items-center justify-between pt-1 text-[0.68rem] text-muted-foreground">
                       <span>Formula Ceiling Auto:</span>
                       <strong className="num text-bid font-bold">
-                        {fmtRp2(buyGuard.marketAnchorPrice || pricingResult.recommendedSellPrice)} (Pasar Jual) - Rp {config.minSpreadRp} = {fmtRp2(buyGuard.ceilingPrice)}
+                        {fmtRp2(buyGuard.marketAnchorPrice || pricingResult.recommendedSellPrice)} (Pasar Jual Murni{buyGuard.marketAnchorMerchantName ? `: ${buyGuard.marketAnchorMerchantName}` : ""}) - Rp {config.minSpreadRp} = {fmtRp2(buyGuard.ceilingPrice)}
                       </strong>
                     </div>
                   )}
@@ -4513,11 +4513,11 @@ export function AutoPricingBotPanel({
                             placeholder={buyGuard.ceilingPrice > 0 ? `Auto (${buyGuard.ceilingPrice})` : "Auto"}
                             className="h-7 text-xs bg-surface font-mono text-right"
                           />
-                          <p className="text-[0.6rem] text-muted-foreground">
-                            {config.buyCeilingMode === "manual" && config.manualBuyCeilingRp && config.manualBuyCeilingRp > 0
-                              ? `Manual Max: Rp ${config.manualBuyCeilingRp.toLocaleString("id-ID")}`
-                              : `Auto dari Pasar Kompetitor Jual: ${fmtRp2(buyGuard.ceilingPrice)} (Pasar ${fmtRp2(buyGuard.marketAnchorPrice || 0)} - Rp ${config.minSpreadRp})`}
-                          </p>
+                            <p className="text-[0.6rem] text-muted-foreground">
+                              {config.buyCeilingMode === "manual" && config.manualBuyCeilingRp && config.manualBuyCeilingRp > 0
+                                ? `Manual Max: Rp ${config.manualBuyCeilingRp.toLocaleString("id-ID")}`
+                                : `Auto dari Pasar Jual Murni: ${fmtRp2(buyGuard.ceilingPrice)} (Pasar ${fmtRp2(buyGuard.marketAnchorPrice || 0)}${buyGuard.marketAnchorMerchantName ? ` @${buyGuard.marketAnchorMerchantName}` : ""} - Rp ${config.minSpreadRp})`}
+                            </p>
                         </div>
                       </div>
                     )}
