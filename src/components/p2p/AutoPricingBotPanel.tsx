@@ -604,7 +604,7 @@ export function AutoPricingBotPanel({
   const isPushingSellRef = useRef(false);
   const [lastPushLog, setLastPushLog] = useState<PushPriceResult | null>(null);
 
-  const handlePushPrice = async (side: "buy" | "sell") => {
+  const handlePushPrice = async (side: "buy" | "sell", overridePrice?: number) => {
     if (side === "buy") {
       if (isPushingBuyRef.current) return;
       isPushingBuyRef.current = true;
@@ -673,7 +673,12 @@ export function AutoPricingBotPanel({
       return;
     }
 
-    const rawPrice = side === "buy" ? recommendedBuyPrice : recommendedSellPrice;
+    const rawPrice =
+      overridePrice !== undefined && overridePrice > 0
+        ? overridePrice
+        : side === "buy"
+        ? recommendedBuyPrice
+        : recommendedSellPrice;
     let price = Math.round(rawPrice);
 
     // Proteksi Batas Bawah Jual (Sell Floor & Min Price Bound): HARD FLOOR MUTLAK!
@@ -926,7 +931,7 @@ export function AutoPricingBotPanel({
             lastPushedStockRef.current.buy = currentBuyStock;
             lastPushTimeRef.current = now;
             buyTriggered = true;
-            handlePushPrice("buy");
+            handlePushPrice("buy", roundedPrice);
           }
         }
       }
@@ -957,6 +962,18 @@ export function AutoPricingBotPanel({
           }
         }
 
+        // MUTLAK: Selalu kunci kembali ke Batas Bawah Jual (Sell Floor) setelah slew limiter!
+        if (effectiveSellFloor > 0 && roundedSellPrice < effectiveSellFloor) {
+          roundedSellPrice = effectiveSellFloor;
+        }
+
+        if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0 && roundedSellPrice > config.maxPriceBoundRp) {
+          roundedSellPrice =
+            effectiveSellFloor > 0 && config.maxPriceBoundRp < effectiveSellFloor
+              ? effectiveSellFloor
+              : config.maxPriceBoundRp;
+        }
+
         const currentSellStock =
           config.manualSellStockUsdt && config.manualSellStockUsdt > 0
             ? config.manualSellStockUsdt
@@ -977,11 +994,11 @@ export function AutoPricingBotPanel({
             // Beri jeda 1000ms jika BUY baru saja dipicu agar request tidak bertabrakan di Binance SAPI
             setTimeout(() => {
               if (!isPushingSellRef.current) {
-                handlePushPrice("sell");
+                handlePushPrice("sell", roundedSellPrice);
               }
             }, 1000);
           } else {
-            handlePushPrice("sell");
+            handlePushPrice("sell", roundedSellPrice);
           }
         }
       }
@@ -3891,7 +3908,7 @@ export function AutoPricingBotPanel({
                       type="button"
                       variant={config.sellFloorMode === "auto_hpp" ? "default" : "outline"}
                       size="sm"
-                      onClick={() => updateConfig({ sellFloorMode: "auto_hpp", manualSellFloorRp: 0 })}
+                      onClick={() => updateConfig({ sellFloorMode: "auto_hpp" })}
                       className="h-7 text-xs font-semibold"
                     >
                       Auto dari HPP Stok

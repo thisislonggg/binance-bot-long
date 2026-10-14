@@ -698,13 +698,24 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
 
     const targetAdvNo = String(existingAd["advNo"] || cleanAdvNo);
 
-    // Tentukan tradeType: 0 = BUY, 1 = SELL
-    let isBuy = targetSide === "sell" ? false : targetSide === "buy" ? true : true;
-    const tt = existingAd["tradeType"];
-    if (tt === "SELL" || tt === 1 || tt === "1") {
+    // Tentukan tradeType: Jual (SELL) = maker jual USDT (isBuy = false), Beli (BUY) = maker beli USDT (isBuy = true)
+    // PRIORITAS UTAMA: targetSide eksplisit ("sell" | "buy") yang dikirim oleh bot/pemanggil!
+    // JANGAN PERNAH biarkan existingAd["tradeType"] membalikkan targetSide ("sell" -> isBuy = true),
+    // karena di sebagian API Binance P2P publik, tradeType merujuk ke aksi taker/pembeli.
+    let isBuy = false;
+    if (targetSide === "sell") {
       isBuy = false;
-    } else if (tt === "BUY" || tt === 0 || tt === "0") {
+    } else if (targetSide === "buy") {
       isBuy = true;
+    } else {
+      const tt = existingAd["tradeType"];
+      if (tt === "SELL" || tt === 1 || tt === "1") {
+        isBuy = false;
+      } else if (tt === "BUY" || tt === 0 || tt === "0") {
+        isBuy = true;
+      } else {
+        isBuy = false;
+      }
     }
 
     // ── DEFENSE-IN-DEPTH: Proteksi Batas Bawah Iklan Jual & Batas Iklan Beli (Hard Floor/Ceiling Clamp) ──
@@ -712,8 +723,9 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
       const { getBotConfigServer } = await import("./background-bot-engine");
       const botCfg = await getBotConfigServer();
 
-      if (!isBuy) {
+      if (!isBuy || targetSide === "sell") {
         // Proteksi JUAL (SELL) - HARD FLOOR MUTLAK
+        // HARGA JUAL TIDAK BOLEH PERNAH DI BAWAH BATAS BAWAH AMAN / MODAL!
         const hardMinSell = Math.max(
           data.floorPrice || 0,
           botCfg.manualSellFloorRp || 0,
@@ -750,15 +762,23 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
       }
     } catch {
       // Fallback lokal jika import config gagal
-      if (!isBuy && data.floorPrice && data.floorPrice > 0 && newPrice < data.floorPrice) {
+      if ((!isBuy || targetSide === "sell") && data.floorPrice && data.floorPrice > 0 && newPrice < data.floorPrice) {
         newPrice = data.floorPrice;
-      } else if (isBuy) {
+      } else if (isBuy && targetSide !== "sell") {
         if (data.ceilingPrice && data.ceilingPrice > 0 && newPrice > data.ceilingPrice) {
           newPrice = data.ceilingPrice;
         }
         if (data.floorPrice && data.floorPrice > 0 && newPrice < data.floorPrice) {
           newPrice = data.floorPrice;
         }
+      }
+    }
+
+    // ── Gembok Terakhir (Ultimate Floor Lock): Untuk iklan SELL, newPrice MUTLAK TIDAK BOLEH kurang dari floorPrice ──
+    if ((!isBuy || targetSide === "sell") && data.floorPrice && data.floorPrice > 0) {
+      if (newPrice < data.floorPrice) {
+        console.error(`[BinanceMerchant] CRITICAL FLOOR VIOLATION PREVENTED: Ad #${cleanAdvNo} SELL price Rp ${newPrice} was below floorPrice Rp ${data.floorPrice}. Clamped to Rp ${data.floorPrice}!`);
+        newPrice = data.floorPrice;
       }
     }
     newPrice = Math.round(newPrice);
