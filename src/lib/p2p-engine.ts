@@ -182,13 +182,13 @@ export function parseAds(rawAds: any[]): Ad[] {
     const availableIdr = effectiveMaxLimit > 0 ? Math.min(effectiveQty * price, effectiveMaxLimit) : effectiveQty * price;
 
     // Deteksi Level Merchant Sebenarnya (Real Binance Merchant Level): Block, Gold, Silver, Bronze, atau Regular
-    const badgesRaw = Array.isArray(seller.badges)
+    const badgesRaw: any[] = Array.isArray(seller.badges)
       ? seller.badges
       : Array.isArray(seller.userBadges)
       ? seller.userBadges
       : [];
-    const tagIconsRaw = Array.isArray(seller.tagIconUrls) ? seller.tagIconUrls : [];
-    const advTagsRaw = Array.isArray(adv.tags) ? adv.tags : [];
+    const tagIconsRaw: any[] = Array.isArray(seller.tagIconUrls) ? seller.tagIconUrls : [];
+    const advTagsRaw: any[] = Array.isArray(adv.tags) ? adv.tags : [];
 
     const stringifyMeta = (items: any[]): string => {
       return items
@@ -196,6 +196,12 @@ export function parseAds(rawAds: any[]): Ad[] {
         .join(" ")
         .toLowerCase();
     };
+
+    const badges: string[] = badgesRaw
+      .map((b: any) =>
+        typeof b === "string" ? b : b && typeof b === "object" ? (b.name || b.iconCategory || JSON.stringify(b)) : String(b ?? ""),
+      )
+      .filter(Boolean);
 
     const allMetadataText = [
       stringifyMeta(badgesRaw),
@@ -219,7 +225,10 @@ export function parseAds(rawAds: any[]): Ad[] {
       Boolean(adv.isBlock) ||
       Boolean(adv.isBlockTrade) ||
       Boolean(seller.isBlockMerchant) ||
-      allMetadataText.includes("block") ||
+      Boolean(seller.isDiamondMerchant) ||
+      allMetadataText.includes("block_merchant") ||
+      allMetadataText.includes("block trade") ||
+      allMetadataText.includes("block-trade") ||
       allMetadataText.includes("diamond");
 
     let merchantLevel: MerchantLevel = "regular";
@@ -229,7 +238,8 @@ export function parseAds(rawAds: any[]): Ad[] {
     } else if (
       userGrade >= 3 ||
       vipLevel >= 3 ||
-      allMetadataText.includes("gold")
+      allMetadataText.includes("gold") ||
+      isPro
     ) {
       merchantLevel = "gold";
     } else if (
@@ -244,12 +254,22 @@ export function parseAds(rawAds: any[]): Ad[] {
       allMetadataText.includes("bronze") ||
       seller.userType === "merchant" ||
       Boolean(seller.userIdentity) ||
-      isPro
+      Boolean(seller.userGrade)
     ) {
       merchantLevel = "bronze";
     } else {
       merchantLevel = "regular";
     }
+
+    const isVerified = Boolean(
+      seller.userIdentity ||
+      seller.userGrade ||
+      seller.userType === "merchant" ||
+      seller.userType === "block" ||
+      seller.is_verified ||
+      isPro ||
+      merchantLevel !== "regular"
+    );
 
     parsed.push({
       adv_no: adv.advNo ?? null,
@@ -265,7 +285,7 @@ export function parseAds(rawAds: any[]): Ad[] {
       ),
       merchant_name: seller.nickName ?? "unknown",
       user_type: seller.userType ?? "user",
-      is_verified: Boolean(seller.userIdentity || seller.userGrade),
+      is_verified: isVerified,
       completion_rate: completionRate,
       month_order_count: Number.isFinite(Number(seller.monthOrderCount)) ? Number(seller.monthOrderCount) : null,
       is_tradable: adv.isTradable ?? true,
