@@ -4035,11 +4035,16 @@ export function AutoPricingBotPanel({
                       />
                     </div>
                   ) : (
-                    <div className="flex items-center justify-between pt-1 text-[0.68rem] text-muted-foreground">
-                      <span>Formula Ceiling Auto:</span>
-                      <strong className="num text-bid font-bold">
-                        {fmtRp2(buyGuard.marketAnchorPrice || pricingResult.recommendedSellPrice)} (Pasar Jual Murni{buyGuard.marketAnchorMerchantName ? `: ${buyGuard.marketAnchorMerchantName}` : ""}) - Rp {config.minSpreadRp} = {fmtRp2(buyGuard.ceilingPrice)}
-                      </strong>
+                    <div className="flex flex-col gap-0.5 pt-1 text-[0.68rem] text-muted-foreground">
+                      <div className="flex items-center justify-between">
+                        <span>Formula Ceiling Auto:</span>
+                        <strong className="num text-bid font-bold">
+                          {fmtRp2(buyGuard.marketAnchorPrice || pricingResult.recommendedSellPrice)} (Pasar Jual Murni{buyGuard.marketAnchorMerchantName ? `: ${buyGuard.marketAnchorMerchantName}` : ""}) - Rp {config.minSpreadRp} = {fmtRp2(buyGuard.ceilingPrice)}
+                        </strong>
+                      </div>
+                      <span className="text-[0.6rem] text-muted-foreground/80">
+                        Pure harga pasar jual terendah (tanpa filter blokir merchant &amp; tanpa filter batas bawah Floor jual).
+                      </span>
                     </div>
                   )}
 

@@ -801,7 +801,13 @@ export function computeCompetitorPricing(input: {
   if (config.manualBuyFloorRp && config.manualBuyFloorRp > 0) {
     calculatedBuyFloor = Math.max(calculatedBuyFloor, config.manualBuyFloorRp);
   }
-  if (config.minPriceBoundRp && config.minPriceBoundRp > 0) {
+  // Catatan: config.minPriceBoundRp hanya diterapkan ke buy floor jika lebih rendah dari calculatedSellFloor,
+  // agar batas bawah jual modal tidak memaksa harga beli naik setinggi batas jual.
+  if (
+    config.minPriceBoundRp &&
+    config.minPriceBoundRp > 0 &&
+    (!calculatedSellFloor || config.minPriceBoundRp < calculatedSellFloor)
+  ) {
     calculatedBuyFloor = Math.max(calculatedBuyFloor, config.minPriceBoundRp);
   }
   calculatedBuyFloor = Math.round(calculatedBuyFloor);
@@ -1021,14 +1027,14 @@ export function computeCompetitorPricing(input: {
       .filter((ad) => {
         // Hanya abaikan iklan milik sendiri
         if (isOwnAd(ad)) return false;
-        // Harga harus valid (> Rp 10.000)
-        if (!ad.price || ad.price < 10_000) return false;
-        // Filter rentang batas harga absolut pasar jika di-set pengguna
-        if (config.minPriceBoundRp > 0 && ad.price < config.minPriceBoundRp) return false;
-        if (config.maxPriceBoundRp > 0 && ad.price > config.maxPriceBoundRp) return false;
-        // Abaikan iklan receh / dust di bawah batas minimal USDT (atau minimal 10 USDT) agar tidak terkena spoofing
+        // Harga harus valid (> Rp 10.000 dan wajar < Rp 50.000)
+        if (!ad.price || ad.price < 10_000 || ad.price > 50_000) return false;
+        // PENTING: JANGAN PERNAH filter berdasarkan batas bawah jual aman (Sell Floor / BELOW_SELL_FLOOR) ataupun minPriceBoundRp!
+        // Iklan kompetitor yang harganya di bawah batas bawah jual aman kita (misalnya Rp 17.843 di bawah Floor Rp 17.844)
+        // TETAP WAJIB dimasukkan sebagai acuan pasar jual murni agar Formula Ceiling Beli tidak kemahalan.
+        // Abaikan hanya iklan dust murni (< 2 USDT) agar tidak terkena spoofing ekstrem
         const usdtAmount = ad.available_usdt || (ad.price > 0 ? ad.available_idr / ad.price : 0);
-        if (usdtAmount > 0 && usdtAmount < 10) return false;
+        if (usdtAmount > 0 && usdtAmount < 2) return false;
         return true;
       })
       .sort((a, b) => a.price - b.price);
@@ -1053,7 +1059,8 @@ export function computeCompetitorPricing(input: {
   if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) {
     calculatedBuyCeiling = Math.min(calculatedBuyCeiling, config.maxPriceBoundRp);
   }
-  if (calculatedBuyFloor > 0 && calculatedBuyCeiling < calculatedBuyFloor) {
+  // Hanya kunci ke calculatedBuyFloor jika mode manual dan calculatedBuyFloor wajar di bawah ceiling
+  if (config.buyCeilingMode === "manual" && calculatedBuyFloor > 0 && calculatedBuyCeiling < calculatedBuyFloor) {
     calculatedBuyCeiling = calculatedBuyFloor;
   }
 
@@ -1222,9 +1229,7 @@ export function computeCompetitorPricing(input: {
     if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) {
       calculatedBuyCeiling = Math.min(calculatedBuyCeiling, config.maxPriceBoundRp);
     }
-    if (calculatedBuyFloor > 0 && calculatedBuyCeiling < calculatedBuyFloor) {
-      calculatedBuyCeiling = calculatedBuyFloor;
-    }
+    // JANGAN timpa calculatedBuyCeiling dengan Floor Jual / calculatedSellFloor atau minPriceBoundRp!
     buyGuard.ceilingPrice = calculatedBuyCeiling;
     buyGuard.marketAnchorPrice = marketSellAnchor;
     buyGuard.marketAnchorMerchantName = marketSellAnchorMerchantName;
@@ -1257,7 +1262,14 @@ export function computeCompetitorPricing(input: {
     if (recommendedSellPrice < config.minPriceBoundRp) {
       recommendedSellPrice = config.minPriceBoundRp;
     }
-    if (recommendedBuyPrice < config.minPriceBoundRp) {
+    // PENTING: Hanya terapkan minPriceBoundRp ke sisi beli jika nilainya benar-benar di bawah batas jual dan di bawah buy ceiling.
+    // Jika nilainya >= calculatedSellFloor (misal user memasukkan 17.844 sebagai batas bawah jual),
+    // jangan paksa harga beli ikut melonjak naik ke 17.844!
+    if (
+      (!calculatedSellFloor || config.minPriceBoundRp < calculatedSellFloor) &&
+      (!calculatedBuyCeiling || config.minPriceBoundRp <= calculatedBuyCeiling) &&
+      recommendedBuyPrice < config.minPriceBoundRp
+    ) {
       recommendedBuyPrice = config.minPriceBoundRp;
     }
   }
