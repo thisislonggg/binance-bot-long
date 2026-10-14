@@ -853,14 +853,21 @@ export function computeCompetitorPricing(input: {
     if (qualifiedAds.length === 0) {
       if (side === "sell") {
         // Pada sisi JUAL: Jika TIDAK ADA kompetitor yang lolos filter:
-        // JANGAN PERNAH mengambil iklan paling bawah/murah di pasar (nonOwnAds[0]) yang memicu dump harga ke bawah!
-        // Cari apakah ada iklan kompetitor non-milik sendiri di orderbook yang harganya >= Batas Bawah (Floor HPP):
-        const nonOwnSafeAds = (allRawAds || []).filter(
-          (a) => !isOwnAd(a) && a.price >= calculatedSellFloor
+        // JANGAN PERNAH mengambil iklan sembarang/murah yang memicu dump harga ke bawah!
+        // Sortir allRawAds secara ascending (terendah ke tertinggi):
+        const sortedNonOwn = (allRawAds || [])
+          .filter((a) => !isOwnAd(a) && a.price > 10_000)
+          .sort((a, b) => a.price - b.price);
+
+        // Cari iklan non-milik sendiri yang memiliki likuiditas wajar (bukan dust < 20 USDT) dan >= calculatedSellFloor
+        const safeCandidates = sortedNonOwn.filter(
+          (a) =>
+            a.price >= calculatedSellFloor &&
+            (a.available_usdt >= 20 || a.available_idr >= 300_000)
         );
 
-        if (nonOwnSafeAds.length > 0) {
-          const safeTarget = nonOwnSafeAds[0];
+        if (safeCandidates.length > 0) {
+          const safeTarget = safeCandidates[0];
           const rawIndex = allRawAds.indexOf(safeTarget) + 1;
           return {
             basePrice: safeTarget.price,
@@ -870,26 +877,32 @@ export function computeCompetitorPricing(input: {
         }
 
         // Jika semua kompetitor di pasar berada di bawah batas modal Floor atau tidak ada iklan:
-        // KUNCI LANGSUNG di batas aman Batas Bawah Floor HPP (jangan menambah margin/fallback agar harga tidak naik):
-        const safeFloorPrice = calculatedSellFloor > 0 ? calculatedSellFloor : fallback;
+        // KUNCI LANGSUNG di batas aman Batas Bawah Floor HPP atau acuan pasar wajar (jangan dump harga):
+        const safeFloorPrice = calculatedSellFloor > 0
+          ? calculatedSellFloor
+          : (fallback > 10_000 ? fallback : (liveMarketAnchor > 10_000 ? liveMarketAnchor : 17_850));
         return {
           basePrice: safeFloorPrice,
-          desc: `Terkunci Aman di Batas Bawah Floor HPP (Rp ${safeFloorPrice.toLocaleString("id-ID")}) [Semua kompetitor di bawah floor]`,
+          desc: `Terkunci Aman di Acuan Pasar Wajar (Rp ${safeFloorPrice.toLocaleString("id-ID")}) [Tidak ada kompetitor lolos filter]`,
           isFallback: true,
         };
       } else {
         // Pada sisi BELI: Jika tidak ada yang lolos filter:
         // JANGAN PERNAH mengambil iklan paling mahal di pucuk!
         // Cari iklan non-milik sendiri yang harganya <= Batas Atas Ceiling beli DAN >= Batas Bawah Buy Floor:
-        const nonOwnSafeAds = (allRawAds || []).filter(
+        const sortedNonOwn = (allRawAds || [])
+          .filter((a) => !isOwnAd(a) && a.price > 10_000)
+          .sort((a, b) => b.price - a.price);
+
+        const safeCandidates = sortedNonOwn.filter(
           (a) =>
-            !isOwnAd(a) &&
             (calculatedBuyCeiling <= 0 || a.price <= calculatedBuyCeiling) &&
-            (calculatedBuyFloor <= 0 || a.price >= calculatedBuyFloor)
+            (calculatedBuyFloor <= 0 || a.price >= calculatedBuyFloor) &&
+            (a.available_usdt >= 20 || a.available_idr >= 300_000)
         );
 
-        if (nonOwnSafeAds.length > 0) {
-          const safeTarget = nonOwnSafeAds[0];
+        if (safeCandidates.length > 0) {
+          const safeTarget = safeCandidates[0];
           const rawIndex = allRawAds.indexOf(safeTarget) + 1;
           return {
             basePrice: safeTarget.price,
@@ -1006,14 +1019,19 @@ export function computeCompetitorPricing(input: {
 
   // ── Proteksi Maksimal Harga Jual Pasar (Sell Sanity Guard) ──
   // Mencegah harga jual melompat tidak wajar ke pucuk (misal akibat anomali orderbook atau iklan pasif).
-  // Di mode Auto Bot, harga jual tidak boleh melompat lebih dari +50 Rp di atas kompetitor jual terbaik,
-  // kecuali jika diproteksi oleh batas bawah Floor modal pengguna.
+  // Di mode Auto Bot, harga jual tidak boleh melompat lebih dari +50 Rp di atas kompetitor jual terbaik yang sah,
+  // BUKAN dari iklan mentah sembarangan/dust yang harganya murah tidak wajar!
   if (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0) {
-    const bestMarketSell = Array.isArray(sellRefAds) && sellRefAds.length > 0 && sellRefAds[0]?.price > 10_000
-      ? sellRefAds[0].price
-      : 0;
-    if (bestMarketSell > 0) {
-      const maxSensibleSell = Math.max(calculatedSellFloor, bestMarketSell + 50);
+    const bestLegitMarketSell = qualifiedSell.length > 0
+      ? qualifiedSell[0].price
+      : (
+          (sellRefAds || [])
+            .filter((a) => !isOwnAd(a) && a.price > 10_000 && (a.available_usdt >= 20 || a.available_idr >= 300_000))
+            .sort((a, b) => a.price - b.price)[0]?.price || 0
+        );
+
+    if (bestLegitMarketSell > 0) {
+      const maxSensibleSell = Math.max(calculatedSellFloor, bestLegitMarketSell + 50);
       if (recommendedSellPrice > maxSensibleSell) {
         recommendedSellPrice = maxSensibleSell;
       }

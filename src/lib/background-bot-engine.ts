@@ -142,10 +142,23 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
       return res;
     }
 
+    // Ambil benchmark spot dinamis agar fallback tidak jatuh ke nilai statis usang
+    let dynamicBase = 17850;
+    try {
+      const cross = await fetchCrossPlatform();
+      if (cross?.indodax_usdt_idr_spot && cross.indodax_usdt_idr_spot > 10_000) {
+        dynamicBase = cross.indodax_usdt_idr_spot;
+      } else if (cross?.coingecko_usdt_idr && cross.coingecko_usdt_idr > 10_000) {
+        dynamicBase = cross.coingecko_usdt_idr;
+      }
+    } catch {
+      // Abaikan
+    }
+
     // 1. Ambil data pasar live (iklan kompetitor buy & sell)
     const [sellRefAds, buyRefAds] = await Promise.all([
-      fetchP2pAds("BUY"), // acuan jual saya
-      fetchP2pAds("SELL"), // acuan beli saya
+      fetchP2pAds("BUY", dynamicBase), // acuan jual saya
+      fetchP2pAds("SELL", dynamicBase), // acuan beli saya
     ]);
 
     const isMock =
@@ -403,16 +416,21 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
     }
     let roundedSellPrice = Math.round(Math.max(minSellFloor, targetSellPrice));
 
-    // Slew-rate limiter / Proteksi Anti-Lonjakan Jual (Anti-Spike Jump):
-    // Jika di mode auto bot dan sebelumnya sudah ada harga jual yang ter-push, batasi lonjakan liar dalam 1 siklus
+    // Slew-rate limiter / Proteksi Anti-Lonjakan & Anti-Anjlok Jual (Anti-Spike & Anti-Dump Guard):
+    // Jika di mode auto bot dan sebelumnya sudah ada harga jual yang ter-push, batasi pergerakan liar dalam 1 siklus
     if (
       (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0) &&
       lastPushedPrices.sell &&
       lastPushedPrices.sell > 10_000
     ) {
-      const maxAllowedJump = Math.max(50, (config.maxPriceStepRp || 30) * 2);
-      if (roundedSellPrice > lastPushedPrices.sell + maxAllowedJump) {
-        roundedSellPrice = lastPushedPrices.sell + maxAllowedJump;
+      const maxAllowedStep = Math.max(50, (config.maxPriceStepRp || 30) * 2);
+      // Batasi lonjakan NAIK liar
+      if (roundedSellPrice > lastPushedPrices.sell + maxAllowedStep) {
+        roundedSellPrice = lastPushedPrices.sell + maxAllowedStep;
+      }
+      // Batasi penurunan ANJLOK liar (Anti-Dump / Anti-Crash)
+      if (roundedSellPrice < lastPushedPrices.sell - maxAllowedStep) {
+        roundedSellPrice = lastPushedPrices.sell - maxAllowedStep;
       }
     }
 

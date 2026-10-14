@@ -121,8 +121,12 @@ async function doFetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: numb
       const parsed = parseAds(dedupedRaw);
       if (parsed.length > 0) {
         if (tradeType === "BUY") {
+          // Kompetitor JUAL (orderbook BUY): urutkan ascending (harga termurah paling kompetitif)
+          parsed.sort((a, b) => a.price - b.price);
           lastLiveSellAds = parsed;
         } else {
+          // Kompetitor BELI (orderbook SELL): urutkan descending (harga tertinggi paling kompetitif)
+          parsed.sort((a, b) => b.price - a.price);
           lastLiveBuyAds = parsed;
         }
         return parsed;
@@ -144,7 +148,7 @@ async function doFetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: numb
   return generateFallbackAds(tradeType, benchmarkBasePrice);
 }
 
-function generateFallbackAds(tradeType: "BUY" | "SELL", basePrice: number = 16850): Ad[] {
+function generateFallbackAds(tradeType: "BUY" | "SELL", basePrice: number = 17850): Ad[] {
   // Acuan harga USDT/IDR wajar pasar dinamis dengan 50 merchant realistik (Gold, Silver, Bronze, Regular)
   const merchants = [
     // 💎 Block Tier (Block Trade Merchants)

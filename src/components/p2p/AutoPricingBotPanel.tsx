@@ -888,7 +888,7 @@ export function AutoPricingBotPanel({
             }).catch(() => {});
           }
 
-          const roundedPrice = Math.round(recommendedBuyPrice);
+          let roundedPrice = Math.round(recommendedBuyPrice);
           const effectiveBuyFloor = Math.max(
             pricingResult.buyGuard.floorPrice || 0,
             config.manualBuyFloorRp || 0,
@@ -896,6 +896,21 @@ export function AutoPricingBotPanel({
           );
           if (effectiveBuyFloor > 0 && roundedPrice < effectiveBuyFloor) {
             return; // JANGAN PUSH JIKA DI BAWAH BUY FLOOR
+          }
+
+          // Slew-rate limiter Beli: batasi lonjakan liar dalam 1 siklus
+          const lastPushedBuy = lastPushedPricesRef.current.buy;
+          if (
+            (!config.manualBuyPriceOverrideRp || config.manualBuyPriceOverrideRp <= 0) &&
+            lastPushedBuy &&
+            lastPushedBuy > 10_000
+          ) {
+            const maxStep = Math.max(50, (config.maxPriceStepRp || 30) * 2);
+            if (roundedPrice > lastPushedBuy + maxStep) {
+              roundedPrice = lastPushedBuy + maxStep;
+            } else if (roundedPrice < lastPushedBuy - maxStep) {
+              roundedPrice = lastPushedBuy - maxStep;
+            }
           }
 
           const currentBuyStock =
@@ -925,6 +940,21 @@ export function AutoPricingBotPanel({
         let roundedSellPrice = Math.round(recommendedSellPrice);
         if (effectiveSellFloor > 0 && roundedSellPrice < effectiveSellFloor) {
           roundedSellPrice = effectiveSellFloor;
+        }
+
+        // Slew-rate limiter Jual (Anti-Spike & Anti-Dump): batasi pergerakan liar dalam 1 siklus
+        const lastPushedSell = lastPushedPricesRef.current.sell;
+        if (
+          (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0) &&
+          lastPushedSell &&
+          lastPushedSell > 10_000
+        ) {
+          const maxStep = Math.max(50, (config.maxPriceStepRp || 30) * 2);
+          if (roundedSellPrice > lastPushedSell + maxStep) {
+            roundedSellPrice = lastPushedSell + maxStep;
+          } else if (roundedSellPrice < lastPushedSell - maxStep) {
+            roundedSellPrice = lastPushedSell - maxStep;
+          }
         }
 
         const currentSellStock =
