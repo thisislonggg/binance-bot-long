@@ -1753,6 +1753,21 @@ export async function executeAutoVerifyForSellOrder(params: {
     }
   }
 
+  // KONSISTENSI KEAMANAN 4 (CRITICAL): Liveness check pembeli WAJIB sudah selesai (Status: Completed)
+  // DILARANG KERAS auto-verify jika pembeli belum menyelesaikan verifikasi wajah di Binance!
+  // Fungsi ini HANYA dieksekusi jika:
+  // - Pesan chat liveness selesai terdeteksi (livenessCompleted === true), ATAU
+  // - Merchant menekan tombol manual (force === true)
+  const isLivenessTrulyDone = params.livenessCompleted === true || params.force === true;
+  if (!isLivenessTrulyDone) {
+    return {
+      ok: false,
+      skipped: true,
+      verified: false,
+      message: `[KEAMANAN] Order #${cleanOrderNo} ditahan karena belum ada bukti liveness check selesai dari buyer. Auto-verify HANYA dieksekusi setelah pesan chat Completed terdeteksi atau tombol verifikasi manual ditekan.`,
+    };
+  }
+
   // 4. Eksekusi Panggilan API verifiedAdditionalKyc (TIDAK ADA RELEASE COIN!)
   // Endpoint ini HANYA membuka payment details ke buyer jika buyer sudah menyelesaikan liveness di Binance.
   // Jika buyer belum selesai liveness di Binance, Binance akan menolak secara aman.

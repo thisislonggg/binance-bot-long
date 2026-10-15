@@ -784,18 +784,18 @@ Completed`;
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <button
                       type="button"
-                      onClick={() => setAutoVerifyMode("all_active")}
+                      onClick={() => setAutoVerifyMode("chat_only")}
                       className={`text-left p-2.5 rounded-md border text-xs transition-all ${
-                        autoVerifyMode === "all_active"
-                          ? "border-emerald-500 bg-emerald-500/10 text-foreground shadow-sm"
+                        autoVerifyMode === "chat_only"
+                          ? "border-sky-500 bg-sky-500/10 text-foreground shadow-sm"
                           : "border-border/60 bg-surface-2 text-muted-foreground hover:text-foreground"
                       }`}
                     >
-                      <div className="font-semibold flex items-center gap-1 text-emerald-400">
-                        ⚡ Semua Order Aktif (Default)
+                      <div className="font-semibold flex items-center gap-1 text-sky-400">
+                        💬 Chat Liveness Selesai (Default & Paling Aman)
                       </div>
                       <div className="text-[0.68rem] text-muted-foreground mt-0.5 leading-relaxed">
-                        Langsung verifikasi begitu order buyer terdeteksi di terminal.
+                        Hanya auto-verifikasi setelah pembeli benar-benar selesai verifikasi wajah di Binance Chat.
                       </div>
                     </button>
 
@@ -812,24 +812,24 @@ Completed`;
                         💳 Saat Status BUYER_PAYED
                       </div>
                       <div className="text-[0.68rem] text-muted-foreground mt-0.5 leading-relaxed">
-                        Hanya verifikasi saat pembeli klik sudah transfer di Binance.
+                        Auto-verifikasi saat pembeli menekan tombol sudah transfer di Binance.
                       </div>
                     </button>
 
                     <button
                       type="button"
-                      onClick={() => setAutoVerifyMode("chat_only")}
+                      onClick={() => setAutoVerifyMode("all_active")}
                       className={`text-left p-2.5 rounded-md border text-xs transition-all ${
-                        autoVerifyMode === "chat_only"
-                          ? "border-sky-500 bg-sky-500/10 text-foreground shadow-sm"
+                        autoVerifyMode === "all_active"
+                          ? "border-emerald-500 bg-emerald-500/10 text-foreground shadow-sm"
                           : "border-border/60 bg-surface-2 text-muted-foreground hover:text-foreground"
                       }`}
                     >
-                      <div className="font-semibold flex items-center gap-1 text-sky-400">
-                        💬 Chat Binance / Webhook
+                      <div className="font-semibold flex items-center gap-1 text-emerald-400">
+                        🔒 Manual Saja
                       </div>
                       <div className="text-[0.68rem] text-muted-foreground mt-0.5 leading-relaxed">
-                        Hanya verifikasi jika pesan liveness terdeteksi di chat/webhook.
+                        Hanya verifikasi saat tombol ⚡ Auto-Verif ditekan secara manual oleh Anda.
                       </div>
                     </button>
                   </div>

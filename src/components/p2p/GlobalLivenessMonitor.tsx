@@ -121,7 +121,7 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
           );
         }
       } else if (livenessEnabled && isAutoVerify && !triggeringOrders.current.has(ord.orderNumber)) {
-        // Jika order memiliki Additional KYC dan Binance sudah menandai lolos (additionalKycVerify === 2)
+        // 1. Jika order memiliki Additional KYC dan Binance sudah menandai lolos (additionalKycVerify === 2)
         if (ord.additionalKycVerify === 2) {
           triggeringOrders.current.add(ord.orderNumber);
           saveLocalVerifiedOrder(ord.orderNumber);
@@ -133,13 +133,10 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
           continue;
         }
 
-        // Jika order membutuhkan Additional KYC dan masih 1 (menunggu verifikasi liveness buyer di Binance),
-        // watchdog server (getVerifierState) yang akan mengecek Binance SAPI tiap polling.
-        if (ord.additionalKycVerify === 1) {
-          continue;
-        }
-
-        // Watchdog untuk order umum non-KYC
+        // 2. Order SELL yang masih dalam proses bayar (pending/paying/trading):
+        // DILARANG KERAS auto-verifikasi sebelum buyer selesai liveness di Binance!
+        // Verifikasi otomatis HANYA terjadi saat pesan chat "Completed" masuk melalui WebSocket,
+        // ATAU saat status berubah menjadi BUYER_PAYED (jika mode buyer_payed dipilih).
         const statusUpper = (ord.orderStatus || "").toUpperCase();
         const isBuyerPayed =
           statusUpper.includes("PAYED") ||
@@ -147,14 +144,7 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
           statusUpper.includes("RELEASE") ||
           statusUpper === "2";
 
-        const shouldVerify =
-          verifyMode === "chat_only"
-            ? false
-            : verifyMode === "buyer_payed"
-            ? isBuyerPayed
-            : true;
-
-        if (shouldVerify) {
+        if (verifyMode === "buyer_payed" && isBuyerPayed) {
           triggeringOrders.current.add(ord.orderNumber);
           saveLocalVerifiedOrder(ord.orderNumber);
           setStatusMutation.mutate({
