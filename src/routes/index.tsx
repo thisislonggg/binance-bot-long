@@ -970,6 +970,7 @@ function Dashboard() {
             buyRefAds={s.all_buy_ads || s.top_buy_ref_ads || []}
             fairPrice={s.fair_price || 0}
             stockHpp={effectiveCost}
+            pnlReady={pnlQuery.isSuccess && !!pnl}
             bankBalanceIdr={freeCashIdr}
             initialCapitalIdr={initialCapital}
             liveStockUsdt={stockUsdt}

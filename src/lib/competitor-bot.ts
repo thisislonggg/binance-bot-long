@@ -1473,15 +1473,21 @@ export function computeCompetitorPricing(input: {
     sellGuard.netProfitPerUsdtAtFloor = Math.round((sellGuard.netFloorProceeds - stockHpp) * 100) / 100;
   }
 
-  const absoluteBuyFloor = Math.max(
-    calculatedBuyFloor || 0,
-    config.manualBuyFloorRp || 0,
-    config.minPriceBoundRp || 0
-  );
+  // calculatedBuyFloor sudah memuat minPriceBoundRp HANYA jika nilainya di bawah sell floor (lihat atas).
+  // JANGAN tambahkan minPriceBoundRp lagi di sini tanpa syarat: itu memaksa harga beli naik setinggi batas jual.
+  const absoluteBuyFloor = Math.max(calculatedBuyFloor || 0, config.manualBuyFloorRp || 0);
   if (absoluteBuyFloor > 0 && recommendedBuyPrice < absoluteBuyFloor) {
     recommendedBuyPrice = absoluteBuyFloor;
     buyGuard.triggered = true;
     buyGuard.reason = `Proteksi Mutlak Batas Bawah Beli: Harga beli terkunci di Batas Bawah (Rp ${absoluteBuyFloor.toLocaleString("id-ID")}).`;
+  }
+  buyGuard.floorPrice = absoluteBuyFloor;
+
+  // Ceiling beli SELALU menang atas floor beli: lebih aman tidak dapat order daripada membeli kemahalan.
+  if (calculatedBuyCeiling > 0 && calculatedBuyCeiling < 999_999 && recommendedBuyPrice > calculatedBuyCeiling) {
+    recommendedBuyPrice = calculatedBuyCeiling;
+    buyGuard.triggered = true;
+    buyGuard.reason = `Proteksi Mutlak Batas Atas Beli: Harga beli terkunci di Batas Atas (Rp ${calculatedBuyCeiling.toLocaleString("id-ID")}).`;
   }
 
   // 7. Bulatkan harga mutlak ke bilangan bulat (integer IDR untuk Binance C2C)

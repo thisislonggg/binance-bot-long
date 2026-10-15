@@ -70,6 +70,8 @@ import {
   getBotConfigFromServer,
   triggerBackgroundBotTickServer,
   getBackgroundBotStatusServer,
+  heartbeatBotRunnerServer,
+  type BotRunnerLease,
 } from "@/lib/background-bot-engine";
 import {
   pushPriceToBinanceAd,
@@ -77,6 +79,7 @@ import {
   type PushPriceResult,
 } from "@/lib/binance-merchant";
 import { getActiveP2pOrdersSummary } from "@/lib/payment-verifier";
+import { CommitNumberInput } from "./CommitNumberInput";
 import {
   computeCompetitorPricing,
   DEFAULT_BOT_CONFIG,
@@ -126,6 +129,8 @@ interface AutoPricingBotPanelProps {
   }) => void;
   onRefresh?: () => void;
   isRefreshing?: boolean;
+  /** false selama data P&L (HPP & modal) belum termuat / gagal: auto-push ditahan agar floor HPP tidak 0. */
+  pnlReady?: boolean;
 }
 
 export function AutoPricingBotPanel({
@@ -142,6 +147,7 @@ export function AutoPricingBotPanel({
   onApplyPrice,
   onRefresh,
   isRefreshing = false,
+  pnlReady = true,
 }: AutoPricingBotPanelProps) {
   // ── Konfigurasi Bot dengan LocalStorage ─────────────────────────────────────
   const [config, setConfig] = useState<CompetitorFilterConfig>(() => loadBotConfig());
@@ -604,7 +610,69 @@ export function AutoPricingBotPanel({
   const isPushingSellRef = useRef(false);
   const [lastPushLog, setLastPushLog] = useState<PushPriceResult | null>(null);
 
-  const handlePushPrice = async (side: "buy" | "sell", overridePrice?: number) => {
+  // ── Kunci Penjalan Tunggal: hanya SATU tab/perangkat yang boleh menjalankan auto-push ──
+  const heartbeatRunnerFn = useServerFn(heartbeatBotRunnerServer);
+  const runnerIdRef = useRef<string>("");
+  const isRunnerLeaderRef = useRef(false);
+  const [isRunnerLeader, setIsRunnerLeader] = useState(false);
+  const [runnerHolder, setRunnerHolder] = useState<BotRunnerLease | null>(null);
+  const autoRunActive = Boolean(config.enabled && config.autoPushToBinance);
+
+  const runnerHeartbeat = async (takeover = false) => {
+    if (!runnerIdRef.current) {
+      runnerIdRef.current =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+    try {
+      const label =
+        typeof navigator !== "undefined"
+          ? `${/Mobi|Android|iPhone/i.test(navigator.userAgent) ? "HP" : "PC"} · ${new Date().toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta" })}`
+          : undefined;
+      const res = await heartbeatRunnerFn({
+        data: {
+          sessionToken: effectiveToken,
+          runnerId: runnerIdRef.current,
+          ...(takeover ? { takeover: true } : {}),
+          ...(takeover && label ? { label } : {}),
+          ...(!takeover && !isRunnerLeaderRef.current && label ? { label } : {}),
+        },
+      });
+      isRunnerLeaderRef.current = Boolean(res.ok && res.isLeader);
+      setIsRunnerLeader(isRunnerLeaderRef.current);
+      setRunnerHolder(res.holder);
+    } catch {
+      // Jaringan gagal: jangan anggap diri sebagai pemimpin
+      isRunnerLeaderRef.current = false;
+      setIsRunnerLeader(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!autoRunActive) {
+      if (isRunnerLeaderRef.current && runnerIdRef.current) {
+        heartbeatRunnerFn({
+          data: { sessionToken: effectiveToken, runnerId: runnerIdRef.current, release: true },
+        }).catch(() => {});
+      }
+      isRunnerLeaderRef.current = false;
+      setIsRunnerLeader(false);
+      return;
+    }
+    runnerHeartbeat();
+    const timer = setInterval(() => runnerHeartbeat(), 5000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRunActive, effectiveToken]);
+
+  const handlePushPrice = async (
+    side: "buy" | "sell",
+    overridePrice?: number,
+    opts: { auto?: boolean } = {},
+  ): Promise<PushPriceResult | undefined> => {
+    // Auto-push: satu toast per sisi yang diperbarui di tempat, tidak menumpuk di setiap siklus retry
+    const autoToast = opts.auto ? { id: `auto-push-${side}` } : {};
     if (side === "buy") {
       if (isPushingBuyRef.current) return;
       isPushingBuyRef.current = true;
@@ -618,7 +686,8 @@ export function AutoPricingBotPanel({
     const advNo = side === "buy" ? config.merchantBuyAdvNo : config.merchantSellAdvNo;
     if (!advNo || !advNo.trim()) {
       toast.error(
-        `Nomor Iklan ${side === "buy" ? "Beli" : "Jual"} (advNo) belum diisi. Buka tab "🔌 C2C Merchant API" di bawah untuk mengisinya.`
+        `Nomor Iklan ${side === "buy" ? "Beli" : "Jual"} (advNo) belum diisi. Buka tab "🔌 C2C Merchant API" di bawah untuk mengisinya.`,
+        autoToast
       );
       if (side === "buy") {
         isPushingBuyRef.current = false;
@@ -639,7 +708,7 @@ export function AutoPricingBotPanel({
               ? ` karena Rp ${bankAllocation.lockedActiveBuyIdr.toLocaleString("id-ID")} (${bankAllocation.activeBuyOrdersUsdt} USDT) sedang berjalan di pesanan beli aktif`
               : ""
           }. Iklan beli ditahan & otomatis di-OFFLINE-kan di Binance agar tidak over-budget.`,
-          { duration: 7000 }
+          { duration: 7000, ...autoToast }
         );
         toggleStatusFn({
           data: {
@@ -661,7 +730,8 @@ export function AutoPricingBotPanel({
     const isMock = Array.isArray(refAds) && refAds.some((a) => a.adv_no?.startsWith("mock_"));
     if (isMock) {
       toast.error(
-        "Data pasar orderbook Binance P2P saat ini adalah mock / offline fallback. Push ke Binance dibatalkan demi keamanan harga riil."
+        "Data pasar orderbook Binance P2P saat ini adalah mock / offline fallback. Push ke Binance dibatalkan demi keamanan harga riil.",
+        autoToast
       );
       if (side === "buy") {
         isPushingBuyRef.current = false;
@@ -690,20 +760,22 @@ export function AutoPricingBotPanel({
     if (side === "sell" && effectiveSellFloor > 0 && price < effectiveSellFloor) {
       price = effectiveSellFloor;
       toast.info(
-        `Harga jual otomatis dikunci di Batas Bawah Aman (Rp ${effectiveSellFloor.toLocaleString("id-ID")}) agar tidak memasang harga di bawah batas yang Anda set.`
+        `Harga jual otomatis dikunci di Batas Bawah Aman (Rp ${effectiveSellFloor.toLocaleString("id-ID")}) agar tidak memasang harga di bawah batas yang Anda set.`,
+        autoToast
       );
     }
 
-    // Proteksi Batas Bawah Beli (Buy Floor & Min Price Bound): HARD FLOOR MUTLAK!
+    // Proteksi Batas Bawah Beli (Buy Floor). buyGuard.floorPrice dari engine sudah memuat minPriceBoundRp
+    // hanya jika nilainya di bawah sell floor, jadi JANGAN tambahkan minPriceBoundRp di sini.
     const effectiveBuyFloor = Math.max(
       pricingResult.buyGuard.floorPrice || 0,
-      config.manualBuyFloorRp || 0,
-      config.minPriceBoundRp || 0
+      config.manualBuyFloorRp || 0
     );
     if (side === "buy" && effectiveBuyFloor > 0 && price < effectiveBuyFloor) {
       price = effectiveBuyFloor;
       toast.info(
-        `Harga beli dikunci di Batas Bawah Beli (Rp ${effectiveBuyFloor.toLocaleString("id-ID")}) agar tidak menawar di bawah batas minimal.`
+        `Harga beli dikunci di Batas Bawah Beli (Rp ${effectiveBuyFloor.toLocaleString("id-ID")}) agar tidak menawar di bawah batas minimal.`,
+        autoToast
       );
     }
 
@@ -715,7 +787,8 @@ export function AutoPricingBotPanel({
     if (side === "buy" && effectiveBuyCeiling > 0 && price > effectiveBuyCeiling) {
       price = effectiveBuyCeiling;
       toast.info(
-        `Harga beli dikunci di Batas Atas Beli (Rp ${effectiveBuyCeiling.toLocaleString("id-ID")}) agar tidak membeli kemahalan.`
+        `Harga beli dikunci di Batas Atas Beli (Rp ${effectiveBuyCeiling.toLocaleString("id-ID")}) agar tidak membeli kemahalan.`,
+        autoToast
       );
     }
 
@@ -806,15 +879,21 @@ export function AutoPricingBotPanel({
               : undefined,
           hasActiveOrders: hasActiveOrdersOnSide,
           priceOnly: hasActiveOrdersOnSide,
+          ...(opts.auto && runnerIdRef.current ? { runnerId: runnerIdRef.current } : {}),
         },
       });
 
       setLastPushLog(res);
       if (res.ok) {
-        toast.success(res.message);
+        toast.success(res.message, autoToast);
+      } else if (res.code === "NOT_RUNNER_LEADER") {
+        isRunnerLeaderRef.current = false;
+        setIsRunnerLeader(false);
+        toast.warning(res.message, autoToast);
       } else {
         toast.error(res.message, {
           duration: 9000,
+          ...autoToast,
           action: {
             label: "Terapkan ke Form",
             onClick: () => {
@@ -824,9 +903,11 @@ export function AutoPricingBotPanel({
           },
         });
       }
+      return res;
     } catch (err: unknown) {
       const errStr = err instanceof Error ? err.message : String(err);
-      toast.error(`Gagal mengirim update ke Binance: ${errStr}`);
+      toast.error(`Gagal mengirim update ke Binance: ${errStr}`, autoToast);
+      return undefined;
     } finally {
       if (side === "buy") {
         isPushingBuyRef.current = false;
@@ -838,71 +919,113 @@ export function AutoPricingBotPanel({
     }
   };
 
-  // Auto-Push ke Binance jika opsi autoPushToBinance aktif
+  // Auto-Push ke Binance jika bot AKTIF (config.enabled) dan opsi autoPushToBinance aktif
+  // lastPushed* HANYA diisi setelah Binance mengonfirmasi push berhasil, dengan harga yang benar-benar
+  // dikirim server. Push yang gagal / ditolak / dilewati akan otomatis dicoba lagi di siklus berikutnya.
   const lastPushedPricesRef = useRef<{ buy?: number; sell?: number }>({});
-  const lastPushedStockRef = useRef<{ buy?: number; sell?: number }>({});
+  const lastPushedStockRef = useRef<{ buy?: number | undefined; sell?: number | undefined }>({});
   const lastPushTimeRef = useRef<number>(0);
+  const pendingSellTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pnlWaitNotifiedRef = useRef(false);
+  // Backoff per sisi setelah push gagal (5s, 10s, 20s ... maks 60s) agar retry tidak membanjiri Binance SAPI.
+  const pushFailRef = useRef<{ buy: number; sell: number }>({ buy: 0, sell: 0 });
+  const pushRetryAtRef = useRef<{ buy: number; sell: number }>({ buy: 0, sell: 0 });
 
-  useEffect(() => {
-    if (!config.autoPushToBinance) return;
+  const recordPushResult = (
+    side: "buy" | "sell",
+    res: PushPriceResult | undefined,
+    stock: number | undefined,
+    recordStock: boolean,
+  ) => {
+    if (!res || !res.ok) {
+      // gagal / dibatalkan: biarkan ref lama agar push diulang setelah jeda backoff
+      pushFailRef.current[side] += 1;
+      const delayMs = Math.min(60_000, 5_000 * 2 ** (pushFailRef.current[side] - 1));
+      pushRetryAtRef.current[side] = Date.now() + delayMs;
+      return;
+    }
+    pushFailRef.current[side] = 0;
+    pushRetryAtRef.current[side] = 0;
+    if (typeof res.code === "string" && res.code.startsWith("AUTO_OFFLINED")) return; // harga tidak diubah
+    lastPushedPricesRef.current[side] = res.price;
+    if (recordStock) lastPushedStockRef.current[side] = stock;
+  };
+
+  // Selalu memakai state terbaru (tanpa stale closure): fungsi diganti setiap render,
+  // interval di bawah hanya memanggil versi terkini lewat ref.
+  const checkAndPushRef = useRef<() => void>(() => {});
+  checkAndPushRef.current = () => {
+    if (!config.enabled || !config.autoPushToBinance) return;
+    if (!isRunnerLeaderRef.current) return; // tab/perangkat lain yang menjalankan bot
+    if (!pnlReady) {
+      if (!pnlWaitNotifiedRef.current) {
+        pnlWaitNotifiedRef.current = true;
+        toast.info("Auto-push menunggu data P&L (HPP & modal) termuat agar batas bawah jual tidak 0.");
+      }
+      return;
+    }
+    pnlWaitNotifiedRef.current = false;
+
     const minIntervalMs = Math.max(1, config.autoPushMinIntervalSec ?? 1) * 1000;
+    const now = Date.now();
+    if (now - lastPushTimeRef.current < minIntervalMs) return;
 
-    const checkAndPush = () => {
-      const now = Date.now();
-      if (now - lastPushTimeRef.current < minIntervalMs) return;
+    let buyTriggered = false;
 
-      let buyTriggered = false;
+    if (
+      config.merchantBuyAdvNo &&
+      recommendedBuyPrice > 0 &&
+      !isPushingBuyRef.current &&
+      now >= pushRetryAtRef.current.buy
+    ) {
+      // Cek proteksi kas beli: jika kas tidak cukup atau di bawah minimal limit, JANGAN buat/push iklan beli!
+      const isBuyBlocked =
+        (!config.manualBuyStockUsdt || config.manualBuyStockUsdt <= 0) &&
+        (bankAllocation.isBelowMinLimit || bankAllocation.autoBuyStockUsdt <= 0);
 
-      if (config.merchantBuyAdvNo && recommendedBuyPrice > 0 && !isPushingBuyRef.current) {
-        // Cek proteksi kas beli: jika kas tidak cukup atau di bawah minimal limit, JANGAN buat/push iklan beli!
-        const isBuyBlocked =
-          (!config.manualBuyStockUsdt || config.manualBuyStockUsdt <= 0) &&
-          (bankAllocation.isBelowMinLimit || bankAllocation.autoBuyStockUsdt <= 0);
-
-        if (isBuyBlocked) {
-          // Kas tidak cukup / 0: Otomatis matikan (OFFLINE) iklan di Binance agar tidak mengambil order di luar modal!
-          if (!buyAdOfflinedRef.current) {
-            buyAdOfflinedRef.current = true;
-            toggleStatusFn({
-              data: {
-                sessionToken: effectiveToken,
-                advNo: config.merchantBuyAdvNo.trim(),
-                advStatus: "OFFLINE",
-              },
+      if (isBuyBlocked) {
+        // Kas tidak cukup / 0: Otomatis matikan (OFFLINE) iklan di Binance agar tidak mengambil order di luar modal!
+        if (!buyAdOfflinedRef.current) {
+          buyAdOfflinedRef.current = true;
+          toggleStatusFn({
+            data: {
+              sessionToken: effectiveToken,
+              advNo: config.merchantBuyAdvNo.trim(),
+              advStatus: "OFFLINE",
+            },
+          })
+            .then((res) => {
+              if (res.ok) {
+                toast.warning(
+                  `Saldo kas beli Rp ${bankAllocation.usableBankIdr.toLocaleString("id-ID")} di bawah batas minimal Rp ${bankAllocation.minBuyLimitIdr.toLocaleString("id-ID")}. Iklan beli #${config.merchantBuyAdvNo} otomatis di-OFFLINE-kan di Binance!`,
+                  { duration: 8000 }
+                );
+              } else {
+                buyAdOfflinedRef.current = false; // coba lagi siklus berikutnya
+              }
             })
-              .then((res) => {
-                if (res.ok) {
-                  toast.warning(
-                    `Saldo kas beli Rp ${bankAllocation.usableBankIdr.toLocaleString("id-ID")} di bawah batas minimal Rp ${bankAllocation.minBuyLimitIdr.toLocaleString("id-ID")}. Iklan beli #${config.merchantBuyAdvNo} otomatis di-OFFLINE-kan di Binance!`,
-                    { duration: 8000 }
-                  );
-                }
-              })
-              .catch(() => {});
-          }
-        } else {
-          // Kas tersedia: jika sebelumnya pernah di-offline-kan, pulihkan izin online
-          if (buyAdOfflinedRef.current) {
-            buyAdOfflinedRef.current = false;
-            toggleStatusFn({
-              data: {
-                sessionToken: effectiveToken,
-                advNo: config.merchantBuyAdvNo.trim(),
-                advStatus: "ONLINE",
-              },
-            }).catch(() => {});
-          }
+            .catch(() => {
+              buyAdOfflinedRef.current = false;
+            });
+        }
+      } else {
+        // Kas tersedia: jika sebelumnya pernah di-offline-kan, pulihkan izin online
+        if (buyAdOfflinedRef.current) {
+          buyAdOfflinedRef.current = false;
+          toggleStatusFn({
+            data: {
+              sessionToken: effectiveToken,
+              advNo: config.merchantBuyAdvNo.trim(),
+              advStatus: "ONLINE",
+            },
+          }).catch(() => {});
+        }
 
-          let roundedPrice = Math.round(recommendedBuyPrice);
-          const effectiveBuyFloor = Math.max(
-            pricingResult.buyGuard.floorPrice || 0,
-            config.manualBuyFloorRp || 0,
-            config.minPriceBoundRp || 0
-          );
-          if (effectiveBuyFloor > 0 && roundedPrice < effectiveBuyFloor) {
-            return; // JANGAN PUSH JIKA DI BAWAH BUY FLOOR
-          }
+        let roundedPrice = Math.round(recommendedBuyPrice);
+        const effectiveBuyFloor = Math.max(pricingResult.buyGuard.floorPrice || 0, config.manualBuyFloorRp || 0);
 
+        // Di bawah buy floor (mis. ceiling < floor): lewati HANYA sisi beli, sisi jual tetap diproses.
+        if (!(effectiveBuyFloor > 0 && roundedPrice < effectiveBuyFloor)) {
           // Slew-rate limiter Beli: batasi lonjakan liar dalam 1 siklus
           const lastPushedBuy = lastPushedPricesRef.current.buy;
           if (
@@ -927,108 +1050,119 @@ export function AutoPricingBotPanel({
           const stockChanged = lastPushedStockRef.current.buy !== currentBuyStock;
 
           if (priceChanged || stockChanged) {
-            lastPushedPricesRef.current.buy = roundedPrice;
-            lastPushedStockRef.current.buy = currentBuyStock;
             lastPushTimeRef.current = now;
             buyTriggered = true;
-            handlePushPrice("buy", roundedPrice);
+            handlePushPrice("buy", roundedPrice, { auto: true }).then((res) =>
+              recordPushResult("buy", res, currentBuyStock, true),
+            );
           }
         }
       }
+    }
 
-      if (config.merchantSellAdvNo && recommendedSellPrice > 0 && !isPushingSellRef.current) {
-        const effectiveSellFloor = Math.max(
-          pricingResult.sellGuard.floorPrice || 0,
-          config.manualSellFloorRp || 0,
-          config.minPriceBoundRp || 0
-        );
-        let roundedSellPrice = Math.round(recommendedSellPrice);
-        if (effectiveSellFloor > 0 && roundedSellPrice < effectiveSellFloor) {
-          roundedSellPrice = effectiveSellFloor;
+    if (
+      config.merchantSellAdvNo &&
+      recommendedSellPrice > 0 &&
+      !isPushingSellRef.current &&
+      !pendingSellTimerRef.current &&
+      now >= pushRetryAtRef.current.sell
+    ) {
+      const effectiveSellFloor = Math.max(
+        pricingResult.sellGuard.floorPrice || 0,
+        config.manualSellFloorRp || 0,
+        config.minPriceBoundRp || 0
+      );
+      let roundedSellPrice = Math.round(recommendedSellPrice);
+      if (effectiveSellFloor > 0 && roundedSellPrice < effectiveSellFloor) {
+        roundedSellPrice = effectiveSellFloor;
+      }
+
+      // Slew-rate limiter Jual (Anti-Spike & Anti-Dump): batasi pergerakan liar dalam 1 siklus
+      const lastPushedSell = lastPushedPricesRef.current.sell;
+      if (
+        (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0) &&
+        lastPushedSell &&
+        lastPushedSell > 10_000
+      ) {
+        const maxStep = Math.max(50, (config.maxPriceStepRp || 30) * 2);
+        if (roundedSellPrice > lastPushedSell + maxStep) {
+          roundedSellPrice = lastPushedSell + maxStep;
+        } else if (roundedSellPrice < lastPushedSell - maxStep) {
+          roundedSellPrice = lastPushedSell - maxStep;
         }
+      }
 
-        // Slew-rate limiter Jual (Anti-Spike & Anti-Dump): batasi pergerakan liar dalam 1 siklus
-        const lastPushedSell = lastPushedPricesRef.current.sell;
-        if (
-          (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0) &&
-          lastPushedSell &&
-          lastPushedSell > 10_000
-        ) {
-          const maxStep = Math.max(50, (config.maxPriceStepRp || 30) * 2);
-          if (roundedSellPrice > lastPushedSell + maxStep) {
-            roundedSellPrice = lastPushedSell + maxStep;
-          } else if (roundedSellPrice < lastPushedSell - maxStep) {
-            roundedSellPrice = lastPushedSell - maxStep;
-          }
+      // MUTLAK: Selalu kunci kembali ke Batas Bawah Jual (Sell Floor) setelah slew limiter!
+      if (effectiveSellFloor > 0 && roundedSellPrice < effectiveSellFloor) {
+        roundedSellPrice = effectiveSellFloor;
+      }
+
+      // Proteksi Tambahan Anti-Dump: Di mode auto bot, harga jual tidak boleh jatuh di bawah batas aman konsensus pasar
+      if (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0) {
+        const anchorPrice = fairPrice > 10_000 ? fairPrice : 0;
+        const antiDumpFloor = anchorPrice > 0 ? Math.max(effectiveSellFloor, anchorPrice - 35) : effectiveSellFloor;
+        if (antiDumpFloor > 0 && roundedSellPrice < antiDumpFloor) {
+          roundedSellPrice = antiDumpFloor;
         }
+      }
 
-        // MUTLAK: Selalu kunci kembali ke Batas Bawah Jual (Sell Floor) setelah slew limiter!
-        if (effectiveSellFloor > 0 && roundedSellPrice < effectiveSellFloor) {
-          roundedSellPrice = effectiveSellFloor;
+      if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0 && roundedSellPrice > config.maxPriceBoundRp) {
+        roundedSellPrice =
+          effectiveSellFloor > 0 && config.maxPriceBoundRp < effectiveSellFloor
+            ? effectiveSellFloor
+            : config.maxPriceBoundRp;
+      }
+
+      const currentSellStock =
+        config.manualSellStockUsdt && config.manualSellStockUsdt > 0
+          ? config.manualSellStockUsdt
+          : maxAvailableSellStockUsdt > 0
+          ? maxAvailableSellStockUsdt
+          : undefined;
+
+      const sellPriceChanged = lastPushedPricesRef.current.sell !== roundedSellPrice;
+      // PENTING: Jika ada pesanan aktif (hasActiveSellOrder), JANGAN picu push hanya karena perubahan stok!
+      const sellStockChanged = !hasActiveSellOrder && lastPushedStockRef.current.sell !== currentSellStock;
+
+      if (sellPriceChanged || sellStockChanged) {
+        lastPushTimeRef.current = now;
+        const recordStock = !hasActiveSellOrder;
+        const pushSell = () =>
+          handlePushPrice("sell", roundedSellPrice, { auto: true }).then((res) =>
+            recordPushResult("sell", res, currentSellStock, recordStock),
+          );
+
+        if (buyTriggered) {
+          // Beri jeda 1000ms jika BUY baru saja dipicu agar request tidak bertabrakan di Binance SAPI
+          pendingSellTimerRef.current = setTimeout(() => {
+            pendingSellTimerRef.current = null;
+            if (!isPushingSellRef.current && isRunnerLeaderRef.current) pushSell();
+          }, 1000);
+        } else {
+          pushSell();
         }
+      }
+    }
+  };
 
-        // Proteksi Tambahan Anti-Dump: Di mode auto bot, harga jual tidak boleh jatuh di bawah batas aman konsensus pasar
-        if (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0) {
-          const anchorPrice = fairPrice > 10_000 ? fairPrice : 0;
-          const antiDumpFloor = anchorPrice > 0 ? Math.max(effectiveSellFloor, anchorPrice - 35) : effectiveSellFloor;
-          if (antiDumpFloor > 0 && roundedSellPrice < antiDumpFloor) {
-            roundedSellPrice = antiDumpFloor;
-          }
-        }
-
-        if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0 && roundedSellPrice > config.maxPriceBoundRp) {
-          roundedSellPrice =
-            effectiveSellFloor > 0 && config.maxPriceBoundRp < effectiveSellFloor
-              ? effectiveSellFloor
-              : config.maxPriceBoundRp;
-        }
-
-        const currentSellStock =
-          config.manualSellStockUsdt && config.manualSellStockUsdt > 0
-            ? config.manualSellStockUsdt
-            : maxAvailableSellStockUsdt > 0
-            ? maxAvailableSellStockUsdt
-            : undefined;
-
-        const sellPriceChanged = lastPushedPricesRef.current.sell !== roundedSellPrice;
-        // PENTING: Jika ada pesanan aktif (hasActiveSellOrder), JANGAN picu push hanya karena perubahan stok!
-        const sellStockChanged = !hasActiveSellOrder && lastPushedStockRef.current.sell !== currentSellStock;
-
-        if (sellPriceChanged || sellStockChanged) {
-          lastPushedPricesRef.current.sell = roundedSellPrice;
-          if (!hasActiveSellOrder) lastPushedStockRef.current.sell = currentSellStock;
-          lastPushTimeRef.current = now;
-
-          if (buyTriggered) {
-            // Beri jeda 1000ms jika BUY baru saja dipicu agar request tidak bertabrakan di Binance SAPI
-            setTimeout(() => {
-              if (!isPushingSellRef.current) {
-                handlePushPrice("sell", roundedSellPrice);
-              }
-            }, 1000);
-          } else {
-            handlePushPrice("sell", roundedSellPrice);
-          }
-        }
+  useEffect(() => {
+    if (!autoRunActive) return;
+    const minIntervalMs = Math.max(1, config.autoPushMinIntervalSec ?? 1) * 1000;
+    checkAndPushRef.current();
+    const timer = setInterval(() => checkAndPushRef.current(), Math.max(1000, minIntervalMs));
+    return () => {
+      clearInterval(timer);
+      if (pendingSellTimerRef.current) {
+        clearTimeout(pendingSellTimerRef.current);
+        pendingSellTimerRef.current = null;
       }
     };
+  }, [autoRunActive, config.autoPushMinIntervalSec]);
 
-    checkAndPush();
-    const timer = setInterval(checkAndPush, Math.max(1000, minIntervalMs));
-    return () => clearInterval(timer);
-  }, [
-    config.autoPushToBinance,
-    config.autoPushMinIntervalSec,
-    recommendedBuyPrice,
-    recommendedSellPrice,
-    config.merchantBuyAdvNo,
-    config.merchantSellAdvNo,
-    config.manualBuyStockUsdt,
-    config.manualSellStockUsdt,
-    maxAvailableSellStockUsdt,
-    bankAllocation.isBelowMinLimit,
-    bankAllocation.autoBuyStockUsdt,
-  ]);
+  // Picu cek segera saat harga rekomendasi / kepemimpinan berubah (tanpa me-reset interval)
+  useEffect(() => {
+    if (autoRunActive) checkAndPushRef.current();
+  }, [autoRunActive, recommendedBuyPrice, recommendedSellPrice, isRunnerLeader, pnlReady]);
 
   // ── Filter Data untuk Tabel Radar Pasar ─────────────────────────────────────
   const currentRadarAds = radarTab === "sell" ? evaluatedSellAds : evaluatedBuyAds;
@@ -1110,6 +1244,32 @@ export function AutoPricingBotPanel({
             </p>
           </div>
         </div>
+
+        {autoRunActive && (
+          <div
+            className={`order-last flex w-full flex-wrap items-center gap-2 rounded-lg border px-3 py-1.5 text-xs ${
+              isRunnerLeader
+                ? "border-bid/30 bg-bid/10 text-bid"
+                : "border-amber-500/40 bg-amber-500/10 text-amber-500"
+            }`}
+          >
+            {isRunnerLeader ? (
+              <span className="font-semibold">
+                Auto-push dijalankan oleh tab ini{!pnlReady ? " · menunggu data P&L termuat" : ""}. Biarkan tab ini tetap terbuka &amp; terlihat.
+              </span>
+            ) : (
+              <>
+                <span className="font-semibold">
+                  Tab ini hanya memantau: auto-push sedang dijalankan oleh tab/perangkat lain
+                  {runnerHolder?.label ? ` (${runnerHolder.label})` : ""}.
+                </span>
+                <Button size="sm" variant="outline" className="h-6 text-[0.68rem]" onClick={() => runnerHeartbeat(true)}>
+                  Ambil Alih di Tab Ini
+                </Button>
+              </>
+            )}
+          </div>
+        )}
 
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-surface px-3 py-1.5 text-xs">
@@ -2287,8 +2447,8 @@ export function AutoPricingBotPanel({
                     </Label>
                     <span className="num text-xs font-bold text-primary">{config.minUsdtAmount} USDT</span>
                   </div>
-                  <Input
-                    type="number"
+                  <CommitNumberInput
+                    decimal
                     min={0}
                     step={100}
                     value={config.minUsdtAmount}
@@ -2327,8 +2487,8 @@ export function AutoPricingBotPanel({
                       {config.maxUsdtAmount === 0 ? "Bebas" : `${config.maxUsdtAmount} USDT`}
                     </span>
                   </div>
-                  <Input
-                    type="number"
+                  <CommitNumberInput
+                    decimal
                     min={0}
                     step={1000}
                     value={config.maxUsdtAmount}
@@ -2377,8 +2537,7 @@ export function AutoPricingBotPanel({
                       {config.minOrderLimitIdr === 0 ? "Bebas (0)" : `< ${fmtRp(config.minOrderLimitIdr)}`}
                     </span>
                   </div>
-                  <Input
-                    type="number"
+                  <CommitNumberInput
                     min={0}
                     step={5000000}
                     value={config.minOrderLimitIdr}
@@ -2428,8 +2587,7 @@ export function AutoPricingBotPanel({
                       {config.minMaxLimitIdr === 0 ? "Bebas (0)" : `≥ ${fmtRp(config.minMaxLimitIdr)}`}
                     </span>
                   </div>
-                  <Input
-                    type="number"
+                  <CommitNumberInput
                     min={0}
                     step={5000000}
                     value={config.minMaxLimitIdr}
@@ -2495,8 +2653,7 @@ export function AutoPricingBotPanel({
                     </Label>
                     <span className="num text-xs font-bold text-primary">{config.minMonthOrders} Order</span>
                   </div>
-                  <Input
-                    type="number"
+                  <CommitNumberInput
                     min={0}
                     value={config.minMonthOrders}
                     onChange={(e) => updateConfig({ minMonthOrders: Math.max(0, Number(e.target.value)) })}
@@ -2992,8 +3149,7 @@ export function AutoPricingBotPanel({
                             {fmtRp(config.manualBankBalanceIdr || 0)}
                           </span>
                         </div>
-                        <Input
-                          type="number"
+                        <CommitNumberInput
                           min={0}
                           step={1000000}
                           value={config.manualBankBalanceIdr || ""}
@@ -3085,8 +3241,7 @@ export function AutoPricingBotPanel({
                             {config.bankReserveBufferIdr ? fmtRp(config.bankReserveBufferIdr) : "Rp 0"}
                           </span>
                         </div>
-                        <Input
-                          type="number"
+                        <CommitNumberInput
                           min={0}
                           step={200000}
                           value={config.bankReserveBufferIdr || ""}
@@ -3379,8 +3534,7 @@ export function AutoPricingBotPanel({
                       <span className="text-muted-foreground font-medium">Batas Toleransi Selisih Gap (Rank 1 vs 2):</span>
                       <div className="flex items-center gap-1">
                         <span className="text-xs font-semibold">Rp</span>
-                        <Input
-                          type="number"
+                        <CommitNumberInput
                           min={5}
                           step={5}
                           value={config.buyGapTrapThresholdRp || 20}
@@ -3503,8 +3657,7 @@ export function AutoPricingBotPanel({
                       <span className="text-muted-foreground font-medium">Buffer Toleransi di Atas Spot Indodax:</span>
                       <div className="flex items-center gap-1">
                         <span className="text-xs font-semibold">+Rp</span>
-                        <Input
-                          type="number"
+                        <CommitNumberInput
                           min={0}
                           step={5}
                           value={config.spotDumpBufferRp !== undefined ? config.spotDumpBufferRp : 15}
@@ -3604,8 +3757,7 @@ export function AutoPricingBotPanel({
                     <span className="text-muted-foreground">Batas Selisih Lonjakan:</span>
                     <div className="flex items-center gap-1">
                       <span className="text-xs font-semibold">Rp</span>
-                      <Input
-                        type="number"
+                      <CommitNumberInput
                         min={10}
                         step={5}
                         value={config.maxOutlierGapRp || 40}
@@ -3631,8 +3783,7 @@ export function AutoPricingBotPanel({
                     <span className="text-muted-foreground">Max Step Change:</span>
                     <div className="flex items-center gap-1">
                       <span className="text-xs font-semibold">Rp</span>
-                      <Input
-                        type="number"
+                      <CommitNumberInput
                         min={10}
                         step={10}
                         value={config.maxPriceStepRp || 50}
@@ -3661,8 +3812,7 @@ export function AutoPricingBotPanel({
                     <span className="text-muted-foreground">Batas Minimum Harga Iklan:</span>
                     <div className="flex items-center gap-1">
                       <span className="text-xs font-semibold">Rp</span>
-                      <Input
-                        type="number"
+                      <CommitNumberInput
                         min={0}
                         step={100}
                         value={config.minPriceBoundRp || 0}
@@ -3677,8 +3827,7 @@ export function AutoPricingBotPanel({
                     <span className="text-muted-foreground">Batas Maksimum Harga Iklan:</span>
                     <div className="flex items-center gap-1">
                       <span className="text-xs font-semibold">Rp</span>
-                      <Input
-                        type="number"
+                      <CommitNumberInput
                         min={0}
                         step={100}
                         value={config.maxPriceBoundRp || 0}
@@ -3960,8 +4109,7 @@ export function AutoPricingBotPanel({
                       <span className="text-muted-foreground">Target Min Margin Laba:</span>
                       <div className="flex items-center gap-1">
                         <span className="text-xs font-semibold">+Rp</span>
-                        <Input
-                          type="number"
+                        <CommitNumberInput
                           min={0}
                           value={config.minProfitMarginRp}
                           onChange={(e) => updateConfig({ minProfitMarginRp: Math.max(0, Number(e.target.value)) })}
@@ -3973,8 +4121,7 @@ export function AutoPricingBotPanel({
                   ) : (
                     <div className="flex items-center justify-between pt-1">
                       <span className="text-muted-foreground">Nominal Floor Tetap:</span>
-                      <Input
-                        type="number"
+                      <CommitNumberInput
                         min={0}
                         value={config.manualSellFloorRp}
                         onChange={(e) => {
@@ -4124,8 +4271,7 @@ export function AutoPricingBotPanel({
                   {config.buyCeilingMode === "manual" ? (
                     <div className="flex items-center justify-between pt-1">
                       <span className="text-muted-foreground">Nominal Ceiling Tetap:</span>
-                      <Input
-                        type="number"
+                      <CommitNumberInput
                         min={0}
                         value={config.manualBuyCeilingRp}
                         onChange={(e) => updateConfig({ manualBuyCeilingRp: Math.max(0, Number(e.target.value)) })}
@@ -4150,8 +4296,7 @@ export function AutoPricingBotPanel({
                     <span className="text-muted-foreground">Min Spread Guard (Jual - Beli):</span>
                     <div className="flex items-center gap-1">
                       <span className="text-xs font-semibold">Rp</span>
-                      <Input
-                        type="number"
+                      <CommitNumberInput
                         min={5}
                         value={config.minSpreadRp}
                         onChange={(e) => updateConfig({ minSpreadRp: Math.max(5, Number(e.target.value)) })}
@@ -4246,8 +4391,7 @@ export function AutoPricingBotPanel({
                   {Boolean(config.manualBuyFloorRp && config.manualBuyFloorRp > 0) && (
                     <div className="flex items-center justify-between pt-1">
                       <span className="text-muted-foreground">Nominal Floor Beli Tetap:</span>
-                      <Input
-                        type="number"
+                      <CommitNumberInput
                         min={0}
                         value={config.manualBuyFloorRp}
                         onChange={(e) => updateConfig({ manualBuyFloorRp: Math.max(0, Number(e.target.value)) })}
@@ -4574,8 +4718,7 @@ export function AutoPricingBotPanel({
                           </button>
                         </div>
                         <div className="relative">
-                          <Input
-                            type="number"
+                          <CommitNumberInput
                             min={0}
                             value={config.manualBuyPriceOverrideRp}
                             onChange={(e) =>
@@ -4599,8 +4742,7 @@ export function AutoPricingBotPanel({
                           <div className="flex items-center justify-between text-[0.65rem]">
                             <span className="text-muted-foreground font-semibold">Limit Bawah (Min Rp):</span>
                           </div>
-                          <Input
-                            type="number"
+                          <CommitNumberInput
                             min={0}
                             value={config.manualBuyFloorRp && config.manualBuyFloorRp > 0 ? config.manualBuyFloorRp : ""}
                             onChange={(e) => {
@@ -4627,8 +4769,7 @@ export function AutoPricingBotPanel({
                               <span className="text-bid font-bold text-[0.6rem]">Auto ({fmtRp2(buyGuard.ceilingPrice)})</span>
                             ) : null}
                           </div>
-                          <Input
-                            type="number"
+                          <CommitNumberInput
                             min={0}
                             value={config.manualBuyCeilingRp && config.manualBuyCeilingRp > 0 ? config.manualBuyCeilingRp : ""}
                             onChange={(e) => {
@@ -4683,8 +4824,8 @@ export function AutoPricingBotPanel({
                       </div>
                     </div>
                     <div className="relative">
-                      <Input
-                        type="number"
+                      <CommitNumberInput
+                        decimal
                         step="any"
                         value={config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0 ? config.manualBuyStockUsdt : ""}
                         onChange={(e) => {
@@ -4733,8 +4874,7 @@ export function AutoPricingBotPanel({
                             Min 50 Juta
                           </span>
                         </div>
-                        <Input
-                          type="number"
+                        <CommitNumberInput
                           min={10000}
                           value={config.manualBuyMinLimitIdr && config.manualBuyMinLimitIdr > 0 ? config.manualBuyMinLimitIdr : 50_000_000}
                           onChange={(e) => {
@@ -4765,8 +4905,7 @@ export function AutoPricingBotPanel({
                             Tetap 500 Juta
                           </span>
                         </div>
-                        <Input
-                          type="number"
+                        <CommitNumberInput
                           min={50_000_000}
                           value={config.manualBuyMaxLimitIdr && config.manualBuyMaxLimitIdr > 0 ? config.manualBuyMaxLimitIdr : 500_000_000}
                           onChange={(e) => {
@@ -4945,8 +5084,7 @@ export function AutoPricingBotPanel({
                           </button>
                         </div>
                         <div className="relative">
-                          <Input
-                            type="number"
+                          <CommitNumberInput
                             min={0}
                             value={config.manualSellPriceOverrideRp}
                             onChange={(e) =>
@@ -4991,8 +5129,7 @@ export function AutoPricingBotPanel({
                         </span>
                       </div>
                       <div className="relative">
-                        <Input
-                          type="number"
+                        <CommitNumberInput
                           min={0}
                           value={config.manualSellFloorRp || ""}
                           onChange={(e) => {
@@ -5061,8 +5198,8 @@ export function AutoPricingBotPanel({
                       )}
                     </div>
                     <div className="relative">
-                      <Input
-                        type="number"
+                      <CommitNumberInput
+                        decimal
                         step="any"
                         value={config.manualSellStockUsdt && config.manualSellStockUsdt > 0 ? config.manualSellStockUsdt : ""}
                         onChange={(e) => {
@@ -5102,8 +5239,7 @@ export function AutoPricingBotPanel({
                         <span className="text-[0.65rem] text-muted-foreground font-semibold">
                           Limit Bawah (Min IDR):
                         </span>
-                        <Input
-                          type="number"
+                        <CommitNumberInput
                           min={0}
                           value={config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0 ? config.manualSellMinLimitIdr : ""}
                           onChange={(e) => {
@@ -5124,8 +5260,7 @@ export function AutoPricingBotPanel({
                         <span className="text-[0.65rem] text-muted-foreground font-semibold">
                           Limit Atas (Max IDR):
                         </span>
-                        <Input
-                          type="number"
+                        <CommitNumberInput
                           min={0}
                           value={config.manualSellMaxLimitIdr && config.manualSellMaxLimitIdr > 0 ? config.manualSellMaxLimitIdr : ""}
                           onChange={(e) => {

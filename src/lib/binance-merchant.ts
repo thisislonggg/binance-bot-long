@@ -739,7 +739,13 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
           newPrice = hardMinSell > 0 && botCfg.maxPriceBoundRp < hardMinSell ? hardMinSell : botCfg.maxPriceBoundRp;
         }
       } else {
-        // Proteksi BELI (BUY) - HARD CEILING & FLOOR MUTLAK
+        // Proteksi BELI (BUY) - FLOOR dulu, lalu CEILING (ceiling selalu menang agar tidak membeli kemahalan).
+        // minPriceBoundRp sengaja TIDAK dipakai di sini: engine hanya menerapkannya ke sisi beli bila di
+        // bawah sell floor, dan nilai itu sudah ikut terkirim lewat data.floorPrice.
+        const hardMinBuy = Math.max(data.floorPrice || 0, botCfg.manualBuyFloorRp || 0);
+        if (hardMinBuy > 0 && newPrice < hardMinBuy) {
+          newPrice = hardMinBuy;
+        }
         const hardMaxBuy = Math.min(
           data.ceilingPrice && data.ceilingPrice > 0 ? data.ceilingPrice : 999_999,
           botCfg.manualBuyCeilingRp && botCfg.manualBuyCeilingRp > 0 && botCfg.manualBuyCeilingRp < 999_999
@@ -751,25 +757,17 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
           console.warn(`[BinanceMerchant] Hard ceiling triggered for BUY ad #${cleanAdvNo}: Rp ${newPrice} > Rp ${hardMaxBuy}. Clamped to Rp ${hardMaxBuy}.`);
           newPrice = hardMaxBuy;
         }
-        const hardMinBuy = Math.max(
-          data.floorPrice || 0,
-          botCfg.manualBuyFloorRp || 0,
-          botCfg.minPriceBoundRp || 0
-        );
-        if (hardMinBuy > 0 && newPrice < hardMinBuy) {
-          newPrice = hardMinBuy;
-        }
       }
     } catch {
       // Fallback lokal jika import config gagal
       if ((!isBuy || targetSide === "sell") && data.floorPrice && data.floorPrice > 0 && newPrice < data.floorPrice) {
         newPrice = data.floorPrice;
       } else if (isBuy && targetSide !== "sell") {
-        if (data.ceilingPrice && data.ceilingPrice > 0 && newPrice > data.ceilingPrice) {
-          newPrice = data.ceilingPrice;
-        }
         if (data.floorPrice && data.floorPrice > 0 && newPrice < data.floorPrice) {
           newPrice = data.floorPrice;
+        }
+        if (data.ceilingPrice && data.ceilingPrice > 0 && newPrice > data.ceilingPrice) {
+          newPrice = data.ceilingPrice;
         }
       }
     }
@@ -1370,18 +1368,24 @@ const pushPriceInputSchema = z.object({
   ceilingPrice: z.number().optional(),
   hasActiveOrders: z.boolean().optional(),
   priceOnly: z.boolean().optional(),
+  // Diisi HANYA oleh auto-push loop: push ditolak jika tab/perangkat lain memegang lease runner.
+  runnerId: z.string().min(8).optional(),
 });
 
 export type PushPriceResult = {
   ok: boolean;
   advNo: string;
   side: "buy" | "sell";
+  /** Harga yang benar-benar dikirim ke Binance (setelah clamp server), bukan harga yang diminta. */
   price: number;
-  amountUsdt?: number;
-  maxLimitIdr?: number;
+  requestedPrice?: number | undefined;
+  amountUsdt?: number | undefined;
+  maxLimitIdr?: number | undefined;
   message: string;
-  error?: string;
-  binanceCode?: string | number;
+  error?: string | undefined;
+  /** Kode hasil, mis. "000000" atau "AUTO_OFFLINED_ZERO_STOCK" (iklan di-offline-kan, harga tidak diubah). */
+  code?: string | number | undefined;
+  binanceCode?: string | number | undefined;
   timestamp: number;
 };
 
@@ -1403,20 +1407,35 @@ export const pushPriceToBinanceAd = createServerFn({ method: "POST" })
       };
     }
 
-    const res = await updateMerchantAd({
-      data: {
-        sessionToken: data.sessionToken,
-        advNo: data.advNo,
-        side: data.side,
-        price: data.price,
-        amount: data.amountUsdt,
-        minSingleTransAmount: data.minLimitIdr,
-        maxSingleTransAmount: data.maxLimitIdr,
-        floorPrice: data.floorPrice,
-        ceilingPrice: data.ceilingPrice,
-        hasActiveOrders: data.hasActiveOrders,
-        priceOnly: data.priceOnly,
-      },
+    if (data.runnerId) {
+      const { claimBotRunnerLease } = await import("./background-bot-engine");
+      const lease = await claimBotRunnerLease(data.runnerId);
+      if (!lease.isLeader) {
+        return {
+          ok: false,
+          advNo: data.advNo,
+          side: data.side,
+          price: data.price,
+          message: `Auto-push dibatalkan: bot sedang dijalankan oleh tab/perangkat lain${lease.holder?.label ? ` (${lease.holder.label})` : ""}.`,
+          error: "NOT_RUNNER_LEADER",
+          code: "NOT_RUNNER_LEADER",
+          timestamp: Date.now(),
+        };
+      }
+    }
+
+    // Sesi sudah diverifikasi di atas: panggil fungsi internal langsung (bertipe penuh).
+    const res = await updateMerchantAdInternal({
+      advNo: data.advNo,
+      side: data.side,
+      price: data.price,
+      ...(data.amountUsdt !== undefined ? { amount: data.amountUsdt } : {}),
+      ...(data.minLimitIdr !== undefined ? { minSingleTransAmount: data.minLimitIdr } : {}),
+      ...(data.maxLimitIdr !== undefined ? { maxSingleTransAmount: data.maxLimitIdr } : {}),
+      ...(data.floorPrice !== undefined ? { floorPrice: data.floorPrice } : {}),
+      ...(data.ceilingPrice !== undefined ? { ceilingPrice: data.ceilingPrice } : {}),
+      ...(data.hasActiveOrders !== undefined ? { hasActiveOrders: data.hasActiveOrders } : {}),
+      ...(data.priceOnly !== undefined ? { priceOnly: data.priceOnly } : {}),
     });
 
     const now = Date.now();
@@ -1430,23 +1449,44 @@ export const pushPriceToBinanceAd = createServerFn({ method: "POST" })
         maxLimitIdr: data.maxLimitIdr,
         message: res.message || "Gagal mengubah iklan di Binance C2C",
         error: res.error,
+        code: res.code,
         binanceCode: res.code,
         timestamp: now,
       };
     }
 
-    const sideLabel = data.side === "buy" ? "Beli" : "Jual";
-    const amountStr = data.amountUsdt ? ` | Stok: ${data.amountUsdt} USDT` : "";
-    const limitStr = data.maxLimitIdr ? ` | Max Limit: Rp ${data.maxLimitIdr.toLocaleString("id-ID")}` : "";
+    // Iklan di-offline-kan (stok/kas 0): harga TIDAK diubah, teruskan pesan server apa adanya.
+    if (typeof res.code === "string" && res.code.startsWith("AUTO_OFFLINED")) {
+      return {
+        ok: true,
+        advNo: data.advNo,
+        side: data.side,
+        price: data.price,
+        message: res.message || `Iklan #${data.advNo} di-OFFLINE-kan.`,
+        code: res.code,
+        timestamp: now,
+      };
+    }
+
+    // Server bisa mengubah harga lewat clamp floor/ceiling/bound: laporkan harga yang benar-benar dikirim.
+    const resData = (res.data ?? {}) as { targetPrice?: number };
+    const sentPrice =
+      typeof resData.targetPrice === "number" && resData.targetPrice > 0 ? resData.targetPrice : Math.round(data.price);
+    const clampedNote =
+      sentPrice !== Math.round(data.price)
+        ? ` (diminta Rp ${Math.round(data.price).toLocaleString("id-ID")}, disesuaikan batas pengaman server)`
+        : "";
 
     return {
       ok: true,
       advNo: data.advNo,
       side: data.side,
-      price: data.price,
+      price: sentPrice,
+      requestedPrice: data.price,
       amountUsdt: data.amountUsdt,
       maxLimitIdr: data.maxLimitIdr,
-      message: `Iklan ${sideLabel} (#${data.advNo}) berhasil diupdate: Rp ${Math.round(data.price).toLocaleString("id-ID")}${amountStr}${limitStr}`,
+      message: `${res.message || `Iklan #${data.advNo} berhasil diupdate ke Rp ${sentPrice.toLocaleString("id-ID")}`}${clampedNote}`,
+      code: res.code,
       timestamp: now,
     };
   });

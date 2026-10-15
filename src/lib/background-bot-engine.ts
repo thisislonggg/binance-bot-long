@@ -88,13 +88,18 @@ export async function saveBotConfigServer(config: Partial<CompetitorFilterConfig
   if (!db) return true;
 
   try {
-    await db.from("user_settings").upsert(
+    // supabase-js tidak melempar error saat upsert gagal; error dikembalikan di field `error`.
+    const { error } = await db.from("user_settings").upsert(
       {
         key: "p2p_bot_config",
         value: JSON.stringify(merged),
       },
       { onConflict: "key" },
     );
+    if (error) {
+      console.error("Gagal menyimpan bot config ke Supabase:", error);
+      return false;
+    }
     return true;
   } catch (err) {
     console.error("Gagal menyimpan bot config ke Supabase:", err);
@@ -601,6 +606,99 @@ export const getBotConfigFromServer = createServerFn({ method: "POST" })
     const config = await getBotConfigServer();
     return { ok: true, config };
   });
+
+// ── Kunci Penjalan Tunggal (Single-Runner Lease) ─────────────────────────────
+// Auto-push sekarang berjalan dari dashboard browser. Tanpa kunci ini, setiap tab / HP / jendela
+// Electron yang terbuka menjalankan loop push sendiri dan saling menimpa harga iklan di Binance.
+// Hanya satu runnerId yang memegang lease; lease kedaluwarsa otomatis jika tab ditutup / tertidur.
+
+const RUNNER_LEASE_KEY = "p2p_bot_runner_lease";
+const RUNNER_LEASE_TTL_MS = 20_000;
+
+export type BotRunnerLease = { runnerId: string; label?: string; expiresAt: number };
+
+let inMemoryRunnerLease: BotRunnerLease | null = null;
+
+async function readRunnerLease(): Promise<BotRunnerLease | null> {
+  const db = getSupabase();
+  if (!db) return inMemoryRunnerLease;
+  try {
+    const { data } = await db.from("user_settings").select("value").eq("key", RUNNER_LEASE_KEY).maybeSingle();
+    return data?.value ? (JSON.parse(data.value) as BotRunnerLease) : null;
+  } catch {
+    return inMemoryRunnerLease;
+  }
+}
+
+async function writeRunnerLease(lease: BotRunnerLease): Promise<void> {
+  inMemoryRunnerLease = lease;
+  const db = getSupabase();
+  if (!db) return;
+  await db
+    .from("user_settings")
+    .upsert({ key: RUNNER_LEASE_KEY, value: JSON.stringify(lease) }, { onConflict: "key" });
+}
+
+/**
+ * Ambil / perpanjang lease untuk runnerId. Gagal jika runner lain masih memegang lease yang
+ * belum kedaluwarsa, kecuali takeover = true (pengguna menekan "Ambil Alih").
+ */
+export async function claimBotRunnerLease(
+  runnerId: string,
+  opts: { label?: string; takeover?: boolean } = {},
+): Promise<{ isLeader: boolean; holder: BotRunnerLease | null }> {
+  const now = Date.now();
+  const current = await readRunnerLease();
+  const heldByOther = current && current.runnerId !== runnerId && current.expiresAt > now;
+  if (heldByOther && !opts.takeover) {
+    return { isLeader: false, holder: current };
+  }
+  const lease: BotRunnerLease = { runnerId, expiresAt: now + RUNNER_LEASE_TTL_MS };
+  const label = opts.label ?? (current?.runnerId === runnerId ? current.label : undefined);
+  if (label) lease.label = label;
+  await writeRunnerLease(lease);
+  return { isLeader: true, holder: lease };
+}
+
+export async function releaseBotRunnerLease(runnerId: string): Promise<void> {
+  const current = await readRunnerLease();
+  if (current && current.runnerId === runnerId) {
+    await writeRunnerLease({ ...current, expiresAt: 0 });
+  }
+}
+
+const runnerHeartbeatInputSchema = z.object({
+  sessionToken: z.string().optional(),
+  runnerId: z.string().min(8),
+  label: z.string().max(80).optional(),
+  takeover: z.boolean().optional(),
+  release: z.boolean().optional(),
+});
+
+export const heartbeatBotRunnerServer = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => runnerHeartbeatInputSchema.parse(data))
+  .handler(
+    async ({ data }): Promise<{ ok: boolean; isLeader: boolean; holder: BotRunnerLease | null; message?: string }> => {
+      try {
+        await requireSession(data.sessionToken);
+      } catch {
+        return { ok: false, isLeader: false, holder: null, message: "Sesi tidak terverifikasi." };
+      }
+      if (data.release) {
+        await releaseBotRunnerLease(data.runnerId);
+        return { ok: true, isLeader: false, holder: null };
+      }
+      try {
+        const res = await claimBotRunnerLease(data.runnerId, {
+          ...(data.label ? { label: data.label } : {}),
+          ...(data.takeover ? { takeover: true } : {}),
+        });
+        return { ok: true, ...res };
+      } catch (err) {
+        return { ok: false, isLeader: false, holder: null, message: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
 
 export const triggerBackgroundBotTickServer = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => getConfigInputSchema.parse(data))
