@@ -1450,8 +1450,12 @@ export const getMerchantAdDetail = createServerFn({ method: "POST" })
  * Deduplikasi state in-memory: menyimpan orderNumber yang sudah sukses di-verify
  * agar tidak mengirim request berulang ke Binance SAPI.
  */
-const verifiedKycOrdersSet = new Set<string>();
-const lastKycAttemptTime = new Map<string, number>();
+// Di globalThis agar konsisten walau modul dimuat lebih dari sekali (chunk server function terpisah).
+const kycGlobal = globalThis as typeof globalThis & {
+  __p2pVerifiedKycOrders?: Set<string>;
+  __p2pAutoVerifyStatus?: Map<string, AutoVerifyStatus>;
+};
+const verifiedKycOrdersSet: Set<string> = (kycGlobal.__p2pVerifiedKycOrders ??= new Set<string>());
 
 export function isOrderKycVerified(orderNumber: string): boolean {
   return verifiedKycOrdersSet.has(orderNumber.trim());
@@ -1462,7 +1466,9 @@ export function markOrderKycVerified(orderNumber: string): void {
 }
 
 export function unmarkOrderKycVerified(orderNumber: string): void {
-  if (orderNumber) verifiedKycOrdersSet.delete(orderNumber.trim());
+  if (!orderNumber) return;
+  verifiedKycOrdersSet.delete(orderNumber.trim());
+  autoVerifyStatusMap.delete(orderNumber.trim());
 }
 
 export function getVerifiedKycOrdersSet(): Set<string> {
@@ -1610,188 +1616,202 @@ export async function verifiedAdditionalKyc(
 }
 
 /**
- * Logika Eksekusi Auto-Verify Khusus Order SELL:
- * Menerapkan seluruh aturan keamanan ketat (Critical Constraints):
- *  1. HANYA order SELL (`tradeType === "SELL"`).
- *  2. HANYA order berstatus PENDING / Menunggu Pembayaran (`orderStatus == 1` atau `PAYING`/`TRADING`).
- *  3. HANYA order yang membutuhkan verifikasi tambahan (`additionalKycVerify == 1` atau sinyal liveness selesai).
- *  4. DILARANG KERAS memanggil fungsi releaseCoin (hanya verifiedAdditionalKyc untuk membuka payment details).
- *  5. Deduplikasi in-memory & cooldown anti-spam request.
+ * Status percobaan auto-verify per order (per instance server), ditampilkan di panel verifier
+ * agar merchant bisa melihat kenapa sebuah order belum/sudah dibuka payment details-nya.
+ */
+export type AutoVerifyStatus = {
+  state: "verified" | "waiting" | "failed" | "skipped";
+  message: string;
+  attempts: number;
+  lastAt: number;
+  nextRetryAt?: number;
+};
+
+const autoVerifyStatusMap: Map<string, AutoVerifyStatus> = (kycGlobal.__p2pAutoVerifyStatus ??= new Map());
+
+export function getAutoVerifyStatus(orderNumber: string): AutoVerifyStatus | undefined {
+  return autoVerifyStatusMap.get(orderNumber.trim());
+}
+
+function setAutoVerifyStatus(orderNumber: string, patch: Omit<AutoVerifyStatus, "attempts" | "lastAt"> & { attempts?: number }) {
+  const prev = autoVerifyStatusMap.get(orderNumber);
+  autoVerifyStatusMap.set(orderNumber, {
+    attempts: patch.attempts ?? prev?.attempts ?? 0,
+    lastAt: Date.now(),
+    state: patch.state,
+    message: patch.message,
+    ...(patch.nextRetryAt !== undefined ? { nextRetryAt: patch.nextRetryAt } : {}),
+  });
+}
+
+/** Jeda retry setelah Binance menolak verifiedAdditionalKyc: 15s, 30s, 60s, lalu maks 120s. */
+function autoVerifyRetryDelayMs(failedAttempts: number): number {
+  return Math.min(120_000, 15_000 * 2 ** Math.max(0, failedAttempts - 1));
+}
+
+const AUTO_VERIFY_CANCELLED = (s: string) =>
+  s.includes("CANCEL") || s.includes("BATAL") || s.includes("CLOSE") || s === "5" || s === "6";
+const AUTO_VERIFY_COMPLETED = (s: string) =>
+  s.includes("COMPLET") || s.includes("SUCCESS") || s.includes("FINISH") || s === "4";
+
+/**
+ * Logika Eksekusi Auto-Verify Khusus Order SELL.
+ *
+ * Endpoint verifiedAdditionalKyc adalah tombol "setujui" milik merchant: Binance TIDAK memeriksa
+ * apakah buyer benar-benar sudah lolos liveness. Karena itu jalur otomatis WAJIB memenuhi semua:
+ *  1. Order SELL milik merchant, masih aktif (bukan batal/selesai).
+ *  2. Binance menandai order butuh verifikasi tambahan & belum diverifikasi (additionalKycVerify === 1).
+ *     Nilai resmi: 0 = tidak wajib, 1 = belum diverifikasi, 2 = sudah diverifikasi.
+ *  3. Ada bukti liveness selesai dari sumber tepercaya (kartu sistem chat Binance / webhook ber-secret),
+ *     ditandai pemanggil dengan livenessCompleted === true.
+ *  4. Tidak dalam jeda retry setelah penolakan Binance (backoff 15s → 120s).
+ * Jalur manual (manual === true, tombol merchant) melewati syarat 2–4 tetapi tetap menolak order
+ * yang jelas bukan SELL atau sudah tidak aktif.
+ * DILARANG KERAS memanggil releaseCoin di sini.
  */
 export async function executeAutoVerifyForSellOrder(params: {
   orderNumber: string;
   tradeType?: string;
   orderStatus?: string | number;
-  additionalKycVerify?: number | boolean;
+  additionalKycVerify?: number | boolean | undefined;
   livenessCompleted?: boolean;
+  /** Aksi eksplisit merchant (tombol). */
+  manual?: boolean;
+  /** @deprecated alias lama untuk `manual`. */
   force?: boolean;
 }): Promise<{ ok: boolean; message: string; skipped?: boolean; verified?: boolean }> {
   const cleanOrderNo = params.orderNumber.trim();
   if (!cleanOrderNo) {
     return { ok: false, message: "Nomor order kosong." };
   }
+  const manual = params.manual === true || params.force === true;
 
-  // 1. Cek Deduplikasi: Jika order sudah pernah sukses diverifikasi, lewati (Anti-Spam)
+  // 1. Deduplikasi: sudah sukses diverifikasi sebelumnya
   if (verifiedKycOrdersSet.has(cleanOrderNo)) {
     return {
       ok: true,
       skipped: true,
       verified: true,
-      message: `Order SELL #${cleanOrderNo} sudah diverifikasi sebelumnya (deduplikasi aktif).`,
+      message: `Order SELL #${cleanOrderNo} sudah diverifikasi sebelumnya.`,
     };
   }
 
-  // 2. Cek Cooldown Retry (15 detik) agar tidak membombardir Binance jika liveness belum siap
-  const now = Date.now();
-  const lastAttempt = lastKycAttemptTime.get(cleanOrderNo) || 0;
-  if (!params.force && now - lastAttempt < 15_000) {
+  // 2. Jeda retry setelah penolakan Binance (hanya jalur otomatis)
+  const prevStatus = autoVerifyStatusMap.get(cleanOrderNo);
+  if (!manual && prevStatus?.nextRetryAt && Date.now() < prevStatus.nextRetryAt) {
     return {
       ok: false,
       skipped: true,
       verified: false,
-      message: `Order SELL #${cleanOrderNo} sedang dalam cooldown retry (${Math.round((15_000 - (now - lastAttempt)) / 1000)}s).`,
+      message: `Order SELL #${cleanOrderNo} menunggu jeda retry (${Math.ceil((prevStatus.nextRetryAt - Date.now()) / 1000)}s).`,
     };
   }
-  lastKycAttemptTime.set(cleanOrderNo, now);
 
-  // 3. Validasi Kriteria Keamanan:
-  // Jika detail order belum lengkap, ambil langsung detail terkini dari Binance SAPI
+  // 3. Lengkapi data order dari Binance bila belum diketahui
   let tradeType = (params.tradeType || "").toUpperCase();
   let statusStr = String(params.orderStatus ?? "").toUpperCase();
-  let additionalKyc = params.additionalKycVerify;
+  let additionalKyc: number | undefined =
+    params.additionalKycVerify === undefined ? undefined : Number(params.additionalKycVerify);
 
-  if (!tradeType || !statusStr) {
+  if (!tradeType || !statusStr || additionalKyc === undefined || Number.isNaN(additionalKyc)) {
     try {
       const detailRes = await getUserOrderDetail(cleanOrderNo);
       if (detailRes.ok && detailRes.data) {
-        const d = (detailRes.data.data || detailRes.data) as Record<string, unknown>;
-        tradeType = String(d["tradeType"] || tradeType).toUpperCase();
-        statusStr = String(d["orderStatus"] || statusStr).toUpperCase();
-        if (additionalKyc === undefined && d["additionalKycVerify"] !== undefined) {
+        const d = (detailRes.data["data"] || detailRes.data) as Record<string, unknown>;
+        if (!tradeType && d["tradeType"]) tradeType = String(d["tradeType"]).toUpperCase();
+        if (!statusStr && d["orderStatus"] !== undefined) statusStr = String(d["orderStatus"]).toUpperCase();
+        if ((additionalKyc === undefined || Number.isNaN(additionalKyc)) && d["additionalKycVerify"] !== undefined) {
           additionalKyc = Number(d["additionalKycVerify"]);
         }
       }
     } catch {
-      // Lanjutkan dengan parameter yang ada jika fetch detail gagal
+      // Lanjutkan dengan data yang ada
     }
   }
 
-  // KONSISTENSI KEAMANAN 1: HANYA proses order SELL
+  // 4. Binance sudah menandai terverifikasi: tidak perlu memanggil API lagi
+  if (additionalKyc === 2) {
+    verifiedKycOrdersSet.add(cleanOrderNo);
+    setAutoVerifyStatus(cleanOrderNo, { state: "verified", message: "Binance: additional KYC sudah terverifikasi." });
+    return { ok: true, skipped: true, verified: true, message: `Order #${cleanOrderNo} sudah terverifikasi di Binance.` };
+  }
+
+  const hold = (message: string) => {
+    setAutoVerifyStatus(cleanOrderNo, { state: "waiting", message });
+    return { ok: false, skipped: true, verified: false, message };
+  };
+  const reject = (message: string) => {
+    setAutoVerifyStatus(cleanOrderNo, { state: "skipped", message });
+    return { ok: false, skipped: true, verified: false, message };
+  };
+
+  // KEAMANAN 1: HANYA order SELL (jalur otomatis menolak jika jenis order tidak diketahui)
   if (tradeType && tradeType !== "SELL") {
-    return {
-      ok: false,
-      skipped: true,
-      message: `[KEAMANAN] Order #${cleanOrderNo} bukan order SELL (${tradeType}). Auto-verify additional KYC hanya berlaku untuk order SELL.`,
-    };
+    return reject(`[KEAMANAN] Order #${cleanOrderNo} bukan order SELL (${tradeType}).`);
+  }
+  if (!tradeType && !manual) {
+    return hold(`Jenis order #${cleanOrderNo} belum bisa dipastikan dari Binance. Auto-verify ditahan.`);
   }
 
-  // KONSISTENSI KEAMANAN 2: HANYA proses order berstatus PENDING / Menunggu Pembayaran (status 1)
-  // Jangan proses order yang sudah dibatalkan atau selesai
-  const isCancelled =
-    statusStr.includes("CANCEL") ||
-    statusStr.includes("BATAL") ||
-    statusStr.includes("CLOSE") ||
-    statusStr === "5" ||
-    statusStr === "6";
-  const isCompleted =
-    statusStr.includes("COMPLET") ||
-    statusStr.includes("SUCCESS") ||
-    statusStr.includes("FINISH") ||
-    statusStr === "4";
-
-  if (isCancelled || isCompleted) {
-    return {
-      ok: false,
-      skipped: true,
-      message: `[KEAMANAN] Order #${cleanOrderNo} berstatus ${statusStr}. Auto-verify dibatalkan karena order sudah tidak aktif.`,
-    };
+  // KEAMANAN 2: order masih aktif
+  if (AUTO_VERIFY_CANCELLED(statusStr) || AUTO_VERIFY_COMPLETED(statusStr)) {
+    return reject(`[KEAMANAN] Order #${cleanOrderNo} berstatus ${statusStr}. Auto-verify dibatalkan karena order sudah tidak aktif.`);
   }
 
-  // Status pending di Binance P2P adalah 1, PAYING, TRADING, atau PENDING
-  const isPending =
-    statusStr === "1" ||
-    statusStr === "PAYING" ||
-    statusStr === "TRADING" ||
-    statusStr === "PENDING" ||
-    statusStr === "" ||
-    params.force;
+  if (!manual) {
+    // KEAMANAN 3: Binance harus menandai order butuh verifikasi tambahan yang belum disetujui
+    if (additionalKyc === 0) {
+      return reject(`Order #${cleanOrderNo} tidak membutuhkan verifikasi tambahan (additionalKycVerify = 0).`);
+    }
+    if (additionalKyc !== 1) {
+      return hold(`Status additional KYC order #${cleanOrderNo} belum diketahui dari Binance. Auto-verify ditahan.`);
+    }
 
-  if (!isPending) {
-    return {
-      ok: false,
-      skipped: true,
-      message: `Order #${cleanOrderNo} status bukan PENDING (${statusStr}).`,
-    };
-  }
-
-  // KONSISTENSI KEAMANAN 3: Membutuhkan verifikasi tambahan
-  if (!params.force && additionalKyc !== undefined) {
-    const kycNum = Number(additionalKyc);
-    if (kycNum === 0) {
-      return {
-        ok: false,
-        skipped: true,
-        message: `Order #${cleanOrderNo} tidak membutuhkan verifikasi tambahan (additionalKycVerify = 0).`,
-      };
+    // KEAMANAN 4 (CRITICAL): bukti liveness selesai dari sumber tepercaya
+    if (params.livenessCompleted !== true) {
+      return hold(`Menunggu buyer menyelesaikan liveness check (kartu "Completed" dari Binance).`);
     }
   }
 
-  // KONSISTENSI KEAMANAN 4 (CRITICAL): Liveness check pembeli WAJIB sudah selesai (Status: Completed)
-  // DILARANG KERAS auto-verify jika pembeli belum menyelesaikan verifikasi wajah di Binance!
-  // Fungsi ini HANYA dieksekusi jika:
-  // - Pesan chat liveness selesai terdeteksi (livenessCompleted === true), ATAU
-  // - Detail order dari Binance SAPI berstatus lolos (additionalKycVerify === 2 atau status Passed/Completed), ATAU
-  // - Merchant menekan tombol manual (force === true)
-  const isLivenessTrulyDone =
-    params.livenessCompleted === true ||
-    params.force === true ||
-    Number(params.additionalKycVerify) === 2 ||
-    Number(additionalKyc) === 2;
-
-  if (!isLivenessTrulyDone) {
-    return {
-      ok: false,
-      skipped: true,
-      verified: false,
-      message: `[KEAMANAN] Order #${cleanOrderNo} ditahan karena belum ada bukti liveness check selesai dari buyer. Auto-verify HANYA dieksekusi setelah pesan chat Completed terdeteksi, SAPI Binance menyatakan lolos KYC, atau tombol verifikasi manual ditekan.`,
-    };
-  }
-
-  // 4. Eksekusi Panggilan API verifiedAdditionalKyc (TIDAK ADA RELEASE COIN!)
-  // Endpoint ini HANYA membuka payment details ke buyer jika buyer sudah menyelesaikan liveness di Binance.
-  // Jika buyer belum selesai liveness di Binance, Binance akan menolak secara aman.
+  // 5. Eksekusi verifiedAdditionalKyc (TIDAK ADA RELEASE COIN!)
   try {
     const res = await verifiedAdditionalKyc(cleanOrderNo);
 
     if (res.ok && (res.code === "000000" || res.code === "0" || res.data?.success !== false)) {
-      // Simpan di deduplikasi cache agar tidak dipanggil ulang
       verifiedKycOrdersSet.add(cleanOrderNo);
-
-      // Log sukses sesuai spesifikasi
+      setAutoVerifyStatus(cleanOrderNo, {
+        state: "verified",
+        message: "Payment details berhasil dibuka ke buyer.",
+        attempts: (prevStatus?.attempts ?? 0) + 1,
+      });
       console.log(`[AUTO-VERIFY] Order SELL ${cleanOrderNo} berhasil diverifikasi. Payment details telah dibuka ke buyer.`);
-
       return {
         ok: true,
         verified: true,
         message: `[AUTO-VERIFY] Order SELL ${cleanOrderNo} berhasil diverifikasi. Payment details telah dibuka ke buyer.`,
       };
-    } else {
-      // Tangkap error dengan tenang (silent/debug log) tanpa menghentikan loop bot
-      const errMsg = res.message || res.error || "Buyer belum menyelesaikan verifikasi liveness di Binance";
-      console.debug(`[AUTO-VERIFY] Order SELL ${cleanOrderNo} belum siap atau belum lolos: ${errMsg} (code: ${res.code})`);
-      return {
-        ok: false,
-        verified: false,
-        message: errMsg,
-      };
     }
+
+    const attempts = (prevStatus?.attempts ?? 0) + 1;
+    const errMsg = res.message || res.error || "Binance menolak verifikasi";
+    const nextRetryAt = Date.now() + autoVerifyRetryDelayMs(attempts);
+    setAutoVerifyStatus(cleanOrderNo, {
+      state: "failed",
+      message: `Binance menolak (kode ${res.code ?? "?"}): ${errMsg}`,
+      attempts,
+      nextRetryAt,
+    });
+    console.warn(`[AUTO-VERIFY] Order SELL ${cleanOrderNo} ditolak Binance (percobaan ${attempts}): ${errMsg} (code: ${res.code})`);
+    return { ok: false, verified: false, message: errMsg };
   } catch (err) {
-    console.debug(`[AUTO-VERIFY] Exception pada order ${cleanOrderNo}:`, err);
-    return {
-      ok: false,
-      verified: false,
+    const attempts = (prevStatus?.attempts ?? 0) + 1;
+    setAutoVerifyStatus(cleanOrderNo, {
+      state: "failed",
       message: `Exception: ${String(err)}`,
-    };
+      attempts,
+      nextRetryAt: Date.now() + autoVerifyRetryDelayMs(attempts),
+    });
+    return { ok: false, verified: false, message: `Exception: ${String(err)}` };
   }
 }
 
@@ -1815,9 +1835,10 @@ export const verifyAdditionalKycOrder = createServerFn({ method: "POST" })
       };
     }
 
+    // Tombol merchant: aksi manual eksplisit
     const res = await executeAutoVerifyForSellOrder({
       orderNumber: data.orderNumber,
-      force: data.force ?? true,
+      manual: data.force ?? true,
     });
 
     return {

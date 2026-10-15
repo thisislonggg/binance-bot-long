@@ -40,9 +40,40 @@ export type OrderLivenessRecord = {
   verificationTimeText?: string;
   requester?: string;
   counterPartNickName?: string;
-  source: "binance_chat_ws" | "chat_paste" | "manual_click" | "webhook";
+  source: "binance_chat_ws" | "chat_paste" | "manual_click" | "webhook" | "binance_kyc" | "auto_buyer_payed";
+  /** true = sinyal berasal dari sumber yang tidak bisa dipalsukan buyer (kartu sistem Binance, merchant, webhook ber-secret). */
+  trusted?: boolean;
   rawSnippet?: string;
 };
+
+/** Hanya record tepercaya yang boleh memicu auto-verify (membuka payment details ke buyer). */
+export function isTrustedLivenessRecord(record: OrderLivenessRecord | undefined): boolean {
+  if (!record || record.status !== "COMPLETED") return false;
+  return record.trusted === true || record.source === "manual_click";
+}
+
+/**
+ * Tipe pesan chat yang isinya diketik bebas oleh manusia (buyer / merchant). Pesan liveness
+ * dengan tipe ini TIDAK dipercaya: buyer bisa mengetik "Verifikasi wajah ... Status: Completed"
+ * untuk memancing bot membuka payment details tanpa benar-benar lolos verifikasi wajah.
+ */
+const USER_CHAT_MESSAGE_TYPES = new Set([
+  "",
+  "text",
+  "image",
+  "video",
+  "file",
+  "voice",
+  "audio",
+  "sticker",
+  "emoji",
+  "auto_reply",
+]);
+
+export function isTrustedChatEnvelope(messageType: string | undefined, fromSelf: boolean | undefined): boolean {
+  if (fromSelf === true) return false;
+  return !USER_CHAT_MESSAGE_TYPES.has(String(messageType || "").trim().toLowerCase());
+}
 
 export type ParsedLivenessMessage = {
   isLivenessMessage: boolean;
@@ -114,14 +145,18 @@ export function parseLivenessChatMessage(text: string): ParsedLivenessMessage {
   // Jika status secara eksplisit PENDING / WAITING / FAILED / MENUNGGU, MAKA WAJIB BELUM SELESAI!
   const isExplicitPending = /pending|menunggu|waiting|unverified|proses|process/i.test(statusStr);
   const isExplicitFailed = /failed|gagal|rejected|ditolak/i.test(statusStr);
-  const isExplicitCompleted = /completed|selesai|passed|approved|lolos|success/i.test(statusStr);
+  // Kata status harus utuh: "Uncompleted" / "Incomplete" TIDAK dianggap selesai.
+  const isExplicitCompleted = /^(completed|complete|selesai|passed|approved|lolos|success|successful|berhasil)$/i.test(statusStr);
+  // Negasi sebelum kata status ("Status: Not completed", "Status: Belum selesai") menggagalkan status.
+  const isNegatedStatus = /status[*:\s]+(not|belum|tidak)\b/i.test(clean);
 
-  // isCompleted HANYA true jika statusStr adalah completed dan TIDAK pending/failed
-  let isCompleted = isExplicitCompleted && !isExplicitPending && !isExplicitFailed;
+  // isCompleted HANYA true jika statusStr adalah completed dan TIDAK pending/failed/negasi
+  let isCompleted = isExplicitCompleted && !isExplicitPending && !isExplicitFailed && !isNegatedStatus;
 
   // Fallback: jika tidak ada kata status spesifik, cek kata kelulusan tanpa indikasi pending/failed
   if (!statusMatch) {
-    const hasPendingWords = /\b(pending|menunggu|waiting|unverified|proses)\b/i.test(clean);
+    const hasPendingWords =
+      /\b(pending|menunggu|waiting|unverified|proses|failed|gagal|not|belum|tidak|incomplete|uncompleted)\b/i.test(clean);
     const hasCompletedWords = /\b(completed|selesai|passed|approved|lolos|success|terverifikasi)\b/i.test(clean);
     if (hasCompletedWords && !hasPendingWords) {
       isCompleted = true;
@@ -172,7 +207,13 @@ export function parseLivenessChatMessage(text: string): ParsedLivenessMessage {
 }
 
 // ── In-Memory Cache Fallback (Aktif saat Supabase offline atau belum dikonfigurasi) ─
-const inMemoryLivenessRecords: Record<string, OrderLivenessRecord> = {};
+// Disimpan di globalThis: TanStack Start memecah server function ke chunk terpisah sehingga modul ini
+// bisa dimuat lebih dari sekali dalam satu proses. Tanpa ini, record yang disimpan handler chat tidak
+// terlihat oleh polling getVerifierState (dan auto-verify tidak pernah dicoba ulang).
+const livenessGlobal = globalThis as typeof globalThis & {
+  __p2pLivenessRecords?: Record<string, OrderLivenessRecord>;
+};
+const inMemoryLivenessRecords: Record<string, OrderLivenessRecord> = (livenessGlobal.__p2pLivenessRecords ??= {});
 let inMemorySettings: VerifierSettings = { ...DEFAULT_VERIFIER_SETTINGS };
 
 // ── Helper DB Internal: Ambil & Simpan Riwayat Liveness ──────────────────────
@@ -417,13 +458,19 @@ const processLivenessChatMessageSchema = z.object({
   orderNumberHint: z.string().optional(),
   counterPartNickNameHint: z.string().optional(),
   source: z.enum(["binance_chat_ws", "chat_paste", "manual_click", "webhook"]).default("chat_paste"),
+  // Metadata amplop pesan WebSocket Binance (bukan isi yang bisa diketik buyer)
+  messageType: z.string().max(40).optional(),
+  fromSelf: z.boolean().optional(),
+  envelopeOrderNo: z.string().max(40).optional(),
 });
 
 export type ProcessChatMessageResult = {
   ok: boolean;
   isLiveness: boolean;
   isCompleted: boolean;
-  orderNumber?: string;
+  /** Pesan mirip liveness "Completed" tetapi dari sumber yang bisa dipalsukan buyer: tidak diproses. */
+  untrusted?: boolean;
+  orderNumber?: string | undefined;
   record?: OrderLivenessRecord;
   message: string;
 };
@@ -454,7 +501,7 @@ export const processLivenessChatMessage = createServerFn({ method: "POST" })
       };
     }
 
-    const orderNumber = parsed.orderNumber || data.orderNumberHint;
+    const orderNumber = parsed.orderNumber || data.orderNumberHint || data.envelopeOrderNo;
     if (!orderNumber) {
       return {
         ok: false,
@@ -464,14 +511,38 @@ export const processLivenessChatMessage = createServerFn({ method: "POST" })
       };
     }
 
+    // KEAMANAN: pesan dari WebSocket hanya dipercaya jika berupa kartu/sistem Binance (bukan teks
+    // yang diketik buyer), dan nomor order di isi pesan sama dengan order tempat pesan itu dikirim.
+    if (data.source === "binance_chat_ws") {
+      const envelopeMismatch =
+        Boolean(data.envelopeOrderNo && parsed.orderNumber) && data.envelopeOrderNo !== parsed.orderNumber;
+      if (!isTrustedChatEnvelope(data.messageType, data.fromSelf) || envelopeMismatch) {
+        console.warn(
+          `[LIVENESS] Pesan liveness 'Completed' untuk order #${orderNumber} DIABAIKAN (tipe=${data.messageType || "?"}, self=${String(data.fromSelf)}, orderAmplop=${data.envelopeOrderNo || "-"}).`,
+        );
+        return {
+          ok: false,
+          isLiveness: true,
+          isCompleted: true,
+          untrusted: true,
+          orderNumber,
+          message: envelopeMismatch
+            ? `Pesan liveness menyebut order #${orderNumber} tetapi dikirim di chat order lain. Diabaikan demi keamanan.`
+            : `Pesan liveness "Completed" untuk order #${orderNumber} dikirim sebagai pesan chat biasa (tipe: ${data.messageType || "tidak diketahui"}), bukan kartu sistem Binance. Bisa jadi diketik buyer, jadi TIDAK diproses otomatis. Periksa di Binance lalu verifikasi manual bila memang selesai.`,
+        };
+      }
+    }
+
     const newRecord: OrderLivenessRecord = {
       orderNumber,
       status: "COMPLETED",
       verifiedAt: new Date().toISOString(),
       verificationTimeText: parsed.verificationTime || new Date().toLocaleString("id-ID"),
       requester: parsed.requester || "Merchant",
-      counterPartNickName: data.counterPartNickNameHint,
+      ...(data.counterPartNickNameHint ? { counterPartNickName: data.counterPartNickNameHint } : {}),
       source: data.source,
+      // Kartu sistem Binance (lolos cek di atas) atau teks yang ditempel sendiri oleh merchant
+      trusted: data.source === "binance_chat_ws" || data.source === "chat_paste" || data.source === "manual_click",
       rawSnippet: data.chatText.slice(0, 300),
     };
 
@@ -480,17 +551,24 @@ export const processLivenessChatMessage = createServerFn({ method: "POST" })
     // Kirim notifikasi WA / Telegram
     await notifyLivenessCompleted(newRecord);
 
-    // Eksekusi Auto-Verify ke Binance SAPI untuk membuka payment details ke buyer (khusus order SELL pending)
+    // Eksekusi Auto-Verify ke Binance SAPI untuk membuka payment details ke buyer (khusus order SELL pending).
+    // Mengikuti sakelar liveness & auto-verify di pengaturan; syarat keamanan dicek di executeAutoVerifyForSellOrder.
     let autoVerifyNote = "";
     try {
-      const { executeAutoVerifyForSellOrder } = await import("./binance-merchant");
-      const kycRes = await executeAutoVerifyForSellOrder({
-        orderNumber,
-        livenessCompleted: true,
-        force: true,
-      });
-      if (kycRes.ok && !kycRes.skipped) {
-        autoVerifyNote = " Detail rekening pembayaran telah berhasil dibuka ke buyer di Binance.";
+      const settings = await getVerifierSettingsInternal();
+      if (settings.liveness_enabled !== false && settings.auto_verify_on_buyer_payed !== false) {
+        const { executeAutoVerifyForSellOrder } = await import("./binance-merchant");
+        const kycRes = await executeAutoVerifyForSellOrder({
+          orderNumber,
+          livenessCompleted: true,
+        });
+        if (kycRes.verified && !kycRes.skipped) {
+          autoVerifyNote = " Detail rekening pembayaran telah berhasil dibuka ke buyer di Binance.";
+        } else if (!kycRes.verified) {
+          autoVerifyNote = ` Auto-verify: ${kycRes.message}`;
+        }
+      } else {
+        autoVerifyNote = " Auto-verify nonaktif di pengaturan.";
       }
     } catch (err) {
       console.debug("[AUTO-VERIFY] Error saat panggil executeAutoVerifyForSellOrder:", err);
@@ -534,21 +612,22 @@ export const setOrderLivenessStatus = createServerFn({ method: "POST" })
       verifiedAt: new Date().toISOString(),
       verificationTimeText: new Date().toLocaleString("id-ID"),
       requester: "Merchant (Manual Auto-Verif)",
-      counterPartNickName: data.counterPartNickName,
+      ...(data.counterPartNickName ? { counterPartNickName: data.counterPartNickName } : {}),
       source: "manual_click",
+      trusted: true,
     };
 
     await saveLivenessRecordInternal(newRecord);
     await notifyLivenessCompleted(newRecord);
 
     let kycMsg = "Order berhasil diverifikasi & notifikasi terkirim.";
-    // Eksekusi auto-verify ke Binance SAPI untuk membuka payment details
+    // Tombol merchant: buka payment details secara manual (melewati syarat sinyal otomatis)
     try {
       const { executeAutoVerifyForSellOrder } = await import("./binance-merchant");
       const kycRes = await executeAutoVerifyForSellOrder({
         orderNumber: data.orderNumber,
         livenessCompleted: true,
-        force: true,
+        manual: true,
       });
       if (kycRes.message) {
         kycMsg = kycRes.message;
@@ -559,7 +638,12 @@ export const setOrderLivenessStatus = createServerFn({ method: "POST" })
   });
 
 // ── Webhook Handler untuk Integrasi Eksternal ────────────────────────────────
-export async function handleIncomingChatMessageWebhook(body: any): Promise<any> {
+/**
+ * Webhook publik: siapa pun yang tahu URL-nya bisa mengirim teks. Hanya request yang membawa
+ * WEBHOOK_SECRET yang benar (opts.trusted, dicek di src/server.ts) boleh memicu auto-verify.
+ * Tanpa secret, pesan hanya dicatat sebagai sinyal TIDAK tepercaya (payment details tidak dibuka).
+ */
+export async function handleIncomingChatMessageWebhook(body: any, opts: { trusted?: boolean } = {}): Promise<any> {
   const text = typeof body?.text === "string" ? body.text : typeof body?.content === "string" ? body.content : "";
   const orderNumber = String(body?.orderNo || body?.orderNumber || "");
 
@@ -584,25 +668,43 @@ export async function handleIncomingChatMessageWebhook(body: any): Promise<any> 
     verificationTimeText: parsed.verificationTime || new Date().toLocaleString("id-ID"),
     requester: parsed.requester || "Merchant",
     source: "webhook",
+    trusted: opts.trusted === true,
     rawSnippet: text.slice(0, 300),
   };
+
+  if (!opts.trusted) {
+    // Jangan tandai COMPLETED dan jangan kirim notifikasi "buyer lolos" dari sumber yang tidak terautentikasi
+    console.warn(`[LIVENESS] Webhook liveness tanpa WEBHOOK_SECRET yang valid untuk order #${finalOrderNo} diabaikan.`);
+    return {
+      ok: false,
+      error: "UNTRUSTED_WEBHOOK",
+      message:
+        "Webhook liveness ditolak: sertakan ?secret=<WEBHOOK_SECRET> atau header x-webhook-secret. Payment details TIDAK dibuka.",
+    };
+  }
 
   await saveLivenessRecordInternal(newRecord);
   await notifyLivenessCompleted(newRecord);
 
-  // Eksekusi auto-verify ke Binance SAPI
+  // Eksekusi auto-verify ke Binance SAPI (syarat keamanan dicek di dalam fungsi)
+  let verifyMessage = "";
   try {
-    const { executeAutoVerifyForSellOrder } = await import("./binance-merchant");
-    await executeAutoVerifyForSellOrder({
-      orderNumber: finalOrderNo,
-      livenessCompleted: true,
-      force: true,
-    });
+    const settings = await getVerifierSettingsInternal();
+    if (settings.liveness_enabled !== false && settings.auto_verify_on_buyer_payed !== false) {
+      const { executeAutoVerifyForSellOrder } = await import("./binance-merchant");
+      const res = await executeAutoVerifyForSellOrder({
+        orderNumber: finalOrderNo,
+        livenessCompleted: true,
+      });
+      verifyMessage = res.message;
+    } else {
+      verifyMessage = "Auto-verify nonaktif di pengaturan.";
+    }
   } catch {}
 
   return {
     ok: true,
-    message: `Order #${finalOrderNo} verifikasi wajah tercatat & payment details dibuka`,
+    message: `Order #${finalOrderNo} verifikasi wajah tercatat. ${verifyMessage}`.trim(),
     record: newRecord,
   };
 }

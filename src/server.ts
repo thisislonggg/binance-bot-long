@@ -48,6 +48,15 @@ import { handleIncomingBankNotificationWebhook } from "./lib/payment-verifier";
 import { handleIncomingChatMessageWebhook } from "./lib/liveness-verifier";
 import { runBackgroundBotTick } from "./lib/background-bot-engine";
 
+/** Bandingkan secret webhook secara waktu-konstan. Tanpa env WEBHOOK_SECRET, tidak ada request yang dipercaya. */
+function isValidWebhookSecret(provided: string | null): boolean {
+  const expected = process.env["WEBHOOK_SECRET"];
+  if (!expected || !provided || provided.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ provided.charCodeAt(i);
+  return diff === 0;
+}
+
 // Catatan: Cron background auto-pricing loop pada server telah dinonaktifkan permanen sesuai permintaan pengguna demi keamanan harga.
 // Auto-pricing sepenuhnya berjalan aman langsung dari dashboard browser pengguna.
 
@@ -108,10 +117,14 @@ export default {
       }
 
       // Webhook Penerima Pesan Chat Binance / Verifikasi Wajah Liveness
+      // Hanya request dengan WEBHOOK_SECRET yang benar yang boleh membuka payment details ke buyer.
       if (url.pathname === "/api/webhook/binance-chat" || url.pathname === "/api/webhook/liveness") {
+        const trusted = isValidWebhookSecret(
+          request.headers.get("x-webhook-secret") || url.searchParams.get("secret"),
+        );
         if (request.method === "POST") {
           const body = await request.json().catch(() => ({}));
-          const result = await handleIncomingChatMessageWebhook(body);
+          const result = await handleIncomingChatMessageWebhook(body, { trusted });
           return new Response(JSON.stringify(result), {
             status: 200,
             headers: { "content-type": "application/json" },
@@ -120,7 +133,7 @@ export default {
         if (request.method === "GET") {
           const text = url.searchParams.get("text") || url.searchParams.get("content") || "";
           const orderNo = url.searchParams.get("orderNo") || url.searchParams.get("orderNumber") || undefined;
-          const result = await handleIncomingChatMessageWebhook({ text, orderNo });
+          const result = await handleIncomingChatMessageWebhook({ text, orderNo }, { trusted });
           return new Response(JSON.stringify(result), {
             status: 200,
             headers: { "content-type": "application/json" },

@@ -6,7 +6,6 @@ import {
   getBinanceChatCredentials,
   parseLivenessChatMessage,
   processLivenessChatMessage,
-  setOrderLivenessStatus,
 } from "@/lib/liveness-verifier";
 import { getVerifierState } from "@/lib/payment-verifier";
 
@@ -62,7 +61,7 @@ function playLivenessChime() {
 export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string | null }) {
   const queryClient = useQueryClient();
   const previouslyVerifiedOrders = useRef<Set<string>>(getLocalVerifiedOrders());
-  const triggeringOrders = useRef<Set<string>>(new Set());
+  const notifiedFailures = useRef<Set<string>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<any>(null);
   const reconnectTimeoutRef = useRef<any>(null);
@@ -77,85 +76,39 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
 
   const livenessEnabled = verifierQuery.data?.settings?.liveness_enabled !== false;
 
-  // Mutasi setel status liveness jika terdeteksi order aktif yang belum terverifikasi
-  const setStatusMutation = useMutation({
-    mutationFn: (args: { orderNumber: string; completed: boolean; counterPartNickName?: string }) =>
-      setOrderLivenessStatus({
-        data: {
-          sessionToken: sessionToken ?? undefined,
-          orderNumber: args.orderNumber,
-          completed: args.completed,
-          counterPartNickName: args.counterPartNickName,
-        },
-      }),
-    onSuccess: (res) => {
-      if (res.completed) {
-        saveLocalVerifiedOrder(res.orderNumber);
-        queryClient.invalidateQueries({ queryKey: ["payment-verifier-state"] });
-      }
-    },
-  });
-
-  // Watchdog: Pantau perubahan status auto-verifikasi order & eksekusi auto-verif
+  // Watchdog: hanya MEMANTAU & memberi notifikasi. Keputusan auto-verify sepenuhnya di server
+  // (getVerifierState), yang menegakkan syarat keamanan & sakelar pengaturan.
   useEffect(() => {
     const orders = verifierQuery.data?.activeOrders;
     if (!orders || !Array.isArray(orders)) return;
-
-    const settings = verifierQuery.data?.settings;
-    const isAutoVerify = settings?.auto_verify_on_buyer_payed !== false;
-    const verifyMode = settings?.auto_verify_mode || "all_active";
+    const sound = verifierQuery.data?.settings?.sound_enabled ?? true;
 
     for (const ord of orders) {
-      if (ord.livenessVerified) {
-        if (!previouslyVerifiedOrders.current.has(ord.orderNumber)) {
-          previouslyVerifiedOrders.current.add(ord.orderNumber);
-          saveLocalVerifiedOrder(ord.orderNumber);
+      const shortNo = ord.orderNumber.length > 8 ? ord.orderNumber.slice(-8) : ord.orderNumber;
 
-          const sound = settings?.sound_enabled ?? true;
-          if (sound) playLivenessChime();
+      // Payment details benar-benar terbuka (Binance / server mengonfirmasi verifikasi)
+      if (ord.kycVerifiedInBinance && !previouslyVerifiedOrders.current.has(ord.orderNumber)) {
+        previouslyVerifiedOrders.current.add(ord.orderNumber);
+        saveLocalVerifiedOrder(ord.orderNumber);
+        if (sound) playLivenessChime();
+        toast.success(
+          `✅ Order #${shortNo} (@${ord.counterPartNickName}): buyer lolos liveness & payment details terbuka.`,
+          { duration: 8000 },
+        );
+        continue;
+      }
 
-          const shortNo = ord.orderNumber.length > 8 ? ord.orderNumber.slice(-8) : ord.orderNumber;
-          toast.success(
-            `✅ Order #${shortNo} (@${ord.counterPartNickName}) Berhasil Di-Auto-Verifikasi! Buyer Lolos Liveness & Payment Details Terbuka.`,
-            { duration: 8000 }
-          );
-        }
-      } else if (livenessEnabled && isAutoVerify && !triggeringOrders.current.has(ord.orderNumber)) {
-        // 1. Jika order memiliki Additional KYC dan Binance sudah menandai lolos (additionalKycVerify === 2)
-        if (ord.additionalKycVerify === 2) {
-          triggeringOrders.current.add(ord.orderNumber);
-          saveLocalVerifiedOrder(ord.orderNumber);
-          setStatusMutation.mutate({
-            orderNumber: ord.orderNumber,
-            completed: true,
-            counterPartNickName: ord.counterPartNickName,
-          });
-          continue;
-        }
-
-        // 2. Order SELL yang masih dalam proses bayar (pending/paying/trading):
-        // DILARANG KERAS auto-verifikasi sebelum buyer selesai liveness di Binance!
-        // Verifikasi otomatis HANYA terjadi saat pesan chat "Completed" masuk melalui WebSocket,
-        // ATAU saat status berubah menjadi BUYER_PAYED (jika mode buyer_payed dipilih).
-        const statusUpper = (ord.orderStatus || "").toUpperCase();
-        const isBuyerPayed =
-          statusUpper.includes("PAYED") ||
-          statusUpper.includes("PAID") ||
-          statusUpper.includes("RELEASE") ||
-          statusUpper === "2";
-
-        if (verifyMode === "buyer_payed" && isBuyerPayed) {
-          triggeringOrders.current.add(ord.orderNumber);
-          saveLocalVerifiedOrder(ord.orderNumber);
-          setStatusMutation.mutate({
-            orderNumber: ord.orderNumber,
-            completed: true,
-            counterPartNickName: ord.counterPartNickName,
-          });
+      // Binance menolak verifikasi: beri tahu sekali per percobaan
+      const av = ord.autoVerify;
+      if (av?.state === "failed") {
+        const key = `${ord.orderNumber}:${av.attempts}`;
+        if (!notifiedFailures.current.has(key)) {
+          notifiedFailures.current.add(key);
+          toast.error(`Auto-verify order #${shortNo} gagal: ${av.message}`, { duration: 10000 });
         }
       }
     }
-  }, [verifierQuery.data?.activeOrders, verifierQuery.data?.settings, livenessEnabled]);
+  }, [verifierQuery.data?.activeOrders, verifierQuery.data?.settings]);
 
   // 2. Kredensial WebSocket Chat Binance SAPI
   const chatCredsQuery = useQuery({
@@ -168,20 +121,30 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
 
   // Mutasi memproses pesan chat dari WebSocket
   const processChatMutation = useMutation({
-    mutationFn: (args: { chatText: string; orderNumberHint?: string; source?: any }) =>
+    mutationFn: (args: {
+      chatText: string;
+      orderNumberHint?: string;
+      messageType?: string;
+      fromSelf?: boolean;
+      envelopeOrderNo?: string;
+    }) =>
       processLivenessChatMessage({
         data: {
           sessionToken: sessionToken ?? undefined,
           chatText: args.chatText,
           orderNumberHint: args.orderNumberHint,
-          source: args.source || "binance_chat_ws",
+          source: "binance_chat_ws",
+          messageType: args.messageType,
+          fromSelf: args.fromSelf,
+          envelopeOrderNo: args.envelopeOrderNo,
         },
       }),
     onSuccess: (res) => {
+      if (res.untrusted) {
+        toast.warning(res.message, { duration: 12000 });
+        return;
+      }
       if (res.ok) {
-        if (res.orderNumber) {
-          saveLocalVerifiedOrder(res.orderNumber);
-        }
         playLivenessChime();
         toast.success(res.message, { duration: 8000 });
         queryClient.invalidateQueries({ queryKey: ["payment-verifier-state"] });
@@ -273,14 +236,18 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
                   item?.params?.orderNo ||
                   item?.params?.orderNumber;
 
-                if (orderHint) {
-                  saveLocalVerifiedOrder(orderHint);
-                }
+                // Metadata amplop (tipe pesan, pengirim, order chat) ditentukan Binance, bukan oleh isi
+                // pesan yang bisa diketik buyer. Server memakainya untuk menolak liveness palsu.
+                const envelopeOrderNo = item?.orderNo || item?.data?.orderNo || item?.orderNumber || item?.data?.orderNumber;
+                const fromSelf =
+                  typeof item?.self === "boolean" ? item.self : typeof item?.data?.self === "boolean" ? item.data.self : undefined;
 
                 processChatMutation.mutate({
                   chatText: content,
                   orderNumberHint: orderHint,
-                  source: "binance_chat_ws",
+                  messageType: msgType,
+                  ...(fromSelf !== undefined ? { fromSelf } : {}),
+                  ...(envelopeOrderNo ? { envelopeOrderNo: String(envelopeOrderNo) } : {}),
                 });
               }
             }

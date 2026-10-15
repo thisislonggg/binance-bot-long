@@ -53,7 +53,7 @@ import {
   parseLivenessChatMessage,
   type OrderLivenessRecord,
 } from "@/lib/liveness-verifier";
-import { getLocalVerifiedOrders, saveLocalVerifiedOrder } from "./GlobalLivenessMonitor";
+import { saveLocalVerifiedOrder } from "./GlobalLivenessMonitor";
 
 interface PaymentVerifierPanelProps {
   sessionToken?: string | null;
@@ -1057,9 +1057,12 @@ Completed`;
           ) : (
             <div className="space-y-3">
               {activeOrders.map((ord) => {
-                const localVerifiedSet = getLocalVerifiedOrders();
-                const isVerified = ord.livenessVerified || localVerifiedSet.has(ord.orderNumber);
+                // isVerified = buyer lolos liveness (sinyal tepercaya); paymentOpened = Binance/server
+                // mengonfirmasi payment details sudah dibuka (verifiedAdditionalKyc sukses / additionalKycVerify = 2).
+                const isVerified = Boolean(ord.livenessVerified);
+                const paymentOpened = Boolean(ord.kycVerifiedInBinance || ord.additionalKycVerify === 2);
                 const record = ord.livenessRecord;
+                const autoVerify = ord.autoVerify;
 
                 return (
                   <div
@@ -1103,10 +1106,20 @@ Completed`;
                             <Badge variant="outline" className="text-[0.65rem] border-border text-muted-foreground font-semibold">
                               Liveness OFF
                             </Badge>
-                          ) : isVerified ? (
+                          ) : paymentOpened ? (
                             <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/40 text-[0.65rem] font-semibold flex items-center gap-1">
                               <CheckCircle2 className="size-3" />
                               Liveness: Selesai · Rekening Terbuka {record?.verificationTimeText ? `(${record.verificationTimeText})` : ""}
+                            </Badge>
+                          ) : isVerified && ord.tradeType === "SELL" && ord.additionalKycVerify === 1 ? (
+                            <Badge className="bg-sky-500/15 text-sky-400 border-sky-500/30 text-[0.65rem] font-semibold flex items-center gap-1">
+                              <Clock className="size-3" />
+                              Liveness: Selesai · Membuka Rekening…
+                            </Badge>
+                          ) : isVerified ? (
+                            <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/40 text-[0.65rem] font-semibold flex items-center gap-1">
+                              <CheckCircle2 className="size-3" />
+                              Liveness: Selesai
                             </Badge>
                           ) : (
                             <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/30 text-[0.65rem] font-semibold flex items-center gap-1">
@@ -1154,7 +1167,7 @@ Completed`;
 
                         <div className="flex flex-wrap items-center gap-1.5">
                           {/* Tombol Liveness */}
-                          {!isVerified ? (
+                          {!paymentOpened ? (
                             <Button
                               size="sm"
                               variant="default"
@@ -1207,6 +1220,30 @@ Completed`;
                         </div>
                       </div>
                     </div>
+
+                    {/* Status auto-verify dari server: kenapa payment details belum / sudah dibuka */}
+                    {ord.tradeType === "SELL" && autoVerify && !paymentOpened && (
+                      <div
+                        className={`flex items-start gap-1.5 rounded-lg border px-2.5 py-1.5 text-[0.7rem] font-medium ${
+                          autoVerify.state === "failed"
+                            ? "border-rose-500/30 bg-rose-500/5 text-rose-400"
+                            : "border-sky-500/25 bg-sky-500/5 text-sky-400"
+                        }`}
+                      >
+                        {autoVerify.state === "failed" ? (
+                          <AlertTriangle className="size-3.5 shrink-0 mt-px" />
+                        ) : (
+                          <Clock className="size-3.5 shrink-0 mt-px" />
+                        )}
+                        <span>
+                          Auto-verify: {autoVerify.message}
+                          {autoVerify.attempts > 0 ? ` · percobaan ${autoVerify.attempts}` : ""}
+                          {autoVerify.nextRetryAt && autoVerify.nextRetryAt > Date.now()
+                            ? ` · coba lagi ${Math.ceil((autoVerify.nextRetryAt - Date.now()) / 1000)}s`
+                            : ""}
+                        </span>
+                      </div>
+                    )}
 
                     {/* Banner Status Kesiapan Release (Rilis Tetap Manual di Binance) */}
                     <div className="pt-2 border-t border-border/50 flex flex-wrap items-center justify-between gap-2 text-xs">

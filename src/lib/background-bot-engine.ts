@@ -617,21 +617,23 @@ const RUNNER_LEASE_TTL_MS = 20_000;
 
 export type BotRunnerLease = { runnerId: string; label?: string; expiresAt: number };
 
-let inMemoryRunnerLease: BotRunnerLease | null = null;
+// Fallback in-memory di globalThis: modul ini bisa dimuat lebih dari sekali (chunk server function),
+// dan heartbeat serta push harus melihat lease yang sama.
+const leaseGlobal = globalThis as typeof globalThis & { __p2pRunnerLease?: BotRunnerLease | null };
 
 async function readRunnerLease(): Promise<BotRunnerLease | null> {
   const db = getSupabase();
-  if (!db) return inMemoryRunnerLease;
+  if (!db) return leaseGlobal.__p2pRunnerLease ?? null;
   try {
     const { data } = await db.from("user_settings").select("value").eq("key", RUNNER_LEASE_KEY).maybeSingle();
     return data?.value ? (JSON.parse(data.value) as BotRunnerLease) : null;
   } catch {
-    return inMemoryRunnerLease;
+    return leaseGlobal.__p2pRunnerLease ?? null;
   }
 }
 
 async function writeRunnerLease(lease: BotRunnerLease): Promise<void> {
-  inMemoryRunnerLease = lease;
+  leaseGlobal.__p2pRunnerLease = lease;
   const db = getSupabase();
   if (!db) return;
   await db

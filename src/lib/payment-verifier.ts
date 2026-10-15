@@ -82,6 +82,8 @@ export type ActiveP2pOrder = {
   payMethodName?: string;
   livenessVerified?: boolean;
   livenessRecord?: import("./liveness-verifier").OrderLivenessRecord;
+  /** Status percobaan auto-verify (buka payment details) dari server. */
+  autoVerify?: import("./binance-merchant").AutoVerifyStatus;
 };
 
 export type AlertLog = {
@@ -168,14 +170,23 @@ export const getVerifierState = createServerFn({ method: "POST" })
     const isAutoVerifyActive = settings.auto_verify_on_buyer_payed !== false;
     const verifyMode = settings.auto_verify_mode || "all_active";
 
+    const {
+      executeAutoVerifyForSellOrder,
+      isOrderKycVerified,
+      markOrderKycVerified,
+      getUserOrderDetail,
+      getAutoVerifyStatus,
+    } = await import("./binance-merchant");
+    const { isTrustedLivenessRecord } = await import("./liveness-verifier");
+    const autoVerifyAllowed = isLivenessActive && isAutoVerifyActive;
+
     const activeOrders: ActiveP2pOrder[] = [];
     for (const ord of rawActiveOrders) {
       let liveRec = livenessRecords[ord.orderNumber];
 
-      // Auto-Verifikasi jika fitur aktif:
-      // Mode 1: "all_active" (Default) -> Semua order aktif pembeli langsung auto-verifikasi saat liveness selesai / order masuk
-      // Mode 2: "buyer_payed" -> Hanya saat pembeli konfirmasi bayar (status BUYER_PAYED, PAID, 2, TO_RELEASE)
-      // Mode 3: "chat_only" -> Hanya saat terdeteksi dari pesan chat Binance / Webhook
+      // Mode auto-verifikasi (berlaku hanya jika sakelar liveness & auto-verify aktif):
+      // - "chat_only" / "all_active": verifikasi saat kartu sistem liveness "Completed" dari Binance terdeteksi
+      // - "buyer_payed": verifikasi saat pembeli menekan "Saya sudah transfer"
       const statusUpper = (ord.orderStatus || "").toUpperCase();
       const isBuyerPayed =
         statusUpper.includes("PAYED") ||
@@ -183,21 +194,14 @@ export const getVerifierState = createServerFn({ method: "POST" })
         statusUpper.includes("RELEASE") ||
         statusUpper === "2";
 
-      const { executeAutoVerifyForSellOrder, isOrderKycVerified, getUserOrderDetail } = await import("./binance-merchant");
       const isSell = ord.tradeType === "SELL";
-      const isPending =
-        ord.orderStatus === "1" ||
-        ord.orderStatus === "PAYING" ||
-        ord.orderStatus === "TRADING" ||
-        ord.rawOrderStatus === 1;
 
-      // Ambil detail langsung dari Binance SAPI untuk order SELL pending yang belum terverifikasi
-      // listUserOrderHistory tidak menyertakan additionalKycVerify, sehingga getUserOrderDetail wajib dipanggil
-      if (isSell && isPending && (!liveRec || liveRec.status !== "COMPLETED")) {
+      // Ambil detail terbaru dari Binance untuk order SELL yang belum terverifikasi (status KYC bisa berubah)
+      if (isSell && !isOrderKycVerified(ord.orderNumber) && ord.additionalKycVerify !== 2) {
         try {
           const detailRes = await getUserOrderDetail(ord.orderNumber);
           if (detailRes.ok && detailRes.data) {
-            const d = (detailRes.data.data || detailRes.data) as Record<string, unknown>;
+            const d = (detailRes.data["data"] || detailRes.data) as Record<string, unknown>;
             if (d["additionalKycVerify"] !== undefined) {
               ord.additionalKycVerify = Number(d["additionalKycVerify"]);
             }
@@ -214,52 +218,35 @@ export const getVerifierState = createServerFn({ method: "POST" })
         }
       }
 
-      // 1. Cek apakah di Binance sudah berstatus additionalKycVerify === 2 atau Status Completed (Lolos KYC di Binance)
-      const isBinanceKycCompleted =
-        ord.additionalKycVerify === 2 ||
-        isOrderKycVerified(ord.orderNumber) ||
-        String(ord.additionalKycStatus || "").toUpperCase().includes("COMPLET") ||
-        String(ord.additionalKycStatus || "").toUpperCase().includes("PASS") ||
-        String(ord.additionalKycStatus || "").toUpperCase().includes("VERIF") ||
-        String(ord.additionalKycStatus || "").toUpperCase().includes("LOLOS");
-
-      if (isBinanceKycCompleted && (!liveRec || liveRec.status !== "COMPLETED")) {
-        liveRec = {
-          orderNumber: ord.orderNumber,
-          status: "COMPLETED",
-          verifiedAt: new Date().toISOString(),
-          verificationTimeText: new Date().toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta" }) + " WIB",
-          requester: "Binance P2P (Liveness Verified)",
-          counterPartNickName: ord.counterPartNickName,
-          source: "binance_chat_ws",
-          rawSnippet: `Buyer telah menyelesaikan verifikasi wajah di Binance: ${ord.orderNumber}`,
-        };
-        await saveLivenessRecordInternal(liveRec);
-        await notifyLivenessCompleted(liveRec);
-        livenessRecords[ord.orderNumber] = liveRec;
-
-        // Buka payment details ke buyer di Binance SAPI
-        if (isSell && isPending) {
-          executeAutoVerifyForSellOrder({
+      // 1. Binance sendiri menyatakan additional KYC sudah terverifikasi (additionalKycVerify === 2):
+      //    cukup tandai, TIDAK perlu memanggil verifiedAdditionalKyc lagi.
+      if (isSell && ord.additionalKycVerify === 2) {
+        markOrderKycVerified(ord.orderNumber);
+        if (!liveRec || liveRec.status !== "COMPLETED") {
+          liveRec = {
             orderNumber: ord.orderNumber,
-            tradeType: ord.tradeType,
-            orderStatus: ord.rawOrderStatus ?? ord.orderStatus,
-            additionalKycVerify: 2,
-            livenessCompleted: true,
-            force: true,
-          }).catch(() => {});
+            status: "COMPLETED",
+            verifiedAt: new Date().toISOString(),
+            verificationTimeText: new Date().toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta" }) + " WIB",
+            requester: "Binance P2P (Additional KYC Verified)",
+            counterPartNickName: ord.counterPartNickName,
+            source: "binance_kyc",
+            trusted: true,
+            rawSnippet: `Binance menandai additional KYC order ${ord.orderNumber} sudah terverifikasi.`,
+          };
+          await saveLivenessRecordInternal(liveRec);
+          await notifyLivenessCompleted(liveRec);
+          livenessRecords[ord.orderNumber] = liveRec;
         }
       }
 
-      // 2. Mode auto-verifikasi saat pembeli transfer (BUYER_PAYED):
-      // HANYA auto-verifikasi jika mode 'buyer_payed' dipilih dan buyer benar-benar sudah klik 'Saya sudah transfer'.
-      const shouldAutoVerifyOnPayed =
-        isLivenessActive &&
-        isAutoVerifyActive &&
+      // 2. Mode "buyer_payed": pembeli sudah klik "Saya sudah transfer"
+      if (
+        autoVerifyAllowed &&
         verifyMode === "buyer_payed" &&
-        isBuyerPayed;
-
-      if (shouldAutoVerifyOnPayed && (!liveRec || liveRec.status !== "COMPLETED")) {
+        isBuyerPayed &&
+        (!liveRec || liveRec.status !== "COMPLETED")
+      ) {
         liveRec = {
           orderNumber: ord.orderNumber,
           status: "COMPLETED",
@@ -267,42 +254,45 @@ export const getVerifierState = createServerFn({ method: "POST" })
           verificationTimeText: new Date().toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta" }) + " WIB",
           requester: "Auto-Verify (Status: BUYER_PAYED)",
           counterPartNickName: ord.counterPartNickName,
-          source: "binance_chat_ws",
+          source: "auto_buyer_payed",
+          trusted: true,
           rawSnippet: `Auto-verified dari order Binance P2P saat status BUYER_PAYED: ${ord.orderNumber}`,
         };
         await saveLivenessRecordInternal(liveRec);
         await notifyLivenessCompleted(liveRec);
         livenessRecords[ord.orderNumber] = liveRec;
+      }
 
-        if (isSell && isPending) {
-          executeAutoVerifyForSellOrder({
+      // 3. Liveness selesai dari sumber tepercaya tetapi payment details belum dibuka: coba verifikasi.
+      //    executeAutoVerifyForSellOrder sendiri memastikan order SELL aktif, additionalKycVerify === 1,
+      //    dan menerapkan jeda retry bila Binance menolak (tidak ada spam setiap polling).
+      if (
+        autoVerifyAllowed &&
+        isSell &&
+        liveRec?.status === "COMPLETED" &&
+        isTrustedLivenessRecord(liveRec) &&
+        !isOrderKycVerified(ord.orderNumber)
+      ) {
+        try {
+          await executeAutoVerifyForSellOrder({
             orderNumber: ord.orderNumber,
             tradeType: ord.tradeType,
             orderStatus: ord.rawOrderStatus ?? ord.orderStatus,
-            additionalKycVerify: ord.additionalKycVerify,
+            ...(ord.additionalKycVerify !== undefined ? { additionalKycVerify: ord.additionalKycVerify } : {}),
             livenessCompleted: true,
-            force: true,
-          }).catch(() => {});
+          });
+        } catch (err) {
+          console.debug(`[AUTO-VERIFY] Gagal auto-verify order #${ord.orderNumber}:`, err);
         }
       }
 
-      // 3. Jika order sudah berstatus COMPLETED (misal dari chat liveness Binance) tetapi belum dibuka payment details-nya:
-      if (isSell && isPending && liveRec?.status === "COMPLETED" && !isOrderKycVerified(ord.orderNumber)) {
-        executeAutoVerifyForSellOrder({
-          orderNumber: ord.orderNumber,
-          tradeType: ord.tradeType,
-          orderStatus: ord.rawOrderStatus ?? ord.orderStatus,
-          additionalKycVerify: ord.additionalKycVerify,
-          livenessCompleted: true,
-          force: true,
-        }).catch(() => {});
-      }
-
+      const autoVerify = getAutoVerifyStatus(ord.orderNumber);
       activeOrders.push({
         ...ord,
         livenessVerified: Boolean(liveRec && liveRec.status === "COMPLETED"),
         kycVerifiedInBinance: isOrderKycVerified(ord.orderNumber),
-        livenessRecord: liveRec,
+        ...(liveRec ? { livenessRecord: liveRec } : {}),
+        ...(autoVerify ? { autoVerify } : {}),
       });
     }
 
@@ -358,7 +348,7 @@ export const autoVerifyAllActiveOrders = createServerFn({ method: "POST" })
           tradeType: ord.tradeType,
           orderStatus: ord.rawOrderStatus ?? ord.orderStatus,
           additionalKycVerify: ord.additionalKycVerify,
-          force: true,
+          manual: true, // tombol 1-click merchant
         }).catch(() => {});
       }
     }
