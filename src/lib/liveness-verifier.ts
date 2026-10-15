@@ -358,7 +358,10 @@ export async function deleteLivenessRecordInternal(
 // ── Helper DB Internal: Ambil Pengaturan Verifier (WA & Telegram) ────────────
 async function getVerifierSettingsInternal(): Promise<VerifierSettings> {
   const db = getSupabase();
-  if (!db) return inMemorySettings;
+  if (!db) {
+    const mem = (globalThis as any).__p2pVerifierSettingsMem as Partial<VerifierSettings> | undefined;
+    return mem ? { ...DEFAULT_VERIFIER_SETTINGS, ...mem } : inMemorySettings;
+  }
 
   try {
     const { data } = await db
@@ -608,17 +611,32 @@ export const processLivenessChatMessage = createServerFn({ method: "POST" })
       const settings = await getVerifierSettingsInternal();
       if (settings.liveness_enabled !== false && settings.auto_verify_on_buyer_payed !== false) {
         const { executeAutoVerifyForSellOrder } = await import("./binance-merchant");
-        const kycRes = await executeAutoVerifyForSellOrder({
+        const fromBinance = data.source === "binance_chat_ws";
+        // Tepat setelah buyer selesai liveness, Binance kadang belum siap menerima verifikasi:
+        // coba ulang cepat beberapa kali dalam request yang sama (polling dashboard tetap jadi cadangan).
+        let kycRes = await executeAutoVerifyForSellOrder({
           orderNumber,
           livenessCompleted: true,
+          binanceLivenessSignal: fromBinance,
         });
+        for (const waitMs of [2_000, 4_000]) {
+          if (kycRes.verified || (kycRes.skipped && !/menolak|Exception/i.test(kycRes.message))) break;
+          await new Promise((r) => setTimeout(r, waitMs));
+          kycRes = await executeAutoVerifyForSellOrder({
+            orderNumber,
+            livenessCompleted: true,
+            binanceLivenessSignal: fromBinance,
+            retryNow: true,
+          });
+        }
         if (kycRes.verified && !kycRes.skipped) {
           autoVerifyNote = " Detail rekening pembayaran telah berhasil dibuka ke buyer di Binance.";
         } else if (!kycRes.verified) {
           autoVerifyNote = ` Auto-verify: ${kycRes.message}`;
         }
       } else {
-        autoVerifyNote = " Auto-verify nonaktif di pengaturan.";
+        autoVerifyNote =
+          " Auto-verify NONAKTIF di pengaturan, jadi rekening belum dibuka: tekan Auto-Verif manual atau aktifkan auto-verify.";
       }
     } catch (err) {
       console.debug("[AUTO-VERIFY] Error saat panggil executeAutoVerifyForSellOrder:", err);
@@ -630,7 +648,7 @@ export const processLivenessChatMessage = createServerFn({ method: "POST" })
       isCompleted: true,
       orderNumber,
       record: newRecord,
-      message: `✅ Order #${orderNumber} berhasil diverifikasi! Buyer telah menyelesaikan liveness check (Status: Completed).${autoVerifyNote}`,
+      message: `✅ Order #${orderNumber}: buyer selesai liveness check.${autoVerifyNote}`,
     };
   });
 

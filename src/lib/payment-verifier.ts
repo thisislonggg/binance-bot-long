@@ -126,7 +126,9 @@ export const getVerifierState = createServerFn({ method: "POST" })
     await requireSession(data.sessionToken);
     const db = getSupabase();
 
-    let settings = { ...DEFAULT_VERIFIER_SETTINGS };
+    // Tanpa Supabase, pengaturan disimpan di memori proses (globalThis: modul bisa termuat dua kali).
+    const memSettings = (globalThis as any).__p2pVerifierSettingsMem as Partial<VerifierSettings> | undefined;
+    let settings = { ...DEFAULT_VERIFIER_SETTINGS, ...(!db && memSettings ? memSettings : {}) };
     let baselineBalanceIdr = 0;
     let recentLogs: AlertLog[] = [];
 
@@ -285,6 +287,7 @@ export const getVerifierState = createServerFn({ method: "POST" })
             orderStatus: ord.rawOrderStatus ?? ord.orderStatus,
             ...(ord.additionalKycVerify !== undefined ? { additionalKycVerify: ord.additionalKycVerify } : {}),
             livenessCompleted: true,
+            binanceLivenessSignal: liveRec.source === "binance_chat_ws",
           });
         } catch (err) {
           console.debug(`[AUTO-VERIFY] Gagal auto-verify order #${ord.orderNumber}:`, err);
@@ -392,6 +395,7 @@ export const saveVerifierSettings = createServerFn({ method: "POST" })
     const db = getSupabase();
     if (!db) {
       // In-memory fallback
+      (globalThis as any).__p2pVerifierSettingsMem = data.settings;
       return { ok: true };
     }
 
@@ -539,7 +543,9 @@ export async function fetchActiveP2pSellOrdersInternal(): Promise<ActiveP2pOrder
       const tradeType: "BUY" | "SELL" = isBuyOrder ? "BUY" : "SELL";
 
       const rawStatusNum = typeof o.orderStatus === "number" ? o.orderStatus : parseInt(String(o.orderStatus || 0), 10);
-      const additionalKycNum = Number(o.additionalKycVerify ?? o.additionalKyc ?? (o.isAdditionalKyc ? 1 : 0));
+      // Tanpa field KYC di daftar order, statusnya TIDAK diketahui (bukan 0); detail order yang menentukan.
+      const rawKyc = o.additionalKycVerify ?? o.additionalKyc ?? (o.isAdditionalKyc === undefined ? undefined : o.isAdditionalKyc ? 1 : 0);
+      const additionalKycNum = rawKyc === undefined || rawKyc === null ? NaN : Number(rawKyc);
 
       activeOrders.push({
         orderNumber: orderNo,

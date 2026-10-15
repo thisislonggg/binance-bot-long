@@ -1644,9 +1644,9 @@ function setAutoVerifyStatus(orderNumber: string, patch: Omit<AutoVerifyStatus, 
   });
 }
 
-/** Jeda retry setelah Binance menolak verifiedAdditionalKyc: 15s, 30s, 60s, lalu maks 120s. */
+/** Jeda retry setelah Binance menolak verifiedAdditionalKyc: 5s, 10s, 20s, 40s, lalu maks 60s. */
 function autoVerifyRetryDelayMs(failedAttempts: number): number {
-  return Math.min(120_000, 15_000 * 2 ** Math.max(0, failedAttempts - 1));
+  return Math.min(60_000, 5_000 * 2 ** Math.max(0, failedAttempts - 1));
 }
 
 const AUTO_VERIFY_CANCELLED = (s: string) =>
@@ -1675,6 +1675,14 @@ export async function executeAutoVerifyForSellOrder(params: {
   orderStatus?: string | number;
   additionalKycVerify?: number | boolean | undefined;
   livenessCompleted?: boolean;
+  /**
+   * Bukti liveness berasal dari kartu/pesan sistem Binance sendiri (add_kyc_vrf /
+   * liveness_check_complete_maker). Kartu itu hanya muncul di order SELL yang butuh verifikasi
+   * tambahan, jadi jenis order / status KYC yang belum terbaca dari API tidak menahan verifikasi.
+   */
+  binanceLivenessSignal?: boolean;
+  /** Abaikan jeda retry (percobaan ulang cepat tepat setelah sinyal liveness). */
+  retryNow?: boolean;
   /** Aksi eksplisit merchant (tombol). */
   manual?: boolean;
   /** @deprecated alias lama untuk `manual`. */
@@ -1698,7 +1706,7 @@ export async function executeAutoVerifyForSellOrder(params: {
 
   // 2. Jeda retry setelah penolakan Binance (hanya jalur otomatis)
   const prevStatus = autoVerifyStatusMap.get(cleanOrderNo);
-  if (!manual && prevStatus?.nextRetryAt && Date.now() < prevStatus.nextRetryAt) {
+  if (!manual && !params.retryNow && prevStatus?.nextRetryAt && Date.now() < prevStatus.nextRetryAt) {
     return {
       ok: false,
       skipped: true,
@@ -1749,7 +1757,8 @@ export async function executeAutoVerifyForSellOrder(params: {
   if (tradeType && tradeType !== "SELL") {
     return reject(`[KEAMANAN] Order #${cleanOrderNo} bukan order SELL (${tradeType}).`);
   }
-  if (!tradeType && !manual) {
+  const binanceSignal = params.binanceLivenessSignal === true && params.livenessCompleted === true;
+  if (!tradeType && !manual && !binanceSignal) {
     return hold(`Jenis order #${cleanOrderNo} belum bisa dipastikan dari Binance. Auto-verify ditahan.`);
   }
 
@@ -1763,7 +1772,8 @@ export async function executeAutoVerifyForSellOrder(params: {
     if (additionalKyc === 0) {
       return reject(`Order #${cleanOrderNo} tidak membutuhkan verifikasi tambahan (additionalKycVerify = 0).`);
     }
-    if (additionalKyc !== 1) {
+    const kycUnknown = additionalKyc === undefined || Number.isNaN(additionalKyc);
+    if (additionalKyc !== 1 && !(kycUnknown && binanceSignal)) {
       return hold(`Status additional KYC order #${cleanOrderNo} belum diketahui dari Binance. Auto-verify ditahan.`);
     }
 

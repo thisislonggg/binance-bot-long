@@ -774,6 +774,11 @@ Completed`;
                   Auto-Verifikasi Liveness Otomatis
                 </Label>
               </div>
+              {!autoVerifyOnBuyerPayed && (
+                <p className="w-full text-[0.68rem] text-amber-400">
+                  Mati: rekening pembayaran hanya dibuka saat Anda menekan tombol ⚡ Auto-Verif di order.
+                </p>
+              )}
 
               {/* Selector Mode Auto-Verifikasi */}
               {autoVerifyOnBuyerPayed && (
@@ -784,18 +789,18 @@ Completed`;
                       Pemicu Auto-Verifikasi Liveness:
                     </span>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <button
                       type="button"
                       onClick={() => setAutoVerifyMode("chat_only")}
                       className={`text-left p-2.5 rounded-md border text-xs transition-all ${
-                        autoVerifyMode === "chat_only"
+                        autoVerifyMode !== "buyer_payed"
                           ? "border-sky-500 bg-sky-500/10 text-foreground shadow-sm"
                           : "border-border/60 bg-surface-2 text-muted-foreground hover:text-foreground"
                       }`}
                     >
                       <div className="font-semibold flex items-center gap-1 text-sky-400">
-                        💬 Chat Liveness Selesai (Default & Paling Aman)
+                        💬 Saat Liveness Selesai (Disarankan)
                       </div>
                       <div className="text-[0.68rem] text-muted-foreground mt-0.5 leading-relaxed">
                         Hanya auto-verifikasi setelah pembeli benar-benar selesai verifikasi wajah di Binance Chat.
@@ -819,22 +824,6 @@ Completed`;
                       </div>
                     </button>
 
-                    <button
-                      type="button"
-                      onClick={() => setAutoVerifyMode("all_active")}
-                      className={`text-left p-2.5 rounded-md border text-xs transition-all ${
-                        autoVerifyMode === "all_active"
-                          ? "border-emerald-500 bg-emerald-500/10 text-foreground shadow-sm"
-                          : "border-border/60 bg-surface-2 text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      <div className="font-semibold flex items-center gap-1 text-emerald-400">
-                        🔒 Manual Saja
-                      </div>
-                      <div className="text-[0.68rem] text-muted-foreground mt-0.5 leading-relaxed">
-                        Hanya verifikasi saat tombol ⚡ Auto-Verif ditekan secara manual oleh Anda.
-                      </div>
-                    </button>
                   </div>
                 </div>
               )}
@@ -1048,6 +1037,31 @@ Completed`;
               Diperbarui otomatis
             </span>
           </div>
+
+          {state?.settings && livenessEnabled && state.settings.auto_verify_on_buyer_payed === false && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+              <span className="flex items-center gap-1.5 font-medium">
+                <AlertTriangle className="size-3.5 shrink-0" />
+                Auto-verify mati: rekening tidak dibuka otomatis walau buyer sudah lolos liveness.
+              </span>
+              <Button
+                size="sm"
+                className="h-7 text-xs bg-amber-500 text-black hover:bg-amber-400"
+                disabled={saveSettingsMutation.isPending}
+                onClick={() => {
+                  setAutoVerifyOnBuyerPayed(true);
+                  setAutoVerifyMode("chat_only");
+                  saveSettingsMutation.mutate({
+                    ...state.settings,
+                    auto_verify_on_buyer_payed: true,
+                    auto_verify_mode: "chat_only",
+                  });
+                }}
+              >
+                Aktifkan
+              </Button>
+            </div>
+          )}
 
           {activeOrders.length === 0 ? (
             <div className="rounded-xl border border-dashed border-border/80 p-8 text-center space-y-2">
