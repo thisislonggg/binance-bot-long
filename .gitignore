@@ -41,4 +41,6 @@ dist-electron/
 *.apk
 *.ipa
 android/app/build/
-ios/App/build/
+ios/App/build/
+# Vercel CLI build output
+.vercel
