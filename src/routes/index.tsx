@@ -533,21 +533,34 @@ function Dashboard() {
   const handleFullHistorySync = () => syncMutation.mutate({ isSilent: false, fullHistory: true });
 
   // Countdown & Trigger Auto-sync
+  // Jadwal disimpan sebagai waktu absolut di ref: objek `syncMutation` berganti di setiap render,
+  // dan dashboard re-render lebih cepat dari 1 detik (polling pasar), sehingga interval yang
+  // bergantung padanya selalu di-reset sebelum sempat berdetak dan auto-sync tidak pernah jalan.
+  const syncMutateRef = useRef(syncMutation.mutate);
+  syncMutateRef.current = syncMutation.mutate;
+  const syncPendingRef = useRef(false);
+  syncPendingRef.current = syncMutation.isPending;
+  const nextAutoSyncAtRef = useRef(0);
+
   useEffect(() => {
     if (!autoSyncBinance || !syncStatusQuery.data?.available) return;
 
+    nextAutoSyncAtRef.current = Date.now() + BINANCE_SYNC_SECONDS * 1000;
+    setSyncCountdown(BINANCE_SYNC_SECONDS);
+
     const timer = setInterval(() => {
-      setSyncCountdown((prev) => {
-        if (prev <= 1) {
-          syncMutation.mutate({ isSilent: true });
-          return BINANCE_SYNC_SECONDS;
-        }
-        return prev - 1;
-      });
+      const secondsLeft = Math.ceil((nextAutoSyncAtRef.current - Date.now()) / 1000);
+      if (secondsLeft > 0) {
+        setSyncCountdown(secondsLeft);
+        return;
+      }
+      nextAutoSyncAtRef.current = Date.now() + BINANCE_SYNC_SECONDS * 1000;
+      setSyncCountdown(BINANCE_SYNC_SECONDS);
+      if (!syncPendingRef.current) syncMutateRef.current({ isSilent: true });
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [autoSyncBinance, syncStatusQuery.data?.available, syncMutation]);
+  }, [autoSyncBinance, syncStatusQuery.data?.available]);
 
   // Update histori saat snapshot baru masuk
   useEffect(() => {
