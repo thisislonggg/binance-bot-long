@@ -54,6 +54,7 @@ import {
   type OrderLivenessRecord,
 } from "@/lib/liveness-verifier";
 import { saveLocalVerifiedOrder } from "./GlobalLivenessMonitor";
+import { LivenessDiagnostics } from "./LivenessDiagnostics";
 
 interface PaymentVerifierPanelProps {
   sessionToken?: string | null;
@@ -1349,6 +1350,9 @@ Completed`;
           </div>
         </div>
       </div>
+
+      {/* ── Diagnostik auto-verify liveness (koneksi chat & pesan mentah Binance) ── */}
+      <LivenessDiagnostics activeOrders={activeOrders} />
 
       {/* ── Log Riwayat Pembayaran & Alert Masuk ─────────────────────────── */}
       <div className="panel p-4.5 space-y-3">

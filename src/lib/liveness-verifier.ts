@@ -86,8 +86,9 @@ export type ParsedLivenessMessage = {
 };
 
 // ── Parser Pesan Verifikasi Wajah Binance Chat ──────────────────────────────
-export function parseLivenessChatMessage(text: string): ParsedLivenessMessage {
-  let clean = (text || "").trim();
+export function parseLivenessChatMessage(text: unknown): ParsedLivenessMessage {
+  // Isi pesan kartu sistem bisa berupa objek; jangan sampai .trim() melempar error dan kartu hilang diam-diam.
+  let clean = (typeof text === "string" ? text : text ? JSON.stringify(text) : "").trim();
   if (!clean) {
     return { isLivenessMessage: false, isCompleted: false, rawText: "" };
   }
@@ -139,16 +140,18 @@ export function parseLivenessChatMessage(text: string): ParsedLivenessMessage {
   }
 
   // 2. Cek status: Completed / Selesai / Success / Pass / Passed / Lolos / Approved / Done
-  const statusMatch = clean.match(/(?:status|\*status\*|\*\*status\*\*)[*:\s]+([A-Za-z]+)/i);
+  // Mendukung teks kartu ("Status:\nCompleted") maupun JSON kartu sistem ("status":"COMPLETED").
+  const statusMatch = clean.match(/(?:status|\*status\*|\*\*status\*\*)["'*:\s=]+([A-Za-z_]+)/i);
   const statusStr = statusMatch ? statusMatch[1].trim() : "";
 
   // Jika status secara eksplisit PENDING / WAITING / FAILED / MENUNGGU, MAKA WAJIB BELUM SELESAI!
   const isExplicitPending = /pending|menunggu|waiting|unverified|proses|process/i.test(statusStr);
   const isExplicitFailed = /failed|gagal|rejected|ditolak/i.test(statusStr);
   // Kata status harus utuh: "Uncompleted" / "Incomplete" TIDAK dianggap selesai.
-  const isExplicitCompleted = /^(completed|complete|selesai|passed|approved|lolos|success|successful|berhasil)$/i.test(statusStr);
+  const isExplicitCompleted =
+    /^(completed|complete|selesai|passed|pass|approved|lolos|success|successful|berhasil|verified)$/i.test(statusStr);
   // Negasi sebelum kata status ("Status: Not completed", "Status: Belum selesai") menggagalkan status.
-  const isNegatedStatus = /status[*:\s]+(not|belum|tidak)\b/i.test(clean);
+  const isNegatedStatus = /status["'*:\s=]+(not|belum|tidak)\b/i.test(clean);
 
   // isCompleted HANYA true jika statusStr adalah completed dan TIDAK pending/failed/negasi
   let isCompleted = isExplicitCompleted && !isExplicitPending && !isExplicitFailed && !isNegatedStatus;

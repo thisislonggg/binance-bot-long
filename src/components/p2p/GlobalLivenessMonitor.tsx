@@ -32,6 +32,47 @@ export function saveLocalVerifiedOrder(orderNo: string) {
   } catch {}
 }
 
+// ── Log Diagnostik Liveness (koneksi WebSocket chat & pesan mentah dari Binance) ──
+// Disimpan di localStorage agar merchant bisa menyalin & mengirimkannya saat auto-verify
+// tidak mendeteksi liveness. Format pesan kartu liveness Binance tidak terdokumentasi publik.
+const DIAG_STORAGE_KEY = "p2p_liveness_diagnostics";
+export const LIVENESS_DIAG_EVENT = "p2p-liveness-diag";
+
+export type LivenessDiagEntry = { t: string; kind: string; detail: string };
+
+export function getLivenessDiagnostics(): LivenessDiagEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(DIAG_STORAGE_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+export function clearLivenessDiagnostics() {
+  try {
+    localStorage.removeItem(DIAG_STORAGE_KEY);
+    window.dispatchEvent(new Event(LIVENESS_DIAG_EVENT));
+  } catch {}
+}
+
+function logLivenessDiag(kind: string, detail: unknown) {
+  if (typeof window === "undefined") return;
+  try {
+    const text = typeof detail === "string" ? detail : JSON.stringify(detail);
+    const entry: LivenessDiagEntry = {
+      t: new Date().toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta" }),
+      kind,
+      detail: text.slice(0, 1500),
+    };
+    const next = [...getLivenessDiagnostics(), entry].slice(-60);
+    localStorage.setItem(DIAG_STORAGE_KEY, JSON.stringify(next));
+    window.dispatchEvent(new Event(LIVENESS_DIAG_EVENT));
+  } catch {}
+}
+
 function playLivenessChime() {
   try {
     const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -140,6 +181,7 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
         },
       }),
     onSuccess: (res) => {
+      logLivenessDiag("server_result", res.message);
       if (res.untrusted) {
         toast.warning(res.message, { duration: 12000 });
         return;
@@ -165,6 +207,12 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
 
     const creds = chatCredsQuery.data;
     if (!creds?.ok || !creds.chatWssUrl || !creds.listenKey) {
+      if (creds) {
+        logLivenessDiag(
+          "chat_credentials_error",
+          creds.error || `Kredensial chat tidak lengkap (wss=${Boolean(creds.chatWssUrl)}, listenKey=${Boolean(creds.listenKey)})`,
+        );
+      }
       return;
     }
 
@@ -185,6 +233,7 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
         wsRef.current = ws;
 
         ws.onopen = () => {
+          logLivenessDiag("ws_open", `Terhubung ke chat Binance (${cleanBaseWs})`);
           // Kirim ping tiap 25 detik agar koneksi Binance tidak terputus
           if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
           pingIntervalRef.current = setInterval(() => {
@@ -199,6 +248,8 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
         ws.onmessage = (event) => {
           try {
             const raw = event.data;
+            const rawText = typeof raw === "string" ? raw : "[binary]";
+            if (!/"type"\s*:\s*"pong"/i.test(rawText)) logLivenessDiag("ws_message", rawText);
             let payload: any = raw;
             if (typeof raw === "string") {
               try {
@@ -215,17 +266,27 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
               const msgType = String(item?.type || item?.msgType || item?.data?.type || "").toLowerCase();
               const isSystemOrCard = msgType === "system" || msgType === "card" || msgType.includes("sys");
 
-              const content =
+              // Isi kartu sistem Binance bisa berupa OBJEK (bukan string). Dulu objek ini membuat
+              // parser crash diam-diam (.trim pada objek) sehingga kartu liveness tidak pernah terdeteksi.
+              const rawContent =
                 typeof item === "string"
                   ? item
-                  : item?.data?.content ||
-                    item?.content ||
-                    item?.text ||
-                    item?.data?.text ||
-                    item?.message ||
-                    (isSystemOrCard ? JSON.stringify(item) : "");
+                  : item?.data?.content ??
+                    item?.content ??
+                    item?.text ??
+                    item?.data?.text ??
+                    item?.message ??
+                    (isSystemOrCard ? item : "");
+              const content =
+                typeof rawContent === "string" ? rawContent : rawContent ? JSON.stringify(rawContent) : "";
 
               const parsed = parseLivenessChatMessage(content);
+              if (parsed.isLivenessMessage) {
+                logLivenessDiag(
+                  "liveness_detected",
+                  `type=${msgType || "?"} self=${String(item?.self)} orderNo=${item?.orderNo || "-"} completed=${parsed.isCompleted} status=${parsed.status} order=${parsed.orderNumber || "-"}`,
+                );
+              }
               if (parsed.isLivenessMessage && parsed.isCompleted) {
                 const orderHint =
                   parsed.orderNumber ||
@@ -251,10 +312,13 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
                 });
               }
             }
-          } catch {}
+          } catch (err) {
+            logLivenessDiag("ws_parse_error", String(err));
+          }
         };
 
-        ws.onclose = () => {
+        ws.onclose = (ev) => {
+          logLivenessDiag("ws_closed", `code=${ev.code} reason=${ev.reason || "-"}`);
           if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
           if (!isDestroyed) {
             // Auto reconnect setelah 5 detik

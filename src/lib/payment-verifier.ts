@@ -84,6 +84,8 @@ export type ActiveP2pOrder = {
   livenessRecord?: import("./liveness-verifier").OrderLivenessRecord;
   /** Status percobaan auto-verify (buka payment details) dari server. */
   autoVerify?: import("./binance-merchant").AutoVerifyStatus;
+  /** Potongan detail order mentah dari Binance (diagnostik liveness). */
+  debugDetail?: string;
 };
 
 export type AlertLog = {
@@ -202,6 +204,9 @@ export const getVerifierState = createServerFn({ method: "POST" })
           const detailRes = await getUserOrderDetail(ord.orderNumber);
           if (detailRes.ok && detailRes.data) {
             const d = (detailRes.data["data"] || detailRes.data) as Record<string, unknown>;
+            try {
+              ord.debugDetail = JSON.stringify(d).slice(0, 1500);
+            } catch {}
             if (d["additionalKycVerify"] !== undefined) {
               ord.additionalKycVerify = Number(d["additionalKycVerify"]);
             }
