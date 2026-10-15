@@ -70,9 +70,49 @@ const USER_CHAT_MESSAGE_TYPES = new Set([
   "auto_reply",
 ]);
 
+// Kartu & pesan sistem dibuat oleh Binance sendiri, bukan diketik user. Kartu liveness
+// (subType add_kyc_vrf) tercatat self=true karena merchant yang "meminta" verifikasi, jadi
+// self hanya relevan untuk pesan chat biasa.
+const BINANCE_GENERATED_TYPES = new Set(["card", "system"]);
+
 export function isTrustedChatEnvelope(messageType: string | undefined, fromSelf: boolean | undefined): boolean {
+  const type = String(messageType || "").trim().toLowerCase();
+  if (BINANCE_GENERATED_TYPES.has(type)) return true;
   if (fromSelf === true) return false;
-  return !USER_CHAT_MESSAGE_TYPES.has(String(messageType || "").trim().toLowerCase());
+  return !USER_CHAT_MESSAGE_TYPES.has(type);
+}
+
+/**
+ * Format terstruktur asli Binance (dari log produksi):
+ *  - pesan system: {"orderNo":"…","type":"liveness_check_complete_maker"}
+ *  - kartu add_kyc_vrf: {"orderNo":"…","addKycVrfInfo":[{"displayTitleValue":"Liveness check","livenessCheckStatus":1}]}
+ *    livenessCheckStatus 0 = menunggu, 1 = selesai.
+ */
+function parseStructuredLiveness(obj: any): ParsedLivenessMessage | null {
+  const orderNumber = obj.orderNo || obj.orderNumber || undefined;
+  const rawText = JSON.stringify(obj);
+  const sysType = typeof obj.type === "string" ? obj.type.toLowerCase() : "";
+  if (/^liveness_check_complete/.test(sysType)) {
+    return { isLivenessMessage: true, isCompleted: true, orderNumber, status: "Completed", rawText };
+  }
+  if (/^liveness_check_/.test(sysType)) {
+    return { isLivenessMessage: true, isCompleted: false, orderNumber, status: sysType, rawText };
+  }
+  if (Array.isArray(obj.addKycVrfInfo)) {
+    const checks = obj.addKycVrfInfo.filter(
+      (i: any) => i && (i.livenessCheckStatus !== undefined || /liveness/i.test(String(i.displayTitleValue || ""))),
+    );
+    if (checks.length === 0) return null;
+    const isCompleted = checks.every((i: any) => Number(i.livenessCheckStatus) === 1);
+    return {
+      isLivenessMessage: true,
+      isCompleted,
+      orderNumber,
+      status: isCompleted ? "Completed" : `livenessCheckStatus=${checks.map((i: any) => i.livenessCheckStatus).join(",")}`,
+      rawText,
+    };
+  }
+  return null;
 }
 
 export type ParsedLivenessMessage = {
@@ -102,6 +142,8 @@ export function parseLivenessChatMessage(text: unknown): ParsedLivenessMessage {
     try {
       const obj = JSON.parse(clean);
       if (typeof obj === "object" && obj !== null) {
+        const structured = parseStructuredLiveness(obj);
+        if (structured) return structured;
         orderNumberFromPayload =
           obj.orderNo ||
           obj.orderNumber ||
@@ -549,10 +591,15 @@ export const processLivenessChatMessage = createServerFn({ method: "POST" })
       rawSnippet: data.chatText.slice(0, 300),
     };
 
-    await saveLivenessRecordInternal(newRecord);
-
-    // Kirim notifikasi WA / Telegram
-    await notifyLivenessCompleted(newRecord);
+    // Binance mengirim kartu (livenessCheckStatus=1) dan pesan sistem untuk kejadian yang sama:
+    // jangan kirim notifikasi dua kali bila order ini sudah tercatat selesai dari sumber tepercaya.
+    const existing = (await getLivenessRecordsInternal())[orderNumber];
+    const alreadyCompleted = existing?.status === "COMPLETED" && isTrustedLivenessRecord(existing);
+    if (!alreadyCompleted) {
+      await saveLivenessRecordInternal(newRecord);
+      // Kirim notifikasi WA / Telegram
+      await notifyLivenessCompleted(newRecord);
+    }
 
     // Eksekusi Auto-Verify ke Binance SAPI untuk membuka payment details ke buyer (khusus order SELL pending).
     // Mengikuti sakelar liveness & auto-verify di pengaturan; syarat keamanan dicek di executeAutoVerifyForSellOrder.

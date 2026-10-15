@@ -103,6 +103,8 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
   const queryClient = useQueryClient();
   const previouslyVerifiedOrders = useRef<Set<string>>(getLocalVerifiedOrders());
   const notifiedFailures = useRef<Set<string>>(new Set());
+  // Order yang sinyal liveness-nya sudah dikirim ke server (kartu + pesan sistem datang beruntun).
+  const submittedOrders = useRef<Set<string>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<any>(null);
   const reconnectTimeoutRef = useRef<any>(null);
@@ -180,6 +182,11 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
           envelopeOrderNo: args.envelopeOrderNo,
         },
       }),
+    onError: (err, vars) => {
+      // Gagal terkirim (jaringan/server): izinkan sinyal berikutnya untuk order ini mencoba lagi.
+      if (vars.orderNumberHint) submittedOrders.current.delete(vars.orderNumberHint);
+      logLivenessDiag("server_error", String(err));
+    },
     onSuccess: (res) => {
       logLivenessDiag("server_result", res.message);
       if (res.untrusted) {
@@ -264,6 +271,8 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
             for (const item of items) {
               if (!item) continue;
               const msgType = String(item?.type || item?.msgType || item?.data?.type || "").toLowerCase();
+              // Statistik (jumlah unread dsb.) bukan pesan chat.
+              if (msgType === "statistics" || msgType === "pong") continue;
               const isSystemOrCard = msgType === "system" || msgType === "card" || msgType.includes("sys");
 
               // Isi kartu sistem Binance bisa berupa OBJEK (bukan string). Dulu objek ini membuat
@@ -288,6 +297,9 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
                 );
               }
               if (parsed.isLivenessMessage && parsed.isCompleted) {
+                const dedupeKey = `${parsed.orderNumber || item?.orderNo || "?"}`;
+                if (submittedOrders.current.has(dedupeKey)) continue;
+                submittedOrders.current.add(dedupeKey);
                 const orderHint =
                   parsed.orderNumber ||
                   item?.data?.orderNo ||
