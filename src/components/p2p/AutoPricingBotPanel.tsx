@@ -967,6 +967,15 @@ export function AutoPricingBotPanel({
           roundedSellPrice = effectiveSellFloor;
         }
 
+        // Proteksi Tambahan Anti-Dump: Di mode auto bot, harga jual tidak boleh jatuh di bawah batas aman konsensus pasar
+        if (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0) {
+          const anchorPrice = fairPrice > 10_000 ? fairPrice : 0;
+          const antiDumpFloor = anchorPrice > 0 ? Math.max(effectiveSellFloor, anchorPrice - 35) : effectiveSellFloor;
+          if (antiDumpFloor > 0 && roundedSellPrice < antiDumpFloor) {
+            roundedSellPrice = antiDumpFloor;
+          }
+        }
+
         if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0 && roundedSellPrice > config.maxPriceBoundRp) {
           roundedSellPrice =
             effectiveSellFloor > 0 && config.maxPriceBoundRp < effectiveSellFloor

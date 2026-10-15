@@ -663,23 +663,41 @@ export function evaluateCompetitorAds(
       if (adIndex >= 0 && adIndex < sortedAds.length - 1) {
         const nextAd = sortedAds[adIndex + 1];
         if (nextAd) {
-          const gap = Math.abs(ad.price - nextAd.price);
           const isBuySide = side === "buy_ref";
-          const gapTrapActive = isBuySide && config.buyGapTrapEnabled !== false;
-          const gapThreshold = gapTrapActive
-            ? (config.buyGapTrapThresholdRp && config.buyGapTrapThresholdRp > 0 ? config.buyGapTrapThresholdRp : 20)
-            : (config.maxOutlierGapRp || 40);
+          if (isBuySide) {
+            // SISI BELI: sortedAds descending (Rank 1 adalah harga beli tertinggi).
+            // Deteksi pancingan pucuk (Gap Trap / Spoofing):
+            // Jika Rank 1 menawar jauh lebih tinggi dibanding Rank 2 (ad.price > nextAd.price)
+            const gap = ad.price - nextAd.price;
+            const gapTrapActive = config.buyGapTrapEnabled !== false;
+            const gapThreshold = gapTrapActive
+              ? (config.buyGapTrapThresholdRp && config.buyGapTrapThresholdRp > 0 ? config.buyGapTrapThresholdRp : 20)
+              : (config.maxOutlierGapRp || 40);
 
-          if (gapTrapActive && ad.price > nextAd.price && gap >= gapThreshold) {
-            reasons.push({
-              code: "PRICE_OUTLIER",
-              message: `Gap Trap: Selisih beli Rp ${gap} dari Rank #${adIndex + 2} (${nextAd.merchant_name} @ Rp ${nextAd.price.toLocaleString("id-ID")}) melebihi batas Rp ${gapThreshold} (indikasi pancingan pucuk/spoofing)`,
-            });
-          } else if (config.ignoreOutlierSpikes && gap >= (config.maxOutlierGapRp || 40)) {
-            reasons.push({
-              code: "PRICE_OUTLIER",
-              message: `Selisih Rp ${gap} dari rank berikutnya (indikasi pancingan/spoofing)`,
-            });
+            if (gap >= gapThreshold && adIndex === 0) {
+              reasons.push({
+                code: "PRICE_OUTLIER",
+                message: `Gap Trap Beli: Selisih Rp ${gap} dari Rank #2 (${nextAd.merchant_name} @ Rp ${nextAd.price.toLocaleString("id-ID")}) melebihi batas Rp ${gapThreshold} (indikasi pancingan pucuk/spoofing)`,
+              });
+            } else if (config.ignoreOutlierSpikes && gap >= (config.maxOutlierGapRp || 40) && adIndex < 3) {
+              reasons.push({
+                code: "PRICE_OUTLIER",
+                message: `Selisih beli Rp ${gap} dari rank berikutnya (indikasi pancingan/spoofing)`,
+              });
+            }
+          } else {
+            // SISI JUAL: sortedAds ascending (Rank 1 adalah harga jual terendah / termurah).
+            // Deteksi dump pancingan bawah (Anti-Dump / Low-ball Spoofing):
+            // Iklan HANYA dianggap outlier spike jika harga Rank 1 berada JAUH di bawah Rank 2 (nextAd.price - ad.price >= threshold),
+            // BUKAN mendiskualifikasi iklan yang lebih tinggi atau di rank tengah hanya karena ada spread normal ke rank berikutnya!
+            const dumpGap = nextAd.price - ad.price;
+            const outlierThreshold = config.maxOutlierGapRp || 40;
+            if (config.ignoreOutlierSpikes && dumpGap >= outlierThreshold && adIndex === 0) {
+              reasons.push({
+                code: "PRICE_OUTLIER",
+                message: `Dump Outlier Jual: Selisih Rp ${dumpGap} di bawah Rank #2 (${nextAd.merchant_name} @ Rp ${nextAd.price.toLocaleString("id-ID")}) melebihi batas Rp ${outlierThreshold} (indikasi pancingan dump banting harga)`,
+              });
+            }
           }
         }
       }
@@ -890,72 +908,80 @@ export function computeCompetitorPricing(input: {
     if (qualifiedAds.length === 0) {
       if (side === "sell") {
         // Pada sisi JUAL: Jika TIDAK ADA kompetitor yang lolos filter:
-        // JANGAN PERNAH mengambil iklan sembarang/murah yang memicu dump harga ke bawah!
-        // Sortir allRawAds secara ascending (terendah ke tertinggi):
-        const sortedNonOwn = (allRawAds || [])
-          .filter((a) => !isOwnAd(a) && a.price > 10_000)
-          .sort((a, b) => a.price - b.price);
-
-        // Cari iklan non-milik sendiri yang memiliki likuiditas wajar (bukan dust < 20 USDT) dan targetnya >= calculatedSellFloor
+        // JANGAN PERNAH mengambil iklan sembarang/dust/murah yang memicu dump harga ke bawah!
         const sellOffset = typeof config.sellOffsetRp === "number" ? config.sellOffsetRp : -1;
-        const safeCandidates = sortedNonOwn.filter(
-          (a) =>
-            (a.price + (sellOffset < 0 ? sellOffset : 0)) >= calculatedSellFloor &&
-            (a.available_usdt >= 20 || a.available_idr >= 300_000)
-        );
+        const marketConsensusFloor = liveMarketAnchor > 10_000 ? liveMarketAnchor - 35 : 17_000;
+        const effectiveFloorTarget = Math.max(calculatedSellFloor, marketConsensusFloor);
+
+        // Cari iklan kompetitor non-milik sendiri yang memiliki likuiditas wajar (min 100 USDT)
+        // dan harganya TIDAK berada di bawah batas aman pasar / modal floor
+        const safeCandidates = (allRawAds || [])
+          .filter((a) => {
+            if (isOwnAd(a) || a.price <= 10_000) return false;
+            const usdt = a.available_usdt || (a.price > 0 ? a.available_idr / a.price : 0);
+            if (usdt < 100 && a.available_idr < 1_500_000) return false;
+            const targetP = a.price + (sellOffset < 0 ? sellOffset : 0);
+            return targetP >= effectiveFloorTarget;
+          })
+          .sort((a, b) => a.price - b.price);
 
         if (safeCandidates.length > 0) {
           const safeTarget = safeCandidates[0];
           const rawIndex = allRawAds.indexOf(safeTarget) + 1;
           return {
             basePrice: safeTarget.price,
-            desc: `Relaksasi Aman (≥ Floor): #${rawIndex} (${safeTarget.merchant_name} @ Rp ${safeTarget.price.toLocaleString("id-ID")})`,
+            desc: `Relaksasi Aman (≥ Floor Pasar): #${rawIndex} (${safeTarget.merchant_name} @ Rp ${safeTarget.price.toLocaleString("id-ID")})`,
             isFallback: false,
           };
         }
 
-        // Jika semua kompetitor di pasar berada di bawah batas modal Floor atau tidak ada iklan:
-        // KUNCI LANGSUNG di batas aman Batas Bawah Floor HPP atau acuan pasar wajar (jangan dump harga):
-        const safeFloorPrice = calculatedSellFloor > 0
-          ? calculatedSellFloor
-          : (fallback > 10_000 ? fallback : (liveMarketAnchor > 10_000 ? liveMarketAnchor : 17_850));
+        // Jika semua kompetitor di pasar berada di bawah batas modal Floor / konsensus pasar atau tidak ada iklan:
+        // KUNCI LANGSUNG di batas aman Batas Bawah Floor HPP atau acuan konsensus pasar wajar (bukan dump harga!):
+        const safeFloorPrice = Math.max(
+          calculatedSellFloor,
+          resolvedFallbackSell > 10_000 ? resolvedFallbackSell : (liveMarketAnchor > 10_000 ? liveMarketAnchor : 17_850)
+        );
         return {
           basePrice: safeFloorPrice,
-          desc: `Terkunci Aman di Acuan Pasar Wajar (Rp ${safeFloorPrice.toLocaleString("id-ID")}) [Tidak ada kompetitor lolos filter]`,
+          desc: `Terkunci Aman di Acuan Konsensus Pasar (Rp ${safeFloorPrice.toLocaleString("id-ID")}) [Filter terlalu ketat / tidak ada kompetitor valid]`,
           isFallback: true,
         };
       } else {
         // Pada sisi BELI: Jika tidak ada yang lolos filter:
         // JANGAN PERNAH mengambil iklan paling mahal di pucuk!
-        // Cari iklan non-milik sendiri yang harganya <= Batas Atas Ceiling beli DAN >= Batas Bawah Buy Floor:
-        const sortedNonOwn = (allRawAds || [])
-          .filter((a) => !isOwnAd(a) && a.price > 10_000)
-          .sort((a, b) => b.price - a.price);
+        const buyOffset = typeof config.buyOffsetRp === "number" ? config.buyOffsetRp : 1;
+        const marketConsensusCeiling = liveMarketAnchor > 10_000 ? liveMarketAnchor + 35 : 999_999;
+        const effectiveCeilingTarget = calculatedBuyCeiling > 0
+          ? Math.min(calculatedBuyCeiling, marketConsensusCeiling)
+          : marketConsensusCeiling;
 
-        const safeCandidates = sortedNonOwn.filter(
-          (a) =>
-            (calculatedBuyCeiling <= 0 || a.price <= calculatedBuyCeiling) &&
-            (calculatedBuyFloor <= 0 || a.price >= calculatedBuyFloor) &&
-            (a.available_usdt >= 20 || a.available_idr >= 300_000)
-        );
+        const safeCandidates = (allRawAds || [])
+          .filter((a) => {
+            if (isOwnAd(a) || a.price <= 10_000) return false;
+            const usdt = a.available_usdt || (a.price > 0 ? a.available_idr / a.price : 0);
+            if (usdt < 100 && a.available_idr < 1_500_000) return false;
+            const targetP = a.price + (buyOffset > 0 ? buyOffset : 0);
+            return targetP <= effectiveCeilingTarget && (calculatedBuyFloor <= 0 || targetP >= calculatedBuyFloor);
+          })
+          .sort((a, b) => b.price - a.price);
 
         if (safeCandidates.length > 0) {
           const safeTarget = safeCandidates[0];
           const rawIndex = allRawAds.indexOf(safeTarget) + 1;
           return {
             basePrice: safeTarget.price,
-            desc: `Relaksasi Aman (Batas Aman): #${rawIndex} (${safeTarget.merchant_name} @ Rp ${safeTarget.price.toLocaleString("id-ID")})`,
+            desc: `Relaksasi Aman (Batas Aman Beli): #${rawIndex} (${safeTarget.merchant_name} @ Rp ${safeTarget.price.toLocaleString("id-ID")})`,
             isFallback: false,
           };
         }
 
-        let safeCeilingPrice = calculatedBuyCeiling > 0 ? Math.min(calculatedBuyCeiling, fallback) : fallback;
+        let safeCeilingPrice = calculatedBuyCeiling > 0 ? Math.min(calculatedBuyCeiling, resolvedFallbackBuy) : resolvedFallbackBuy;
         if (calculatedBuyFloor > 0 && safeCeilingPrice < calculatedBuyFloor) {
           safeCeilingPrice = calculatedBuyFloor;
         }
         return {
           basePrice: safeCeilingPrice,
-          desc: `Terkunci Aman di Batas Aman Beli (Rp ${safeCeilingPrice.toLocaleString("id-ID")}) [Tidak ada kompetitor lolos filter]`,
+          desc: `Terkunci Aman di Batas Aman Beli (Rp ${safeCeilingPrice.toLocaleString("id-ID")}) [Filter terlalu ketat / tidak ada kompetitor valid]`,
           isFallback: true,
         };
       }
@@ -1055,8 +1081,9 @@ export function computeCompetitorPricing(input: {
         let candidateSell: Ad | null = null;
         let candidateRank = 0;
 
-        // Prioritas 1: Cari iklan kompetitor di mana (harga + offset) >= limit bawah (floor)
-        for (let i = 0; i < qualifiedSell.length; i++) {
+        // Prioritas 1: Mulai pencarian dari target rank yang diinginkan pengguna
+        const startIdx = Math.min(Math.max(config.targetRank - 1, 0), qualifiedSell.length - 1);
+        for (let i = startIdx; i < qualifiedSell.length; i++) {
           const adCandidate = qualifiedSell[i];
           if (!adCandidate) continue;
           if (adCandidate.price + config.sellOffsetRp >= calculatedSellFloor) {
@@ -1066,12 +1093,25 @@ export function computeCompetitorPricing(input: {
           }
         }
 
-        // Prioritas 2: Jika tidak ada yang + offset >= floor, cari iklan yang harga dasarnya >= floor
+        // Prioritas 2: Jika dari targetRank ke atas tidak ada yang + offset >= floor, cari iklan yang harga dasarnya >= floor
+        if (!candidateSell) {
+          for (let i = startIdx; i < qualifiedSell.length; i++) {
+            const adCandidate = qualifiedSell[i];
+            if (!adCandidate) continue;
+            if (adCandidate.price >= calculatedSellFloor) {
+              candidateSell = adCandidate;
+              candidateRank = i + 1;
+              break;
+            }
+          }
+        }
+
+        // Prioritas 3: Jika masih belum ketemu dari startIdx ke atas, cari di seluruh qualifiedSell dari rank 1
         if (!candidateSell) {
           for (let i = 0; i < qualifiedSell.length; i++) {
             const adCandidate = qualifiedSell[i];
             if (!adCandidate) continue;
-            if (adCandidate.price >= calculatedSellFloor) {
+            if (adCandidate.price + config.sellOffsetRp >= calculatedSellFloor) {
               candidateSell = adCandidate;
               candidateRank = i + 1;
               break;
@@ -1100,10 +1140,8 @@ export function computeCompetitorPricing(input: {
     }
   }
 
-  // ── Proteksi Maksimal Harga Jual Pasar (Sell Sanity Guard) ──
-  // Mencegah harga jual melompat tidak wajar ke pucuk (misal akibat anomali orderbook atau iklan pasif).
-  // Di mode Auto Bot, harga jual tidak boleh melompat lebih dari +50 Rp di atas kompetitor jual terbaik yang sah,
-  // BUKAN dari iklan mentah sembarangan/dust yang harganya murah tidak wajar!
+  // ── Proteksi Maksimal & Minimal Harga Jual Pasar (Sell Sanity & Anti-Dump Guard) ──
+  // Mencegah harga jual melompat liar ke pucuk ATAU anjlok liar ke bawah akibat anomali orderbook / pancingan dump sesaat.
   if (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0) {
     const baselineLegitSell = activeSellTargetMerchant?.price || (qualifiedSell.length > 0 ? qualifiedSell[0].price : 0);
     const bestLegitMarketSell = baselineLegitSell > 0
@@ -1114,10 +1152,20 @@ export function computeCompetitorPricing(input: {
             .sort((a, b) => a.price - b.price)[0]?.price || 0
         );
 
+    // 1. Anti-Spike: Tidak boleh melompat > +50 Rp di atas kompetitor legit terbaik
     if (bestLegitMarketSell > 0) {
       const maxSensibleSell = Math.max(calculatedSellFloor, bestLegitMarketSell + 50);
       if (recommendedSellPrice > maxSensibleSell) {
         recommendedSellPrice = maxSensibleSell;
+      }
+    }
+
+    // 2. Anti-Dump: Tidak boleh anjlok > 35 Rp di bawah anchor konsensus pasar wajar (fairPrice / liveMarketAnchor)
+    const marketAnchorForSell = fairPrice > 10_000 ? fairPrice : (liveMarketAnchor > 10_000 ? liveMarketAnchor : 0);
+    if (marketAnchorForSell > 0) {
+      const minSensibleSell = Math.max(calculatedSellFloor, marketAnchorForSell - 35);
+      if (recommendedSellPrice < minSensibleSell) {
+        recommendedSellPrice = minSensibleSell;
       }
     }
   }
@@ -1150,7 +1198,13 @@ export function computeCompetitorPricing(input: {
       },
     );
 
-    const pureTopAd = pureMarketSellAds.length > 0 ? pureMarketSellAds[0] : null;
+    // Pastikan acuan pasar jual murni memiliki likuiditas wajar (bukan dust < 100 USDT)
+    const validPureAds = pureMarketSellAds.filter((a) => {
+      const usdt = a.available_usdt || (a.price > 0 ? a.available_idr / a.price : 0);
+      return (usdt >= 100 || a.available_idr >= 1_500_000) && a.price > 10_000;
+    });
+
+    const pureTopAd = validPureAds.length > 0 ? validPureAds[0] : (pureMarketSellAds.length > 0 ? pureMarketSellAds[0] : null);
 
     if (pureTopAd && pureTopAd.price > 0) {
       marketSellAnchor = pureTopAd.price;

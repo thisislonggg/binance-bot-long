@@ -444,6 +444,14 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
     if (minSellFloor > 0 && roundedSellPrice < minSellFloor) {
       roundedSellPrice = minSellFloor;
     }
+    // Proteksi Tambahan Anti-Dump: Di mode auto bot, harga jual tidak boleh jatuh di bawah batas aman konsensus pasar
+    if (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0) {
+      const marketAnchor = fairPrice > 10_000 ? fairPrice : 0;
+      const antiDumpFloor = marketAnchor > 0 ? Math.max(minSellFloor, marketAnchor - 35) : minSellFloor;
+      if (antiDumpFloor > 0 && roundedSellPrice < antiDumpFloor) {
+        roundedSellPrice = antiDumpFloor;
+      }
+    }
     if (config.merchantSellAdvNo && roundedSellPrice > 0) {
       const maxAvailableSellStockUsdt =
         liveStockUsdt > 0 ? Math.max(0, Math.floor((liveStockUsdt / 1.0005) * 100) / 100) : 0;
