@@ -95,9 +95,14 @@ export function parseLivenessChatMessage(text: string): ParsedLivenessMessage {
   // 2. Cek status: Completed / Selesai / Success / Pass / Passed / Lolos / Approved / Done
   const statusMatch = clean.match(/status[:\s]+([A-Za-z]+)/i);
   const statusStr = statusMatch ? statusMatch[1].trim() : "";
-  const isCompleted =
-    /completed|selesai|success|pass|passed|approved|lolos|verified|terverifikasi|done|ok/i.test(statusStr) ||
-    /\b(completed|selesai|success|passed|approved|lolos|terverifikasi)\b/i.test(clean);
+
+  // Jika status secara eksplisit PENDING / WAITING / FAILED / MENUNGGU, MAKA WAJIB BELUM SELESAI!
+  const isExplicitPending = /pending|menunggu|waiting|unverified|proses|process/i.test(statusStr);
+  const isExplicitFailed = /failed|gagal|rejected|ditolak/i.test(statusStr);
+  const isExplicitCompleted = /completed|selesai|passed|approved|lolos/i.test(statusStr);
+
+  // isCompleted HANYA true jika statusStr adalah completed dan TIDAK pending/failed
+  const isCompleted = isExplicitCompleted && !isExplicitPending && !isExplicitFailed;
 
   // 3. Ekstrak Order Number: 15-25 digit
   let orderNumber: string | undefined = orderNumberFromPayload;
@@ -456,6 +461,7 @@ export const processLivenessChatMessage = createServerFn({ method: "POST" })
       const { executeAutoVerifyForSellOrder } = await import("./binance-merchant");
       const kycRes = await executeAutoVerifyForSellOrder({
         orderNumber,
+        livenessCompleted: true,
         force: true,
       });
       if (kycRes.ok && !kycRes.skipped) {
@@ -490,6 +496,10 @@ export const setOrderLivenessStatus = createServerFn({ method: "POST" })
 
     if (!data.completed) {
       await deleteLivenessRecordInternal(data.orderNumber);
+      try {
+        const { unmarkOrderKycVerified } = await import("./binance-merchant");
+        unmarkOrderKycVerified(data.orderNumber);
+      } catch {}
       return { ok: true, orderNumber: data.orderNumber, completed: false };
     }
 
@@ -511,6 +521,7 @@ export const setOrderLivenessStatus = createServerFn({ method: "POST" })
       const { executeAutoVerifyForSellOrder } = await import("./binance-merchant");
       await executeAutoVerifyForSellOrder({
         orderNumber: data.orderNumber,
+        livenessCompleted: true,
         force: true,
       });
     } catch {}
@@ -555,6 +566,7 @@ export async function handleIncomingChatMessageWebhook(body: any): Promise<any> 
     const { executeAutoVerifyForSellOrder } = await import("./binance-merchant");
     await executeAutoVerifyForSellOrder({
       orderNumber: finalOrderNo,
+      livenessCompleted: true,
       force: true,
     });
   } catch {}
@@ -573,4 +585,6 @@ export {
   executeAutoVerifyForSellOrder,
   verifyAdditionalKycOrder,
   isOrderKycVerified,
+  unmarkOrderKycVerified,
 } from "./binance-merchant";
+

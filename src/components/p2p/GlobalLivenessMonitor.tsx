@@ -121,7 +121,14 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
           );
         }
       } else if (livenessEnabled && isAutoVerify && !triggeringOrders.current.has(ord.orderNumber)) {
-        // Watchdog: jika order aktif tapi server belum menandai verified, client langsung trigger auto-verif
+        // KRITIKAL: Jika order membutuhkan Additional KYC (liveness wajah),
+        // JANGAN PERNAH auto-verifikasi dari watchdog ini!
+        // Order WAJIB menunggu pembeli benar-benar selesai verifikasi wajah (Chat Status: Completed).
+        if (ord.additionalKycVerify === 1) {
+          continue;
+        }
+
+        // Watchdog hanya berlaku untuk order umum tanpa syarat additional KYC
         const statusUpper = (ord.orderStatus || "").toUpperCase();
         const isBuyerPayed =
           statusUpper.includes("PAYED") ||

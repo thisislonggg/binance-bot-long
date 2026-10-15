@@ -1506,6 +1506,10 @@ export function markOrderKycVerified(orderNumber: string): void {
   if (orderNumber) verifiedKycOrdersSet.add(orderNumber.trim());
 }
 
+export function unmarkOrderKycVerified(orderNumber: string): void {
+  if (orderNumber) verifiedKycOrdersSet.delete(orderNumber.trim());
+}
+
 export function getVerifiedKycOrdersSet(): Set<string> {
   return new Set(verifiedKycOrdersSet);
 }
@@ -1742,6 +1746,17 @@ export async function executeAutoVerifyForSellOrder(params: {
         message: `Order #${cleanOrderNo} tidak membutuhkan verifikasi tambahan (additionalKycVerify = 0).`,
       };
     }
+  }
+
+  // KONSISTENSI KEAMANAN 4 (CRITICAL): Liveness check pembeli WAJIB sudah selesai (Status: Completed)
+  // DILARANG KERAS auto-verify jika pembeli belum menyelesaikan verifikasi wajah di Binance (masih Pending)!
+  const isLivenessTrulyDone = params.livenessCompleted === true || params.force === true;
+  if (!isLivenessTrulyDone) {
+    return {
+      ok: false,
+      skipped: true,
+      message: `[LIVENESS BELUM SELESAI] Order #${cleanOrderNo} ditahan karena pembeli belum menyelesaikan verifikasi wajah di Binance (Status masih Pending). Auto-verify HANYA dieksekusi setelah status liveness menjadi Completed.`,
+    };
   }
 
   // 4. Eksekusi Panggilan API verifiedAdditionalKyc (TIDAK ADA RELEASE COIN!)
