@@ -141,8 +141,33 @@ const pstdev = (xs: number[]) => {
 export function parseAds(rawAds: any[]): Ad[] {
   const parsed: Ad[] = [];
   for (const item of rawAds ?? []) {
-    const adv = item?.adv ?? {};
-    const seller = item?.advertiser ?? {};
+    const adv = item?.adv ?? item ?? {};
+    const seller = item?.advertiser ?? item?.seller ?? item?.user ?? item?.merchant ?? {};
+    const rawAdvNo =
+      adv.advNo ??
+      adv.adNo ??
+      adv.adv_no ??
+      adv.advNumber ??
+      item?.advNo ??
+      item?.adNo ??
+      item?.adv_no ??
+      item?.advNumber ??
+      null;
+    const cleanAdvNo = rawAdvNo !== null && rawAdvNo !== undefined && String(rawAdvNo).trim() !== ""
+      ? String(rawAdvNo).trim()
+      : null;
+
+    const rawMerchantName =
+      seller.nickName ??
+      seller.nickname ??
+      seller.nick_name ??
+      seller.name ??
+      item?.merchant_name ??
+      item?.nickName ??
+      item?.nickname ??
+      "unknown";
+    const cleanMerchantName = String(rawMerchantName).trim() || "unknown";
+
     const price = Number(adv.price);
     const minLimit = Number(adv.minSingleTransAmount ?? 0);
     const rawMaxLimit = Number(adv.maxSingleTransAmount ?? 0);
@@ -272,7 +297,7 @@ export function parseAds(rawAds: any[]): Ad[] {
     );
 
     parsed.push({
-      adv_no: adv.advNo ?? null,
+      adv_no: cleanAdvNo,
       price,
       min_limit_idr: Number.isFinite(minLimit) ? Math.round(minLimit) : 0,
       max_limit_idr: Number.isFinite(effectiveMaxLimit) ? Math.round(effectiveMaxLimit) : 0,
@@ -283,7 +308,7 @@ export function parseAds(rawAds: any[]): Ad[] {
       pay_methods: (adv.tradeMethods ?? []).map(
         (m: any) => m?.tradeMethodName ?? m?.identifier ?? "?",
       ),
-      merchant_name: seller.nickName ?? "unknown",
+      merchant_name: cleanMerchantName,
       user_type: seller.userType ?? "user",
       is_verified: isVerified,
       completion_rate: completionRate,

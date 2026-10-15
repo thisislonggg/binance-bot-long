@@ -3720,6 +3720,28 @@ export function AutoPricingBotPanel({
                 </div>
               </div>
 
+              {/* Nickname Akun Sendiri di Tab Merchant */}
+              <div className="rounded-lg border border-primary/30 bg-primary/5 p-2.5 flex items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-foreground">
+                    <UserCheck className="size-3.5 text-primary" />
+                    <span>Nickname Akun Sendiri:</span>
+                  </div>
+                  <p className="text-[0.68rem] text-muted-foreground">
+                    {config.ownMerchantNickname
+                      ? `Iklan milik @${config.ownMerchantNickname} otomatis diabaikan agar tidak bersaing sendiri.`
+                      : "Belum diisi. Masukkan nickname Anda agar bot tidak bersaing dengan diri sendiri."}
+                  </p>
+                </div>
+                <Input
+                  type="text"
+                  value={config.ownMerchantNickname || ""}
+                  onChange={(e) => updateConfig({ ownMerchantNickname: e.target.value.trim() })}
+                  placeholder="Nickname Anda..."
+                  className="h-7 text-xs bg-surface max-w-[220px]"
+                />
+              </div>
+
               {/* Selector Sisi JUAL vs BELI untuk Pengaturan Blokir Merchant */}
               <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-surface border border-border/80">
                 <div className="space-y-0.5">
@@ -4438,6 +4460,31 @@ export function AutoPricingBotPanel({
                 </div>
                 <p className="text-[0.68rem] text-muted-foreground leading-relaxed">
                   💡 <strong>Cara Mengetahui Nomor Iklan (advNo):</strong> Buka Binance App atau Web &rarr; masuk ke menu <strong>P2P &rarr; Iklan Saya (My Ads)</strong> &rarr; buka rincian iklan Beli dan Jual Anda &rarr; salin deretan angka nomor iklan (biasanya 19 digit angka unik).
+                </p>
+              </div>
+
+              {/* Form Input Nickname Akun Binance (Pencegah Menyaingi Iklan Sendiri) */}
+              <div className="rounded-xl border border-primary/35 bg-primary/5 p-3.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <UserCheck className="size-4 text-primary" />
+                    <Label className="text-xs font-bold text-foreground">
+                      Nickname Akun Merchant Binance Anda
+                    </Label>
+                  </div>
+                  <Badge variant="outline" className="border-primary/40 text-primary text-[0.62rem] font-bold bg-primary/10">
+                    Anti-Perang Iklan Sendiri
+                  </Badge>
+                </div>
+                <Input
+                  type="text"
+                  value={config.ownMerchantNickname || ""}
+                  onChange={(e) => updateConfig({ ownMerchantNickname: e.target.value.trim() })}
+                  placeholder="Contoh: TokoKripto88 (Sesuai nickname di aplikasi Binance)"
+                  className="h-8 text-xs font-semibold bg-surface"
+                />
+                <p className="text-[0.68rem] text-muted-foreground leading-relaxed">
+                  🛡️ <strong>Sangat Penting:</strong> Masukkan nama/nickname akun merchant Binance Anda. Bot akan otomatis mengenali iklan Anda di orderbook sehingga <strong>TIDAK PERNAH memotong harga sendiri</strong> secara berulang (mencegah siklus harga jual turun sendiri).
                 </p>
               </div>
 

@@ -313,6 +313,7 @@ export type CompetitorPricingResult = {
     floorPrice: number;
     autoSwitched?: boolean;
     switchedToRank?: number;
+    switchedToMerchant?: string;
     stockHpp: number;
     makerFeeRp: number;
     minProfitMarginRp: number;
@@ -402,29 +403,48 @@ export function evaluateCompetitorAds(
     const reasons: DisqualificationReason[] = [];
 
     // 0. Filter Iklan Milik Sendiri (Own Ad - agar bot tidak bersaing dengan diri sendiri)
-    const cleanBuyAdvNo = config.merchantBuyAdvNo ? config.merchantBuyAdvNo.trim().replace(/^#/, "") : "";
-    const cleanSellAdvNo = config.merchantSellAdvNo ? config.merchantSellAdvNo.trim().replace(/^#/, "") : "";
-    const cleanAdAdvNo = ad.adv_no ? String(ad.adv_no).trim().replace(/^#/, "") : "";
-    const ownNickname = config.ownMerchantNickname ? config.ownMerchantNickname.trim().toLowerCase() : "";
+    const normalizeId = (s: unknown) => String(s || "").trim().replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
+    const cleanBuyAdvNo = normalizeId(config.merchantBuyAdvNo);
+    const cleanSellAdvNo = normalizeId(config.merchantSellAdvNo);
+    const cleanAdAdvNo = normalizeId(ad.adv_no);
+    const ownNickname = (config.ownMerchantNickname || "").trim().toLowerCase();
+    const adMerchantName = (ad.merchant_name || "").trim().toLowerCase();
 
-    if (
-      (cleanAdAdvNo && (cleanAdAdvNo === cleanBuyAdvNo || cleanAdAdvNo === cleanSellAdvNo)) ||
-      (ownNickname && ad.merchant_name && ad.merchant_name.trim().toLowerCase() === ownNickname)
-    ) {
+    const isAdvMatch = Boolean(
+      cleanAdAdvNo &&
+      (
+        (cleanBuyAdvNo && (cleanAdAdvNo === cleanBuyAdvNo || cleanBuyAdvNo.includes(cleanAdAdvNo) || cleanAdAdvNo.includes(cleanBuyAdvNo))) ||
+        (cleanSellAdvNo && (cleanAdAdvNo === cleanSellAdvNo || cleanSellAdvNo.includes(cleanAdAdvNo) || cleanAdAdvNo.includes(cleanSellAdvNo)))
+      )
+    );
+
+    const isNickMatch = Boolean(
+      ownNickname &&
+      adMerchantName &&
+      (adMerchantName === ownNickname || adMerchantName.includes(ownNickname) || ownNickname.includes(adMerchantName))
+    );
+
+    if (isAdvMatch || isNickMatch) {
       reasons.push({
         code: "OWN_AD",
-        message: "Iklan milik sendiri (diabaikan dari daftar kompetitor)",
+        message: "Iklan milik sendiri (diabaikan dari daftar kompetitor agar bot tidak memotong harga sendiri)",
       });
     }
 
     // 0b. Filter Proteksi Batas Bawah Jual (Sell Floor Guard)
     // Jika ada kompetitor jual memasang harga di bawah batas bawah aman (modal/floor),
+    // atau jika harga kompetitor dipotong offset jual (undercut) akan menghasilkan harga di bawah floor:
     // DISKUALIFIKASI TOTAL kompetitor tersebut agar bot TIDAK PERNAH menjadikannya target ataupun memotong harganya!
-    if (!options?.ignoreFloor && side === "sell_ref" && effectiveFloor && effectiveFloor > 0 && ad.price < effectiveFloor) {
-      reasons.push({
-        code: "BELOW_SELL_FLOOR",
-        message: `Harga jual Rp ${ad.price.toLocaleString("id-ID")} di bawah batas bawah jual aman Anda (Floor Rp ${effectiveFloor.toLocaleString("id-ID")})`,
-      });
+    const effectiveSellFloor = effectiveFloor && effectiveFloor > 0 ? effectiveFloor : 0;
+    if (!options?.ignoreFloor && side === "sell_ref" && effectiveSellFloor > 0) {
+      const sellOffset = typeof config.sellOffsetRp === "number" ? config.sellOffsetRp : -1;
+      const potentialTargetPrice = ad.price + (sellOffset < 0 ? sellOffset : 0);
+      if (ad.price < effectiveSellFloor || potentialTargetPrice < effectiveSellFloor) {
+        reasons.push({
+          code: "BELOW_SELL_FLOOR",
+          message: `Harga jual Rp ${ad.price.toLocaleString("id-ID")} (target undercut Rp ${potentialTargetPrice.toLocaleString("id-ID")}) di bawah batas bawah jual aman Anda (Floor Rp ${effectiveSellFloor.toLocaleString("id-ID")})`,
+        });
+      }
     }
 
     // 0c. Filter Proteksi Batas Bawah Beli (Buy Floor Guard)
@@ -756,14 +776,31 @@ export function computeCompetitorPricing(input: {
     : (liveMarketAnchor - halfSpread);
 
   // Helper cek apakah iklan milik sendiri
-  const cleanBuyAdvNo = config.merchantBuyAdvNo ? config.merchantBuyAdvNo.trim().replace(/^#/, "") : "";
-  const cleanSellAdvNo = config.merchantSellAdvNo ? config.merchantSellAdvNo.trim().replace(/^#/, "") : "";
-  const ownNickname = config.ownMerchantNickname ? config.ownMerchantNickname.trim().toLowerCase() : "";
+  const normalizeId = (s: unknown) => String(s || "").trim().replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
+  const cleanBuyAdvNo = normalizeId(config.merchantBuyAdvNo);
+  const cleanSellAdvNo = normalizeId(config.merchantSellAdvNo);
+  const ownNickname = (config.ownMerchantNickname || "").trim().toLowerCase();
 
   const isOwnAd = (ad: Ad) => {
-    const cleanAdAdvNo = ad.adv_no ? String(ad.adv_no).trim().replace(/^#/, "") : "";
-    if (cleanAdAdvNo && (cleanAdAdvNo === cleanBuyAdvNo || cleanAdAdvNo === cleanSellAdvNo)) return true;
-    if (ownNickname && ad.merchant_name && ad.merchant_name.trim().toLowerCase() === ownNickname) return true;
+    const cleanAdAdvNo = normalizeId(ad.adv_no);
+    const adMerchantName = (ad.merchant_name || "").trim().toLowerCase();
+
+    if (
+      cleanAdAdvNo &&
+      (
+        (cleanBuyAdvNo && (cleanAdAdvNo === cleanBuyAdvNo || cleanBuyAdvNo.includes(cleanAdAdvNo) || cleanAdAdvNo.includes(cleanBuyAdvNo))) ||
+        (cleanSellAdvNo && (cleanAdAdvNo === cleanSellAdvNo || cleanSellAdvNo.includes(cleanAdAdvNo) || cleanAdAdvNo.includes(cleanSellAdvNo)))
+      )
+    ) {
+      return true;
+    }
+    if (
+      ownNickname &&
+      adMerchantName &&
+      (adMerchantName === ownNickname || adMerchantName.includes(ownNickname) || ownNickname.includes(adMerchantName))
+    ) {
+      return true;
+    }
     return false;
   };
 
@@ -859,10 +896,11 @@ export function computeCompetitorPricing(input: {
           .filter((a) => !isOwnAd(a) && a.price > 10_000)
           .sort((a, b) => a.price - b.price);
 
-        // Cari iklan non-milik sendiri yang memiliki likuiditas wajar (bukan dust < 20 USDT) dan >= calculatedSellFloor
+        // Cari iklan non-milik sendiri yang memiliki likuiditas wajar (bukan dust < 20 USDT) dan targetnya >= calculatedSellFloor
+        const sellOffset = typeof config.sellOffsetRp === "number" ? config.sellOffsetRp : -1;
         const safeCandidates = sortedNonOwn.filter(
           (a) =>
-            a.price >= calculatedSellFloor &&
+            (a.price + (sellOffset < 0 ? sellOffset : 0)) >= calculatedSellFloor &&
             (a.available_usdt >= 20 || a.available_idr >= 300_000)
         );
 
@@ -1005,15 +1043,60 @@ export function computeCompetitorPricing(input: {
     }
     activeSellDesc = `Manual Override (Rp ${fixedSell.toLocaleString("id-ID")})`;
   } else {
-    // Mode Auto Bot: periksa apakah target pasar berada di bawah batas aman floor modal yang di-set pengguna
+    // Mode Auto Bot untuk Jual:
+    // Cek Batas Bawah (Sell Floor Guard)
+    // FITUR: Auto-Follow Iklan Lain Saat Batas Bawah Jual Tercapai
     const isMarketBelowFloor = calculatedSellFloor > 0 && naturalSellTargetPrice < calculatedSellFloor;
 
     if (isMarketBelowFloor || (calculatedSellFloor > 0 && recommendedSellPrice < calculatedSellFloor)) {
       sellGuard.triggered = true;
-      // Kunci rapat di batas aman Floor modal agar bot tidak menjual rugi,
-      // tapi JANGAN melompat ke iklan rank atas yang lebih mahal agar harga tidak naik-naik sendiri!
-      recommendedSellPrice = calculatedSellFloor;
-      sellGuard.reason = `Batas Bawah Modal Terpenuhi: Harga pasar/target (Rp ${naturalSellTargetPrice.toLocaleString("id-ID")}) berada di bawah batas aman Floor (Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci tepat di batas Floor modal agar tidak menjual rugi namun tetap paling kompetitif.`;
+
+      if (autoFollow && qualifiedSell.length > 0) {
+        let candidateSell: Ad | null = null;
+        let candidateRank = 0;
+
+        // Prioritas 1: Cari iklan kompetitor di mana (harga + offset) >= limit bawah (floor)
+        for (let i = 0; i < qualifiedSell.length; i++) {
+          const adCandidate = qualifiedSell[i];
+          if (!adCandidate) continue;
+          if (adCandidate.price + config.sellOffsetRp >= calculatedSellFloor) {
+            candidateSell = adCandidate;
+            candidateRank = i + 1;
+            break;
+          }
+        }
+
+        // Prioritas 2: Jika tidak ada yang + offset >= floor, cari iklan yang harga dasarnya >= floor
+        if (!candidateSell) {
+          for (let i = 0; i < qualifiedSell.length; i++) {
+            const adCandidate = qualifiedSell[i];
+            if (!adCandidate) continue;
+            if (adCandidate.price >= calculatedSellFloor) {
+              candidateSell = adCandidate;
+              candidateRank = i + 1;
+              break;
+            }
+          }
+        }
+
+        if (candidateSell) {
+          activeSellTargetMerchant = candidateSell;
+          activeSellRankUsed = candidateRank;
+          const targetP = candidateSell.price + config.sellOffsetRp;
+          recommendedSellPrice = Math.max(calculatedSellFloor, targetP);
+          activeSellDesc = `Auto-Follow #${candidateRank} (${candidateSell.merchant_name} @ Rp ${candidateSell.price.toLocaleString("id-ID")})`;
+          sellGuard.autoSwitched = true;
+          sellGuard.switchedToRank = candidateRank;
+          sellGuard.switchedToMerchant = candidateSell.merchant_name;
+          sellGuard.reason = `Target awal di bawah batas bawah (Floor Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Otomatis dialihkan ke kompetitor aman #${candidateRank} (${candidateSell.merchant_name} @ Rp ${candidateSell.price.toLocaleString("id-ID")}).`;
+        } else {
+          recommendedSellPrice = calculatedSellFloor;
+          sellGuard.reason = `Batas Bawah Modal Terpenuhi: Seluruh kompetitor di pasar menjual di bawah batas aman Floor (Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci tepat di batas Floor modal agar tidak menjual rugi.`;
+        }
+      } else {
+        recommendedSellPrice = calculatedSellFloor;
+        sellGuard.reason = `Batas Bawah Modal Terpenuhi: Harga pasar/target (Rp ${naturalSellTargetPrice.toLocaleString("id-ID")}) berada di bawah batas aman Floor (Rp ${calculatedSellFloor.toLocaleString("id-ID")}). Harga dikunci tepat di batas Floor modal agar tidak menjual rugi namun tetap paling kompetitif.`;
+      }
     }
   }
 
@@ -1022,11 +1105,12 @@ export function computeCompetitorPricing(input: {
   // Di mode Auto Bot, harga jual tidak boleh melompat lebih dari +50 Rp di atas kompetitor jual terbaik yang sah,
   // BUKAN dari iklan mentah sembarangan/dust yang harganya murah tidak wajar!
   if (!config.manualSellPriceOverrideRp || config.manualSellPriceOverrideRp <= 0) {
-    const bestLegitMarketSell = qualifiedSell.length > 0
-      ? qualifiedSell[0].price
+    const baselineLegitSell = activeSellTargetMerchant?.price || (qualifiedSell.length > 0 ? qualifiedSell[0].price : 0);
+    const bestLegitMarketSell = baselineLegitSell > 0
+      ? baselineLegitSell
       : (
           (sellRefAds || [])
-            .filter((a) => !isOwnAd(a) && a.price > 10_000 && (a.available_usdt >= 20 || a.available_idr >= 300_000))
+            .filter((a) => !isOwnAd(a) && a.price > 10_000 && (calculatedSellFloor <= 0 || a.price >= calculatedSellFloor) && (a.available_usdt >= 20 || a.available_idr >= 300_000))
             .sort((a, b) => a.price - b.price)[0]?.price || 0
         );
 
@@ -1036,6 +1120,11 @@ export function computeCompetitorPricing(input: {
         recommendedSellPrice = maxSensibleSell;
       }
     }
+  }
+
+  // Kunci Mutlak: Harga jual TIDAK BOLEH pernah berada di bawah calculatedSellFloor
+  if (calculatedSellFloor > 0 && recommendedSellPrice < calculatedSellFloor) {
+    recommendedSellPrice = calculatedSellFloor;
   }
 
   // 3. Hitung dan Terapkan Batas Pengaman BELI (Buy Ceiling Guard) dari Harga Pasar Kompetitor Murni
