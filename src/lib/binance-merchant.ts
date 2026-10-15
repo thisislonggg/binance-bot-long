@@ -17,6 +17,7 @@ import { createHmac } from "crypto";
 import { z } from "zod";
 
 import { requireSession } from "./auth";
+import { isBotAutomationEnabled } from "./bot-master-switch";
 
 const DEFAULT_BINANCE_API_URL = "https://api.binance.com";
 
@@ -1322,6 +1323,20 @@ export const pushPriceToBinanceAd = createServerFn({ method: "POST" })
       };
     }
 
+    // Saklar utama: push otomatis (membawa runnerId) ditolak di server, apa pun kondisi tab-nya.
+    if (data.runnerId && !(await isBotAutomationEnabled())) {
+      return {
+        ok: false,
+        advNo: data.advNo,
+        side: data.side,
+        price: data.price,
+        message: "Auto-push dibatalkan: saklar utama semua bot sedang OFF.",
+        error: "MASTER_SWITCH_OFF",
+        code: "MASTER_SWITCH_OFF",
+        timestamp: Date.now(),
+      };
+    }
+
     if (data.runnerId) {
       const { claimBotRunnerLease } = await import("./background-bot-engine");
       const lease = await claimBotRunnerLease(data.runnerId);
@@ -1701,6 +1716,20 @@ export async function executeAutoVerifyForSellOrder(params: {
       skipped: true,
       verified: true,
       message: `Order SELL #${cleanOrderNo} sudah diverifikasi sebelumnya.`,
+    };
+  }
+
+  // Saklar utama semua bot: jalur otomatis berhenti total (tombol manual merchant tetap jalan).
+  if (!manual && !(await isBotAutomationEnabled())) {
+    setAutoVerifyStatus(cleanOrderNo, {
+      state: "waiting",
+      message: "Saklar utama semua bot OFF: buka rekening manual dengan tombol Auto-Verif.",
+    });
+    return {
+      ok: false,
+      skipped: true,
+      verified: false,
+      message: "Saklar utama semua bot OFF: auto-verify tidak dijalankan.",
     };
   }
 

@@ -27,7 +27,9 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sliders,
+  Power,
   Sparkles,
+  Swords,
   Target,
   Trash2,
   TrendingUp,
@@ -93,6 +95,13 @@ import {
   type StrategyPreset,
 } from "@/lib/competitor-bot";
 import { fmtPct, fmtRate, fmtRp, fmtRp2, type Ad } from "@/lib/p2p-engine";
+import {
+  applyPriceWarHold,
+  EMPTY_WAR_SIDE,
+  updatePriceWarSide,
+  type PriceWarConfig,
+  type PriceWarSide,
+} from "@/lib/price-war-guard";
 
 /** Umur maksimal snapshot pasar sebelum auto-push ditahan. */
 const MAX_MARKET_DATA_AGE_MS = 15_000;
@@ -136,6 +145,8 @@ interface AutoPricingBotPanelProps {
   pnlReady?: boolean;
   /** Waktu (ms) snapshot pasar terakhir berhasil diambil. Data lebih tua dari 15 detik menahan auto-push. */
   marketUpdatedAt?: number;
+  /** Saklar utama semua bot (server). OFF = tidak ada auto-push dari tab ini. */
+  botsEnabled?: boolean;
 }
 
 export function AutoPricingBotPanel({
@@ -154,6 +165,7 @@ export function AutoPricingBotPanel({
   isRefreshing = false,
   pnlReady = true,
   marketUpdatedAt = 0,
+  botsEnabled = true,
 }: AutoPricingBotPanelProps) {
   // ── Konfigurasi Bot dengan LocalStorage ─────────────────────────────────────
   const [config, setConfig] = useState<CompetitorFilterConfig>(() => loadBotConfig());
@@ -455,8 +467,8 @@ export function AutoPricingBotPanel({
   ]);
 
   const {
-    recommendedSellPrice,
-    recommendedBuyPrice,
+    recommendedSellPrice: rawRecommendedSellPrice,
+    recommendedBuyPrice: rawRecommendedBuyPrice,
     sellTargetMerchant,
     buyTargetMerchant,
     sellRankUsed,
@@ -476,7 +488,64 @@ export function AutoPricingBotPanel({
     bankAllocation,
   } = pricingResult;
 
-  const hasAnyGuardTriggered = sellGuard.triggered || buyGuard.triggered;
+  // ── Deteksi war antar bot ─────────────────────────────────────────────────
+  // Dihitung saat render (bukan di effect) agar harga yang di-push pada render yang sama sudah
+  // tertahan. updatePriceWarSide murni & idempoten untuk harga yang sama, jadi aman dipanggil ulang.
+  const warConfig: PriceWarConfig = {
+    enabled: config.priceWarGuardEnabled !== false,
+    windowSec: config.priceWarWindowSec ?? 60,
+    minSteps: config.priceWarMinSteps ?? 3,
+    minMoveRp: config.priceWarMinMoveRp ?? 10,
+    cooldownSec: config.priceWarCooldownSec ?? 120,
+  };
+  const warRef = useRef<{ buy: PriceWarSide; sell: PriceWarSide }>({ buy: EMPTY_WAR_SIDE, sell: EMPTY_WAR_SIDE });
+  const warState = useMemo(() => {
+    const now = Date.now();
+    warRef.current = {
+      buy: updatePriceWarSide(warRef.current.buy, rawRecommendedBuyPrice, now, warConfig, "up"),
+      sell: updatePriceWarSide(warRef.current.sell, rawRecommendedSellPrice, now, warConfig, "down"),
+    };
+    return warRef.current;
+    // marketUpdatedAt: evaluasi ulang cooldown tiap refresh pasar walau harga tidak berubah
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    rawRecommendedBuyPrice,
+    rawRecommendedSellPrice,
+    marketUpdatedAt,
+    warConfig.enabled,
+    warConfig.windowSec,
+    warConfig.minSteps,
+    warConfig.minMoveRp,
+    warConfig.cooldownSec,
+  ]);
+  const recommendedBuyPrice = applyPriceWarHold(rawRecommendedBuyPrice, warState.buy, "up");
+  const recommendedSellPrice = applyPriceWarHold(rawRecommendedSellPrice, warState.sell, "down");
+  const buyWarActive = warState.buy.active;
+  const sellWarActive = warState.sell.active;
+
+  const prevWarRef = useRef({ buy: false, sell: false });
+  useEffect(() => {
+    const prev = prevWarRef.current;
+    if (buyWarActive && !prev.buy) {
+      toast.warning(
+        `War bot terdeteksi di sisi BELI: pasar naik ke ${fmtRp(warState.buy.peakPrice)}. Harga beli ditahan di ${fmtRp(warState.buy.holdPrice)}.`,
+        { duration: 10000 },
+      );
+    } else if (!buyWarActive && prev.buy) {
+      toast.info("War sisi beli mereda. Harga beli kembali mengikuti pasar.", { duration: 6000 });
+    }
+    if (sellWarActive && !prev.sell) {
+      toast.warning(
+        `War bot terdeteksi di sisi JUAL: pasar turun ke ${fmtRp(warState.sell.peakPrice)}. Harga jual ditahan di ${fmtRp(warState.sell.holdPrice)}.`,
+        { duration: 10000 },
+      );
+    } else if (!sellWarActive && prev.sell) {
+      toast.info("War sisi jual mereda. Harga jual kembali mengikuti pasar.", { duration: 6000 });
+    }
+    prevWarRef.current = { buy: buyWarActive, sell: sellWarActive };
+  }, [buyWarActive, sellWarActive]);
+
+  const hasAnyGuardTriggered = sellGuard.triggered || buyGuard.triggered || buyWarActive || sellWarActive;
 
   // Analisis Gap Trap antara Rank 1 dan Rank 2 sisi Beli (Live Orderbook)
   const buySideGaps = useMemo(() => {
@@ -622,7 +691,7 @@ export function AutoPricingBotPanel({
   const isRunnerLeaderRef = useRef(false);
   const [isRunnerLeader, setIsRunnerLeader] = useState(false);
   const [runnerHolder, setRunnerHolder] = useState<BotRunnerLease | null>(null);
-  const autoRunActive = Boolean(config.enabled && config.autoPushToBinance);
+  const autoRunActive = Boolean(botsEnabled && config.enabled && config.autoPushToBinance);
 
   const runnerHeartbeat = async (takeover = false) => {
     if (!runnerIdRef.current) {
@@ -892,6 +961,8 @@ export function AutoPricingBotPanel({
       setLastPushLog(res);
       if (res.ok) {
         toast.success(res.message, autoToast);
+      } else if (res.code === "MASTER_SWITCH_OFF") {
+        toast.warning(res.message, autoToast);
       } else if (res.code === "NOT_RUNNER_LEADER") {
         isRunnerLeaderRef.current = false;
         setIsRunnerLeader(false);
@@ -962,7 +1033,7 @@ export function AutoPricingBotPanel({
   // interval di bawah hanya memanggil versi terkini lewat ref.
   const checkAndPushRef = useRef<() => void>(() => {});
   checkAndPushRef.current = () => {
-    if (!config.enabled || !config.autoPushToBinance) return;
+    if (!botsEnabled || !config.enabled || !config.autoPushToBinance) return;
     if (!isRunnerLeaderRef.current) return; // tab/perangkat lain yang menjalankan bot
     if (!pnlReady) {
       if (!pnlWaitNotifiedRef.current) {
@@ -1267,6 +1338,13 @@ export function AutoPricingBotPanel({
           </div>
         </div>
 
+        {!botsEnabled && (
+          <div className="order-last flex w-full items-center gap-2 rounded-lg border border-ask/40 bg-ask/10 px-3 py-1.5 text-xs font-semibold text-ask">
+            <Power className="size-3.5 shrink-0" />
+            Saklar utama &quot;Semua Bot&quot; OFF: auto-push harga dihentikan. Push manual tetap bisa dipakai.
+          </div>
+        )}
+
         {autoRunActive && (
           <div
             className={`order-last flex w-full flex-wrap items-center gap-2 rounded-lg border px-3 py-1.5 text-xs ${
@@ -1383,6 +1461,17 @@ export function AutoPricingBotPanel({
                 </div>
               </div>
             </div>
+
+            {buyWarActive && (
+              <div className="mt-3 flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[0.72rem] font-medium text-amber-400">
+                <Swords className="size-3.5 shrink-0 mt-px" />
+                <span>
+                  War bot terdeteksi: pasar naik ke <strong className="num">{fmtRp(warState.buy.peakPrice)}</strong>. Harga ditahan di{" "}
+                  <strong className="num">{fmtRp(warState.buy.holdPrice)}</strong> sampai harga tenang{" "}
+                  {Math.max(0, Math.ceil(((warState.buy.lastStepAt + (config.priceWarCooldownSec ?? 120) * 1000) - Date.now()) / 1000))}s.
+                </span>
+              </div>
+            )}
 
             {/* Target Merchant Acuan yang Diikuti */}
             <div className="mt-3 rounded-lg border border-border/70 bg-surface-2/80 p-2.5 space-y-1.5 text-xs">
@@ -1774,6 +1863,17 @@ export function AutoPricingBotPanel({
                 </div>
               </div>
             </div>
+
+            {sellWarActive && (
+              <div className="mt-3 flex items-start gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[0.72rem] font-medium text-amber-400">
+                <Swords className="size-3.5 shrink-0 mt-px" />
+                <span>
+                  War bot terdeteksi: pasar turun ke <strong className="num">{fmtRp(warState.sell.peakPrice)}</strong>. Harga ditahan di{" "}
+                  <strong className="num">{fmtRp(warState.sell.holdPrice)}</strong> sampai harga tenang{" "}
+                  {Math.max(0, Math.ceil(((warState.sell.lastStepAt + (config.priceWarCooldownSec ?? 120) * 1000) - Date.now()) / 1000))}s.
+                </span>
+              </div>
+            )}
 
             {/* Target Merchant Acuan yang Diikuti */}
             <div className="mt-3 rounded-lg border border-border/70 bg-surface-2/80 p-2.5 space-y-1.5 text-xs">
@@ -3513,6 +3613,86 @@ export function AutoPricingBotPanel({
               </div>
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                {/* 0. DETEKSI WAR ANTAR BOT */}
+                <div
+                  className={`rounded-lg border p-3 space-y-2.5 text-xs transition-all sm:col-span-2 ${
+                    config.priceWarGuardEnabled !== false
+                      ? "border-primary/40 bg-surface-2/80 shadow-xs"
+                      : "border-border/70 bg-surface-2/40 opacity-80"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <Swords className="size-4 text-amber-400" />
+                      <Label className="font-bold text-foreground">Deteksi War Antar Bot</Label>
+                      {(buyWarActive || sellWarActive) && (
+                        <Badge variant="outline" className="text-[0.62rem] px-1.5 py-0 font-bold border-amber-500/40 bg-amber-500/10 text-amber-400">
+                          WAR {buyWarActive && sellWarActive ? "BELI & JUAL" : buyWarActive ? "BELI" : "JUAL"}
+                        </Badge>
+                      )}
+                    </div>
+                    <Switch
+                      checked={config.priceWarGuardEnabled !== false}
+                      onCheckedChange={(val) => updateConfig({ priceWarGuardEnabled: val })}
+                      className="scale-90 data-[state=checked]:bg-bid"
+                    />
+                  </div>
+                  <p className="text-[0.68rem] text-muted-foreground leading-relaxed">
+                    Jika harga acuan naik (beli) atau turun (jual) berkali-kali dalam waktu singkat karena bot saling overcut,
+                    harga Anda ditahan di level sebelum war dimulai sampai pasar tenang. Lonjakan tunggal yang wajar tidak dianggap war.
+                  </p>
+                  <div className="grid grid-cols-1 gap-1.5 border-t border-border/40 pt-2 sm:grid-cols-2 sm:gap-x-6">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground font-medium">Minimal langkah harga</span>
+                      <div className="flex items-center gap-1">
+                        <CommitNumberInput
+                          min={2}
+                          value={config.priceWarMinSteps ?? 3}
+                          onChange={(e) => updateConfig({ priceWarMinSteps: Math.max(2, Number(e.target.value)) })}
+                          className="h-6.5 w-16 text-xs bg-surface text-right font-bold"
+                        />
+                        <span className="w-8 text-[0.68rem] text-muted-foreground">kali</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground font-medium">Minimal total gerakan</span>
+                      <div className="flex items-center gap-1">
+                        <CommitNumberInput
+                          min={2}
+                          value={config.priceWarMinMoveRp ?? 10}
+                          onChange={(e) => updateConfig({ priceWarMinMoveRp: Math.max(2, Number(e.target.value)) })}
+                          className="h-6.5 w-16 text-xs bg-surface text-right font-bold"
+                        />
+                        <span className="w-8 text-[0.68rem] text-muted-foreground">Rp</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground font-medium">Dalam jendela waktu</span>
+                      <div className="flex items-center gap-1">
+                        <CommitNumberInput
+                          min={10}
+                          value={config.priceWarWindowSec ?? 60}
+                          onChange={(e) => updateConfig({ priceWarWindowSec: Math.max(10, Number(e.target.value)) })}
+                          className="h-6.5 w-16 text-xs bg-surface text-right font-bold"
+                        />
+                        <span className="w-8 text-[0.68rem] text-muted-foreground">detik</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground font-medium">Lepas setelah tenang</span>
+                      <div className="flex items-center gap-1">
+                        <CommitNumberInput
+                          min={10}
+                          value={config.priceWarCooldownSec ?? 120}
+                          onChange={(e) => updateConfig({ priceWarCooldownSec: Math.max(10, Number(e.target.value)) })}
+                          className="h-6.5 w-16 text-xs bg-surface text-right font-bold"
+                        />
+                        <span className="w-8 text-[0.68rem] text-muted-foreground">detik</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 {/* 1. GAP TRAP FILTER (ANTI-PANCINGAN PUCUK BELI) */}
                 <div
                   className={`rounded-lg border p-3 space-y-2.5 text-xs transition-all ${

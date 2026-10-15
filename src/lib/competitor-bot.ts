@@ -47,6 +47,11 @@ export type CompetitorFilterConfig = {
   buyGapTrapThresholdRp: number;  // Batas toleransi lonjakan gap beli dari rank di bawahnya (default: 20 Rp)
   spotDumpProtectionEnabled: boolean; // Proteksi Dump Pasar Spot (Indodax Spot Lead-Indicator): tahan harga beli jika melebihi spot Indodax + buffer
   spotDumpBufferRp: number;       // Toleransi buffer di atas harga spot Indodax (default: 15 Rp)
+  priceWarGuardEnabled?: boolean; // Deteksi war antar bot: tahan harga saat kompetitor saling overcut beruntun
+  priceWarWindowSec?: number;     // Jendela pengamatan war (detik)
+  priceWarMinSteps?: number;      // Minimal langkah harga searah di dalam jendela
+  priceWarMinMoveRp?: number;     // Minimal total pergerakan harga di dalam jendela (Rp)
+  priceWarCooldownSec?: number;   // War selesai setelah harga tenang selama ini (detik)
   minPriceBoundRp: number;        // Batas bawah absolut harga iklan (0 = Bebas)
   maxPriceBoundRp: number;        // Batas atas absolut harga iklan (0 = Bebas)
 
@@ -127,6 +132,11 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   buyGapTrapThresholdRp: 20,
   spotDumpProtectionEnabled: false,
   spotDumpBufferRp: 15,
+  priceWarGuardEnabled: true,
+  priceWarWindowSec: 60,
+  priceWarMinSteps: 3,
+  priceWarMinMoveRp: 10,
+  priceWarCooldownSec: 120,
   minPriceBoundRp: 0,
   maxPriceBoundRp: 0,
 
@@ -1688,6 +1698,11 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (typeof merged.buyGapTrapThresholdRp !== "number" || merged.buyGapTrapThresholdRp < 5) merged.buyGapTrapThresholdRp = 20;
     if (typeof merged.spotDumpProtectionEnabled !== "boolean") merged.spotDumpProtectionEnabled = false;
     if (typeof merged.spotDumpBufferRp !== "number" || merged.spotDumpBufferRp < 0) merged.spotDumpBufferRp = 15;
+    if (typeof merged.priceWarGuardEnabled !== "boolean") merged.priceWarGuardEnabled = true;
+    if (typeof merged.priceWarWindowSec !== "number" || merged.priceWarWindowSec < 10) merged.priceWarWindowSec = 60;
+    if (typeof merged.priceWarMinSteps !== "number" || merged.priceWarMinSteps < 2) merged.priceWarMinSteps = 3;
+    if (typeof merged.priceWarMinMoveRp !== "number" || merged.priceWarMinMoveRp < 2) merged.priceWarMinMoveRp = 10;
+    if (typeof merged.priceWarCooldownSec !== "number" || merged.priceWarCooldownSec < 10) merged.priceWarCooldownSec = 120;
     return merged;
   } catch {
     return DEFAULT_BOT_CONFIG;

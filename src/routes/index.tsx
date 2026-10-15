@@ -23,6 +23,7 @@ import {
   Percent,
   PiggyBank,
   Plus,
+  Power,
   RefreshCw,
   RotateCcw,
   Settings2,
@@ -64,6 +65,7 @@ import {
 } from "@/lib/p2p-engine";
 import { cn } from "@/lib/utils";
 import { login } from "@/lib/auth";
+import { getBotMasterSwitch, setBotMasterSwitch } from "@/lib/bot-master-switch";
 import {
   getBinanceFundingBalance,
   getBinanceSyncStatus,
@@ -331,6 +333,32 @@ function Dashboard() {
     if (pnlQuery.error) handleAuthError(pnlQuery.error);
   }, [pnlQuery.error, handleAuthError]);
 
+  // ── Saklar utama semua bot (disimpan di server, berlaku untuk semua perangkat) ──
+  const getMasterSwitchFn = useServerFn(getBotMasterSwitch);
+  const setMasterSwitchFn = useServerFn(setBotMasterSwitch);
+  const masterSwitchQuery = useQuery({
+    queryKey: ["bot-master-switch"],
+    queryFn: () => getMasterSwitchFn({ data: { sessionToken: sessionToken ?? undefined } }),
+    enabled: Boolean(sessionToken),
+    refetchInterval: 10_000,
+  });
+  // Sebelum status termuat, anggap OFF agar tidak ada otomatisasi yang sempat jalan.
+  const botsEnabled = masterSwitchQuery.data?.enabled === true;
+  const masterSwitchMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      setMasterSwitchFn({ data: { sessionToken: sessionToken ?? undefined, enabled } }),
+    onSuccess: (res) => {
+      if (!res.ok) {
+        toast.error(`Gagal mengubah saklar utama: ${res.error || "unknown"}`);
+        return;
+      }
+      masterSwitchQuery.refetch();
+      if (res.enabled) toast.success("Semua bot dinyalakan kembali sesuai pengaturan masing-masing.");
+      else toast.warning("Semua bot DIMATIKAN: auto-push harga, auto-verify, dan auto-sync berhenti.", { duration: 8000 });
+    },
+    onError: (err: any) => toast.error(`Gagal mengubah saklar utama: ${err.message}`),
+  });
+
   // Query Status Binance Sync
   const syncStatusQuery = useQuery({
     queryKey: ["binance-sync-status"],
@@ -555,7 +583,7 @@ function Dashboard() {
   const nextAutoSyncAtRef = useRef(0);
 
   useEffect(() => {
-    if (!autoSyncBinance || !syncStatusQuery.data?.available) return;
+    if (!autoSyncBinance || !botsEnabled || !syncStatusQuery.data?.available) return;
 
     nextAutoSyncAtRef.current = Date.now() + BINANCE_SYNC_SECONDS * 1000;
     setSyncCountdown(BINANCE_SYNC_SECONDS);
@@ -572,7 +600,7 @@ function Dashboard() {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [autoSyncBinance, syncStatusQuery.data?.available]);
+  }, [autoSyncBinance, botsEnabled, syncStatusQuery.data?.available]);
 
   // Update histori saat snapshot baru masuk
   useEffect(() => {
@@ -941,7 +969,24 @@ function Dashboard() {
 
           {/* Actions & Refresh Speed & Logout */}
           <div className="flex items-center gap-1.5 sm:gap-2">
-            <div className="flex items-center gap-0.5 rounded border border-border bg-surface-2 p-0.5">
+            <button
+              type="button"
+              onClick={() => masterSwitchMutation.mutate(!botsEnabled)}
+              disabled={masterSwitchMutation.isPending || !masterSwitchQuery.isSuccess}
+              className={cn(
+                "inline-flex h-7.5 items-center gap-1.5 rounded-md border px-2 text-[0.7rem] font-bold transition-colors disabled:opacity-60",
+                botsEnabled
+                  ? "border-bid/40 bg-bid/10 text-bid hover:bg-bid/20"
+                  : "border-ask/50 bg-ask/15 text-ask hover:bg-ask/25"
+              )}
+              title={botsEnabled ? "Matikan SEMUA otomatisasi bot sekaligus" : "Nyalakan kembali semua bot"}
+            >
+              <Power className="size-3.5" />
+              <span className="hidden sm:inline">Semua Bot:</span>
+              {masterSwitchQuery.isSuccess ? (botsEnabled ? "ON" : "OFF") : "…"}
+            </button>
+
+            <div className="hidden sm:flex items-center gap-0.5 rounded border border-border bg-surface-2 p-0.5">
               <span className="hidden lg:flex items-center gap-1 px-1.5 text-[0.62rem] font-semibold text-muted-foreground">
                 <Zap className="size-3 text-primary" />
                 <span>Auto:</span>
@@ -1049,6 +1094,7 @@ function Dashboard() {
               fairPrice={s.fair_price || 0}
               stockHpp={effectiveCost}
               pnlReady={pnlQuery.isSuccess && !!pnl}
+            botsEnabled={botsEnabled}
               marketUpdatedAt={snapshotQuery.dataUpdatedAt}
               bankBalanceIdr={freeCashIdr}
               initialCapitalIdr={initialCapital}
