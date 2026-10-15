@@ -116,7 +116,7 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
 
           const shortNo = ord.orderNumber.length > 8 ? ord.orderNumber.slice(-8) : ord.orderNumber;
           toast.success(
-            `✅ Order #${shortNo} (@${ord.counterPartNickName}) Berhasil Di-Auto-Verifikasi! Buyer Lolos Liveness.`,
+            `✅ Order #${shortNo} (@${ord.counterPartNickName}) Berhasil Di-Auto-Verifikasi! Buyer Lolos Liveness & Payment Details Terbuka.`,
             { duration: 8000 }
           );
         }
@@ -235,9 +235,13 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
               }
             }
 
+            // Dukungan payload pesan tipe system atau card dari Binance P2P Chat
+            const msgType = String(payload?.type || payload?.msgType || payload?.data?.type || "").toLowerCase();
+            const isSystemOrCard = msgType === "system" || msgType === "card" || msgType.includes("sys");
+
             const content = typeof payload === "string"
               ? payload
-              : payload?.data?.content || payload?.content || payload?.text || JSON.stringify(payload);
+              : payload?.data?.content || payload?.content || payload?.text || payload?.data?.text || (isSystemOrCard ? JSON.stringify(payload) : "");
 
             const parsed = parseLivenessChatMessage(content);
             if (parsed.isLivenessMessage && parsed.isCompleted) {

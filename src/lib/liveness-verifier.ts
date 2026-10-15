@@ -450,13 +450,28 @@ export const processLivenessChatMessage = createServerFn({ method: "POST" })
     // Kirim notifikasi WA / Telegram
     await notifyLivenessCompleted(newRecord);
 
+    // Eksekusi Auto-Verify ke Binance SAPI untuk membuka payment details ke buyer (khusus order SELL pending)
+    let autoVerifyNote = "";
+    try {
+      const { executeAutoVerifyForSellOrder } = await import("./binance-merchant");
+      const kycRes = await executeAutoVerifyForSellOrder({
+        orderNumber,
+        force: true,
+      });
+      if (kycRes.ok && !kycRes.skipped) {
+        autoVerifyNote = " Detail rekening pembayaran telah berhasil dibuka ke buyer di Binance.";
+      }
+    } catch (err) {
+      console.debug("[AUTO-VERIFY] Error saat panggil executeAutoVerifyForSellOrder:", err);
+    }
+
     return {
       ok: true,
       isLiveness: true,
       isCompleted: true,
       orderNumber,
       record: newRecord,
-      message: `✅ Order #${orderNumber} berhasil diverifikasi! Buyer telah menyelesaikan liveness check (Status: Completed).`,
+      message: `✅ Order #${orderNumber} berhasil diverifikasi! Buyer telah menyelesaikan liveness check (Status: Completed).${autoVerifyNote}`,
     };
   });
 
@@ -490,6 +505,15 @@ export const setOrderLivenessStatus = createServerFn({ method: "POST" })
 
     await saveLivenessRecordInternal(newRecord);
     await notifyLivenessCompleted(newRecord);
+
+    // Eksekusi auto-verify ke Binance SAPI untuk membuka payment details
+    try {
+      const { executeAutoVerifyForSellOrder } = await import("./binance-merchant");
+      await executeAutoVerifyForSellOrder({
+        orderNumber: data.orderNumber,
+        force: true,
+      });
+    } catch {}
 
     return { ok: true, orderNumber: data.orderNumber, completed: true };
   });
@@ -526,9 +550,27 @@ export async function handleIncomingChatMessageWebhook(body: any): Promise<any> 
   await saveLivenessRecordInternal(newRecord);
   await notifyLivenessCompleted(newRecord);
 
+  // Eksekusi auto-verify ke Binance SAPI
+  try {
+    const { executeAutoVerifyForSellOrder } = await import("./binance-merchant");
+    await executeAutoVerifyForSellOrder({
+      orderNumber: finalOrderNo,
+      force: true,
+    });
+  } catch {}
+
   return {
     ok: true,
-    message: `Order #${finalOrderNo} verifikasi wajah tercatat`,
+    message: `Order #${finalOrderNo} verifikasi wajah tercatat & payment details dibuka`,
     record: newRecord,
   };
 }
+
+// Re-export method C2C API untuk kemudahan integrasi
+export {
+  verifiedAdditionalKyc,
+  getUserOrderDetail,
+  executeAutoVerifyForSellOrder,
+  verifyAdditionalKycOrder,
+  isOrderKycVerified,
+} from "./binance-merchant";

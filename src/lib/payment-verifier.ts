@@ -73,6 +73,10 @@ export type ActiveP2pOrder = {
   totalPriceIdr: number;
   unitPriceIdr: number;
   orderStatus: string;
+  rawOrderStatus?: number;
+  additionalKycVerify?: number;
+  additionalKycStatus?: string | number;
+  kycVerifiedInBinance?: boolean;
   createTime: number;
   counterPartNickName: string;
   payMethodName?: string;
@@ -206,9 +210,29 @@ export const getVerifierState = createServerFn({ method: "POST" })
         }
       }
 
+      // Auto-verify ke Binance SAPI khusus order SELL berstatus PENDING dengan additional KYC
+      const { executeAutoVerifyForSellOrder, isOrderKycVerified } = await import("./binance-merchant");
+      const isSell = ord.tradeType === "SELL";
+      const isPending =
+        ord.orderStatus === "1" ||
+        ord.orderStatus === "PAYING" ||
+        ord.orderStatus === "TRADING" ||
+        ord.rawOrderStatus === 1;
+
+      if (isSell && isPending && (ord.additionalKycVerify === 1 || shouldAutoVerify || liveRec?.status === "COMPLETED")) {
+        executeAutoVerifyForSellOrder({
+          orderNumber: ord.orderNumber,
+          tradeType: ord.tradeType,
+          orderStatus: ord.rawOrderStatus ?? ord.orderStatus,
+          additionalKycVerify: ord.additionalKycVerify,
+          force: Boolean(liveRec?.status === "COMPLETED"),
+        }).catch(() => {});
+      }
+
       activeOrders.push({
         ...ord,
         livenessVerified: Boolean(liveRec && liveRec.status === "COMPLETED"),
+        kycVerifiedInBinance: isOrderKycVerified(ord.orderNumber),
         livenessRecord: liveRec,
       });
     }
@@ -236,6 +260,7 @@ export const autoVerifyAllActiveOrders = createServerFn({ method: "POST" })
       saveLivenessRecordInternal,
       notifyLivenessCompleted,
     } = await import("./liveness-verifier");
+    const { executeAutoVerifyForSellOrder } = await import("./binance-merchant");
     const livenessRecords = await getLivenessRecordsInternal();
 
     let verifiedCount = 0;
@@ -256,13 +281,24 @@ export const autoVerifyAllActiveOrders = createServerFn({ method: "POST" })
         await notifyLivenessCompleted(newRecord);
         verifiedCount++;
       }
+
+      // Jalankan auto-verify ke Binance SAPI untuk order SELL pending
+      if (ord.tradeType === "SELL") {
+        await executeAutoVerifyForSellOrder({
+          orderNumber: ord.orderNumber,
+          tradeType: ord.tradeType,
+          orderStatus: ord.rawOrderStatus ?? ord.orderStatus,
+          additionalKycVerify: ord.additionalKycVerify,
+          force: true,
+        }).catch(() => {});
+      }
     }
 
     return {
       ok: true,
       count: verifiedCount,
       message: verifiedCount > 0
-        ? `Berhasil meng-auto-verifikasi ${verifiedCount} order aktif!`
+        ? `Berhasil meng-auto-verifikasi ${verifiedCount} order aktif dan membuka payment details ke buyer!`
         : "Semua order aktif sudah terverifikasi.",
     };
   });
@@ -438,6 +474,9 @@ export async function fetchActiveP2pSellOrdersInternal(): Promise<ActiveP2pOrder
 
       const tradeType: "BUY" | "SELL" = isBuyOrder ? "BUY" : "SELL";
 
+      const rawStatusNum = typeof o.orderStatus === "number" ? o.orderStatus : parseInt(String(o.orderStatus || 0), 10);
+      const additionalKycNum = Number(o.additionalKycVerify ?? o.additionalKyc ?? (o.isAdditionalKyc ? 1 : 0));
+
       activeOrders.push({
         orderNumber: orderNo,
         advNo: o.advNo ? String(o.advNo) : undefined,
@@ -448,6 +487,9 @@ export async function fetchActiveP2pSellOrdersInternal(): Promise<ActiveP2pOrder
         totalPriceIdr,
         unitPriceIdr,
         orderStatus: statusStr,
+        rawOrderStatus: isNaN(rawStatusNum) ? undefined : rawStatusNum,
+        additionalKycVerify: isNaN(additionalKycNum) ? undefined : additionalKycNum,
+        additionalKycStatus: o.additionalKycStatus,
         createTime: Number(o.createTime) || Date.now(),
         counterPartNickName: String(o.counterPartNickName || (isBuyOrder ? "Penjual" : "Pembeli")),
         payMethodName: o.payMethodName,

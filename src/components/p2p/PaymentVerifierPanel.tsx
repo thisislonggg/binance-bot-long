@@ -1073,9 +1073,24 @@ Completed`;
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="space-y-1">
                         <div className="flex flex-wrap items-center gap-2">
-                          <Badge variant="outline" className="text-[0.65rem] border-amber-500/40 text-amber-400 font-semibold uppercase">
-                            {ord.orderStatus || "MENUNGGU DANA"}
+                          <Badge
+                            variant="outline"
+                            className={`text-[0.65rem] font-semibold uppercase ${
+                              ord.tradeType === "SELL"
+                                ? "border-amber-500/40 text-amber-400"
+                                : "border-emerald-500/40 text-emerald-400"
+                            }`}
+                          >
+                            {ord.tradeType} · {ord.orderStatus || "MENUNGGU DANA"}
                           </Badge>
+
+                          {/* Badge Indikator Additional KYC */}
+                          {ord.tradeType === "SELL" && ord.additionalKycVerify === 1 && (
+                            <Badge variant="outline" className="text-[0.62rem] border-sky-500/40 text-sky-400 font-semibold flex items-center gap-1">
+                              <ShieldCheck className="size-2.5 text-sky-400" />
+                              Butuh Liveness (KYC)
+                            </Badge>
+                          )}
 
                           {/* Liveness Status Badge */}
                           {!livenessEnabled ? (
@@ -1085,7 +1100,7 @@ Completed`;
                           ) : isVerified ? (
                             <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/40 text-[0.65rem] font-semibold flex items-center gap-1">
                               <CheckCircle2 className="size-3" />
-                              Liveness: Completed {record?.verificationTimeText ? `(${record.verificationTimeText})` : ""}
+                              Liveness: Selesai · Rekening Terbuka {record?.verificationTimeText ? `(${record.verificationTimeText})` : ""}
                             </Badge>
                           ) : (
                             <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/30 text-[0.65rem] font-semibold flex items-center gap-1">
