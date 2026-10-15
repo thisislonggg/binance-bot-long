@@ -24,6 +24,11 @@ const HEADERS = {
 // Cache data real-time terakhir dari Binance agar tidak terpental ke mock jika terjadi temporary glitch
 let lastLiveSellAds: Ad[] = [];
 let lastLiveBuyAds: Ad[] = [];
+let lastLiveSellAt = 0;
+let lastLiveBuyAt = 0;
+// Cache orderbook live hanya boleh dipakai ulang selama ini. Lebih lama dari itu dianggap basi:
+// fallback ke data mock (adv_no "mock_"), yang otomatis MEMBLOKIR push harga ke Binance.
+const MAX_STALE_ORDERBOOK_MS = 15_000;
 const inFlightP2p: { BUY: Promise<Ad[]> | null; SELL: Promise<Ad[]> | null } = { BUY: null, SELL: null };
 
 export async function fetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: number = 16850): Promise<Ad[]> {
@@ -124,10 +129,12 @@ async function doFetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: numb
           // Kompetitor JUAL (orderbook BUY): urutkan ascending (harga termurah paling kompetitif)
           parsed.sort((a, b) => a.price - b.price);
           lastLiveSellAds = parsed;
+          lastLiveSellAt = Date.now();
         } else {
           // Kompetitor BELI (orderbook SELL): urutkan descending (harga tertinggi paling kompetitif)
           parsed.sort((a, b) => b.price - a.price);
           lastLiveBuyAds = parsed;
+          lastLiveBuyAt = Date.now();
         }
         return parsed;
       }
@@ -136,12 +143,15 @@ async function doFetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: numb
     }
   }
 
-  // Jika koneksi temporer terputus tetapi sudah pernah menarik data live Binance, pakai data live terakhir
-  if (tradeType === "BUY" && lastLiveSellAds.length > 0) {
-    return lastLiveSellAds;
-  }
-  if (tradeType === "SELL" && lastLiveBuyAds.length > 0) {
-    return lastLiveBuyAds;
+  // Jika koneksi temporer terputus, pakai data live terakhir HANYA jika masih segar (maks 15 detik)
+  const cacheAgeMs = Date.now() - (tradeType === "BUY" ? lastLiveSellAt : lastLiveBuyAt);
+  if (cacheAgeMs <= MAX_STALE_ORDERBOOK_MS) {
+    if (tradeType === "BUY" && lastLiveSellAds.length > 0) {
+      return lastLiveSellAds;
+    }
+    if (tradeType === "SELL" && lastLiveBuyAds.length > 0) {
+      return lastLiveBuyAds;
+    }
   }
 
   // Fallback: Jika Binance public API sedang geoblocked/rate-limited dan belum ada cache

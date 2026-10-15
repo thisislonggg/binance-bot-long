@@ -971,6 +971,7 @@ function Dashboard() {
             fairPrice={s.fair_price || 0}
             stockHpp={effectiveCost}
             pnlReady={pnlQuery.isSuccess && !!pnl}
+            marketUpdatedAt={snapshotQuery.dataUpdatedAt}
             bankBalanceIdr={freeCashIdr}
             initialCapitalIdr={initialCapital}
             liveStockUsdt={stockUsdt}

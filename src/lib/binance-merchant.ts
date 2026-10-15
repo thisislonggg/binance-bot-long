@@ -54,6 +54,38 @@ export type MerchantApiResponse<T = unknown> = {
   timestamp?: number;
 };
 
+// ── Rem Darurat Rate Limit Binance ───────────────────────────────────────────
+// HTTP 429 / kode -1003 = terlalu banyak request; HTTP 418 = IP sudah di-ban sementara.
+// Setelah sinyal itu, SEMUA request signed ditahan sampai jeda selesai agar ban tidak diperpanjang.
+let binanceRateLimitedUntil = 0;
+
+function rateLimitedResponse<T>(): MerchantApiResponse<T> | null {
+  const waitMs = binanceRateLimitedUntil - Date.now();
+  if (waitMs <= 0) return null;
+  return {
+    ok: false,
+    code: "RATE_LIMITED",
+    error: "Binance rate limit aktif",
+    message: `Binance membatasi request (rate limit). Bot menjeda semua request ${Math.ceil(waitMs / 1000)} detik agar IP tidak di-ban.`,
+  };
+}
+
+function noteRateLimit(resp: Response, json: Record<string, unknown>): boolean {
+  const code = String(json["code"] ?? "");
+  if (resp.status !== 429 && resp.status !== 418 && code !== "-1003") return false;
+  const retryAfterSec = Number(resp.headers.get("retry-after"));
+  const pauseMs =
+    Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? retryAfterSec * 1000 : resp.status === 418 ? 120_000 : 60_000;
+  binanceRateLimitedUntil = Math.max(binanceRateLimitedUntil, Date.now() + pauseMs);
+  console.warn(`[BinanceMerchant] Rate limit (HTTP ${resp.status}, code ${code}). Request ditahan ${pauseMs / 1000}s.`);
+  return true;
+}
+
+/** Error yang membuat percobaan endpoint lain sia-sia (dan hanya menambah beban rate limit). */
+function isFatalBinanceError(res: MerchantApiResponse): boolean {
+  return res.code === "RATE_LIMITED" || res.code === "NO_CREDENTIALS" || res.code === "NETWORK_ERROR";
+}
+
 // ── Helper Eksekusi Request HMAC Signed ke Binance SAPI ─────────────────────
 
 async function binanceMerchantRequest<T = unknown>(options: {
@@ -74,6 +106,9 @@ async function binanceMerchantRequest<T = unknown>(options: {
       message: "Harap konfigurasikan API Key & Secret Binance Anda terlebih dahulu.",
     };
   }
+
+  const limited = rateLimitedResponse<T>();
+  if (limited) return limited;
 
   const baseUrl =
     process.env["BINANCE_C2C_BASE_URL"] ||
@@ -133,8 +168,16 @@ async function binanceMerchantRequest<T = unknown>(options: {
       // Abaikan jika bukan JSON
     }
 
-    // Jika POST via body gagal dengan code -1000 atau respons non-OK, coba fallback dengan query string di URL
-    if (isPost && (!resp.ok || json["code"] === "-1000" || json["code"] === -1000)) {
+    if (noteRateLimit(resp, json)) {
+      return rateLimitedResponse<T>() ?? { ok: false, code: "RATE_LIMITED", message: "Binance rate limit aktif." };
+    }
+
+    // Jika POST via body ditolak (kode -1000 atau 4xx), coba sekali lagi dengan query string di URL.
+    // JANGAN ulangi untuk 5xx: server Binance sedang bermasalah, mengulang hanya menambah beban.
+    if (
+      isPost &&
+      ((!resp.ok && resp.status < 500) || json["code"] === "-1000" || json["code"] === -1000)
+    ) {
       try {
         const fallbackUrl = `${baseUrl.replace(/\/$/, "")}${options.endpoint}?${fullQs}`;
         const fbController = new AbortController();
@@ -150,6 +193,9 @@ async function binanceMerchantRequest<T = unknown>(options: {
 
         const fbText = await fbResp.text();
         const fbJson = JSON.parse(fbText);
+        if (noteRateLimit(fbResp, fbJson)) {
+          return rateLimitedResponse<T>() ?? { ok: false, code: "RATE_LIMITED", message: "Binance rate limit aktif." };
+        }
         if (fbResp.ok && (fbJson["code"] === "000000" || fbJson["code"] === "0" || fbJson["success"] === true)) {
           resp = fbResp;
           rawText = fbText;
@@ -257,6 +303,9 @@ export async function binanceAgentRequest<T = unknown>(options: {
     process.env["BINANCE_PROXY_URL"] ||
     DEFAULT_BINANCE_API_URL;
 
+  const limited = rateLimitedResponse<T>();
+  if (limited) return limited;
+
   const method = options.method || "POST";
   const timestamp = Date.now();
 
@@ -308,6 +357,10 @@ export async function binanceAgentRequest<T = unknown>(options: {
       json = JSON.parse(rawText);
     } catch {
       // Abaikan jika bukan JSON
+    }
+
+    if (noteRateLimit(resp, json)) {
+      return rateLimitedResponse<T>() ?? { ok: false, code: "RATE_LIMITED", message: "Binance rate limit aktif." };
     }
 
     const code = String(json["code"] ?? (resp.ok ? "000000" : resp.status));
@@ -461,145 +514,133 @@ export const getMerchantAdsList = createServerFn({ method: "POST" })
  * Mengambil objek iklan lengkap dari Binance melalui beberapa jalur endpoint resmi.
  * Jika nomor iklan spesifik tidak cocok, otomatis mencari iklan aktif sesuai side (BUY/SELL).
  */
+// Jalur pengambilan detail iklan yang terakhir berhasil (per instance server). Dicoba duluan pada
+// panggilan berikutnya, sehingga satu fetch detail biasanya cukup 1 request alih-alih sampai 6.
+let preferredAdDetailPath: number | null = null;
+
 async function fetchAdDetailRobustly(
   advNo: string,
   targetSide?: "buy" | "sell",
   credentials?: { apiKeyOverride?: string; apiSecretOverride?: string }
 ): Promise<Record<string, unknown> | null> {
   const cleanAdvNo = advNo.trim().replace(/^#/, "");
+  const isObj = (d: unknown): d is Record<string, unknown> => !!d && typeof d === "object" && !Array.isArray(d);
+  const matchAdvNo = (item: unknown) =>
+    isObj(item) && String(item["advNo"] || "").trim().replace(/^#/, "") === cleanAdvNo;
 
-  // Jalur 1: POST /sapi/v1/c2c/agent/ads/getDetailByNo dengan query param advNo
-  try {
-    const res1 = await binanceAgentRequest<Record<string, unknown>>({
-      endpoint: "/sapi/v1/c2c/agent/ads/getDetailByNo",
-      method: "POST",
-      queryParams: { advNo: cleanAdvNo },
-      body: {},
-      ...credentials,
-    });
-    if (res1.ok && res1.data && typeof res1.data === "object" && !Array.isArray(res1.data)) {
-      return res1.data;
-    }
-  } catch {
-    // Lanjut ke jalur berikutnya
-  }
+  type PathResult = { ad: Record<string, unknown> | null; res: MerchantApiResponse<unknown> };
 
-  // Jalur 2: POST /sapi/v1/c2c/agent/ads/getDetailByNo dengan JSON body { advNo }
-  try {
-    const res2 = await binanceAgentRequest<Record<string, unknown>>({
-      endpoint: "/sapi/v1/c2c/agent/ads/getDetailByNo",
-      method: "POST",
-      body: { advNo: cleanAdvNo },
-      ...credentials,
-    });
-    if (res2.ok && res2.data && typeof res2.data === "object" && !Array.isArray(res2.data)) {
-      return res2.data;
-    }
-  } catch {
-    // Lanjut ke jalur berikutnya
-  }
-
-  // Jalur 3: GET /sapi/v1/c2c/agent/ads/getDetailByNo?advNo=...
-  try {
-    const res3 = await binanceAgentRequest<Record<string, unknown>>({
-      endpoint: "/sapi/v1/c2c/agent/ads/getDetailByNo",
-      method: "GET",
-      queryParams: { advNo: cleanAdvNo },
-      ...credentials,
-    });
-    if (res3.ok && res3.data && typeof res3.data === "object" && !Array.isArray(res3.data)) {
-      return res3.data;
-    }
-  } catch {
-    // Lanjut ke jalur berikutnya
-  }
-
-  // Jalur 4: POST /sapi/v1/c2c/agent/ads/listWithPagination (cari iklan di daftar akun)
-  try {
-    const res4 = await binanceAgentRequest<{ data?: unknown[]; total?: number } | unknown[]>({
-      endpoint: "/sapi/v1/c2c/agent/ads/listWithPagination",
-      method: "POST",
-      body: { page: 1, rows: 50 },
-      ...credentials,
-    });
-    if (res4.ok && res4.data) {
-      const list = Array.isArray(res4.data)
-        ? res4.data
-        : Array.isArray((res4.data as Record<string, unknown>)["data"])
-        ? ((res4.data as Record<string, unknown>)["data"] as unknown[])
+  const paths: Array<() => Promise<PathResult>> = [
+    // Jalur 0: POST /sapi/v1/c2c/agent/ads/getDetailByNo dengan query param advNo
+    async () => {
+      const res = await binanceAgentRequest<Record<string, unknown>>({
+        endpoint: "/sapi/v1/c2c/agent/ads/getDetailByNo",
+        method: "POST",
+        queryParams: { advNo: cleanAdvNo },
+        body: {},
+        ...credentials,
+      });
+      return { ad: res.ok && isObj(res.data) ? res.data : null, res };
+    },
+    // Jalur 1: POST /sapi/v1/c2c/agent/ads/getDetailByNo dengan JSON body { advNo }
+    async () => {
+      const res = await binanceAgentRequest<Record<string, unknown>>({
+        endpoint: "/sapi/v1/c2c/agent/ads/getDetailByNo",
+        method: "POST",
+        body: { advNo: cleanAdvNo },
+        ...credentials,
+      });
+      return { ad: res.ok && isObj(res.data) ? res.data : null, res };
+    },
+    // Jalur 2: GET /sapi/v1/c2c/agent/ads/getDetailByNo?advNo=...
+    async () => {
+      const res = await binanceAgentRequest<Record<string, unknown>>({
+        endpoint: "/sapi/v1/c2c/agent/ads/getDetailByNo",
+        method: "GET",
+        queryParams: { advNo: cleanAdvNo },
+        ...credentials,
+      });
+      return { ad: res.ok && isObj(res.data) ? res.data : null, res };
+    },
+    // Jalur 3: POST /sapi/v1/c2c/agent/ads/listWithPagination (cari iklan di daftar akun)
+    async () => {
+      const res = await binanceAgentRequest<{ data?: unknown[]; total?: number } | unknown[]>({
+        endpoint: "/sapi/v1/c2c/agent/ads/listWithPagination",
+        method: "POST",
+        body: { page: 1, rows: 50 },
+        ...credentials,
+      });
+      if (!res.ok || !res.data) return { ad: null, res };
+      const list = Array.isArray(res.data)
+        ? res.data
+        : Array.isArray((res.data as Record<string, unknown>)["data"])
+        ? ((res.data as Record<string, unknown>)["data"] as unknown[])
         : [];
-
-      // Cari berdasarkan advNo yang cocok
-      const found = list.find(
-        (item: unknown) =>
-          typeof item === "object" &&
-          item !== null &&
-          String((item as Record<string, unknown>)["advNo"] || "").trim().replace(/^#/, "") === cleanAdvNo
-      );
-      if (found) return found as Record<string, unknown>;
-
+      const found = list.find(matchAdvNo);
+      if (found) return { ad: found as Record<string, unknown>, res };
       // Jika advNo tidak cocok persis, auto-detect iklan aktif berdasarkan side (BUY / SELL)
       if (targetSide) {
         const sideMatched = list.find((item: unknown) => {
-          if (!item || typeof item !== "object") return false;
-          const raw = item as Record<string, unknown>;
-          const tt = String(raw["tradeType"] || "").toUpperCase();
-          if (targetSide === "buy") {
-            return tt === "BUY" || raw["tradeType"] === 0 || raw["tradeType"] === "0";
-          } else {
-            return tt === "SELL" || raw["tradeType"] === 1 || raw["tradeType"] === "1";
-          }
-        });
-        if (sideMatched) return sideMatched as Record<string, unknown>;
-      }
-    }
-  } catch {
-    // Lanjut ke jalur berikutnya
-  }
-
-  // Jalur 5: GET /sapi/v1/c2c/ads/list
-  try {
-    const res5 = await binanceMerchantRequest<Record<string, unknown>[]>({
-      endpoint: "/sapi/v1/c2c/ads/list",
-      method: "GET",
-      params: { page: 1, rows: 50 },
-      ...credentials,
-    });
-    if (res5.ok && Array.isArray(res5.data)) {
-      const found = res5.data.find(
-        (item) => item && typeof item === "object" && String(item["advNo"] || "").trim().replace(/^#/, "") === cleanAdvNo
-      );
-      if (found) return found;
-
-      if (targetSide) {
-        const sideMatched = res5.data.find((item) => {
-          if (!item || typeof item !== "object") return false;
+          if (!isObj(item)) return false;
           const tt = String(item["tradeType"] || "").toUpperCase();
-          return targetSide === "buy" ? (tt === "BUY" || item["tradeType"] === 0) : (tt === "SELL" || item["tradeType"] === 1);
+          return targetSide === "buy"
+            ? tt === "BUY" || item["tradeType"] === 0 || item["tradeType"] === "0"
+            : tt === "SELL" || item["tradeType"] === 1 || item["tradeType"] === "1";
         });
-        if (sideMatched) return sideMatched;
+        if (sideMatched) return { ad: sideMatched as Record<string, unknown>, res };
       }
-    }
-  } catch {
-    // Lanjut ke jalur berikutnya
-  }
+      return { ad: null, res };
+    },
+    // Jalur 4: GET /sapi/v1/c2c/ads/list
+    async () => {
+      const res = await binanceMerchantRequest<Record<string, unknown>[]>({
+        endpoint: "/sapi/v1/c2c/ads/list",
+        method: "GET",
+        params: { page: 1, rows: 50 },
+        ...credentials,
+      });
+      if (!res.ok || !Array.isArray(res.data)) return { ad: null, res };
+      const found = res.data.find(matchAdvNo);
+      if (found) return { ad: found, res };
+      if (targetSide) {
+        const sideMatched = res.data.find((item) => {
+          if (!isObj(item)) return false;
+          const tt = String(item["tradeType"] || "").toUpperCase();
+          return targetSide === "buy" ? tt === "BUY" || item["tradeType"] === 0 : tt === "SELL" || item["tradeType"] === 1;
+        });
+        if (sideMatched) return { ad: sideMatched, res };
+      }
+      return { ad: null, res };
+    },
+    // Jalur 5: GET /sapi/v1/c2c/orderMatch/getUserAdvList
+    async () => {
+      const res = await binanceMerchantRequest<Record<string, unknown>[]>({
+        endpoint: "/sapi/v1/c2c/orderMatch/getUserAdvList",
+        method: "GET",
+        params: { page: 1, rows: 50 },
+        ...credentials,
+      });
+      const found = res.ok && Array.isArray(res.data) ? res.data.find(matchAdvNo) : undefined;
+      return { ad: found ?? null, res };
+    },
+  ];
 
-  // Jalur 6: GET /sapi/v1/c2c/orderMatch/getUserAdvList
-  try {
-    const res6 = await binanceMerchantRequest<Record<string, unknown>[]>({
-      endpoint: "/sapi/v1/c2c/orderMatch/getUserAdvList",
-      method: "GET",
-      params: { page: 1, rows: 50 },
-      ...credentials,
-    });
-    if (res6.ok && Array.isArray(res6.data)) {
-      const found = res6.data.find(
-        (item) => item && typeof item === "object" && String(item["advNo"] || "").trim().replace(/^#/, "") === cleanAdvNo
-      );
-      if (found) return found;
+  const order =
+    preferredAdDetailPath !== null
+      ? [preferredAdDetailPath, ...paths.map((_, i) => i).filter((i) => i !== preferredAdDetailPath)]
+      : paths.map((_, i) => i);
+
+  for (const i of order) {
+    try {
+      const { ad, res } = await paths[i]!();
+      if (ad) {
+        preferredAdDetailPath = i;
+        return ad;
+      }
+      if (isFatalBinanceError(res)) return null; // rate limit / jaringan: jangan bombardir jalur lain
+    } catch {
+      // Lanjut ke jalur berikutnya
     }
-  } catch {
-    // Selesai
   }
 
   return null;
@@ -668,6 +709,12 @@ export async function toggleMerchantAdStatusInternal(
     },
   });
 }
+
+// Rute endpoint update yang terakhir berhasil (per instance server), dicoba duluan pada push berikutnya
+// agar satu push biasanya cukup 1 request update, bukan menyisir 6 endpoint setiap kali.
+type UpdateRoute = "std" | "singular" | "agent";
+const ALL_UPDATE_ROUTES: UpdateRoute[] = ["std", "singular", "agent"];
+const preferredUpdateRoute: { full?: UpdateRoute; priceOnly?: UpdateRoute } = {};
 
 export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Promise<MerchantApiResponse> {
   const cleanAdvNo = data.advNo.trim().replace(/^#/, "");
@@ -962,230 +1009,116 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
       (Boolean(data.priceOnly) && !isStockUpdateRequested) ||
       (!isBuy && Boolean(data.hasActiveOrders));
 
-    if (isPriceOnlyMode) {
-      // 1a. Standard SAPI /sapi/v1/c2c/ads/update (Price Only)
-      const resPriceStd = await binanceMerchantRequest({
-        endpoint: "/sapi/v1/c2c/ads/update",
-        method: "POST",
-        params: {
-          advNo: targetAdvNo,
-          adNo: targetAdvNo,
-          price: newPrice,
-          priceType: 1,
-        },
-      });
-      if (resPriceStd.ok && resPriceStd.data !== false) {
-        updateSucceeded = true;
-        usedStockPreservedFallback = true;
-      } else {
-        lastError = resPriceStd;
-
-        // 1b. Singular SAPI /sapi/v1/c2c/ad/update (Price Only)
-        const resPriceSingular = await binanceMerchantRequest({
-          endpoint: "/sapi/v1/c2c/ad/update",
-          method: "POST",
-          params: {
-            advNo: targetAdvNo,
-            adNo: targetAdvNo,
-            price: newPrice,
-            priceType: 1,
-          },
-        });
-        if (resPriceSingular.ok && resPriceSingular.data !== false) {
-          updateSucceeded = true;
-          usedStockPreservedFallback = true;
-        } else {
-          lastError = resPriceSingular;
-
-          // 1c. Agent SAPI JSON Body (Price Only)
-          const resPriceAgent = await binanceAgentRequest({
-            endpoint: "/sapi/v1/c2c/agent/ads/update",
-            method: "POST",
-            body: {
-              advNo: targetAdvNo,
-              price: newPrice,
-              priceType: 1,
-            },
-          });
-          if (resPriceAgent.ok && resPriceAgent.data !== false) {
-            updateSucceeded = true;
-            usedStockPreservedFallback = true;
-          } else {
-            lastError = resPriceAgent;
-          }
-        }
-      }
-    } else {
-      // ─────────────────────────────────────────────────────────────────────────
-      // MODE NORMAL: UPDATE HARGA & STOK
-      // ─────────────────────────────────────────────────────────────────────────
-      // Percobaan 1: Standard SAPI dengan stok & limit
-      const stdParams: Record<string, any> = {
-        advNo: targetAdvNo,
-        adNo: targetAdvNo,
-        price: newPrice,
-        priceType: 1,
-      };
-      if (isStockUpdateRequested && targetStock > 0) {
-        stdParams.initAmount = totalInitAmount;
-        stdParams.amount = targetStock;
-        stdParams.minSingleTransAmount = minLimit;
-        stdParams.maxSingleTransAmount = maxLimit;
-      }
-
-      const res1 = await binanceMerchantRequest({
-        endpoint: "/sapi/v1/c2c/ads/update",
-        method: "POST",
-        params: stdParams,
-      });
-      if (res1.ok && res1.data !== false) {
-        updateSucceeded = true;
-      } else {
-        lastError = res1;
-      }
-
-      // Percobaan 2: Singular SAPI /sapi/v1/c2c/ad/update dengan stok & limit
-      if (!updateSucceeded && isStockUpdateRequested) {
-        const res2 = await binanceMerchantRequest({
-          endpoint: "/sapi/v1/c2c/ad/update",
-          method: "POST",
-          params: {
-            advNo: targetAdvNo,
-            adNo: targetAdvNo,
-            price: newPrice,
-            priceType: 1,
+    // Jalankan satu rute update. withStock = kirim stok & limit sekaligus.
+    const runUpdateRoute = (route: UpdateRoute, withStock: boolean): Promise<MerchantApiResponse> => {
+      const stockFields = withStock
+        ? {
             initAmount: totalInitAmount,
             amount: targetStock,
             minSingleTransAmount: minLimit,
             maxSingleTransAmount: maxLimit,
-          },
-        });
-        if (res2.ok && res2.data !== false) {
-          updateSucceeded = true;
-        } else {
-          lastError = res2;
-        }
-      }
-
-      // Percobaan 3: Agent SAPI /sapi/v1/c2c/agent/ads/update (JSON Body dengan Stok & Limit)
-      if (!updateSucceeded && isStockUpdateRequested) {
-        const agentCleanPayload: Record<string, any> = {
-          advNo: targetAdvNo,
-          price: newPrice,
-          priceType: 1,
-          amount: targetStock,
-          initAmount: totalInitAmount,
-          minSingleTransAmount: minLimit,
-          maxSingleTransAmount: maxLimit,
-        };
-        if (effectiveTradeMethods && effectiveTradeMethods.length > 0) {
-          agentCleanPayload.tradeMethods = effectiveTradeMethods;
-        }
-
-        const res3 = await binanceAgentRequest({
-          endpoint: "/sapi/v1/c2c/agent/ads/update",
-          method: "POST",
-          body: agentCleanPayload,
-        });
-        if (res3.ok && res3.data !== false) {
-          updateSucceeded = true;
-        } else {
-          lastError = res3;
-        }
-      }
-
-      // Fallback: Jika SEMUA percobaan update stok di atas ditolak Binance,
-      // fallback ke Price-Only agar bot tidak telat update harga di pasar.
-      if (!updateSucceeded) {
-        const resFallbackStd = await binanceMerchantRequest({
-          endpoint: "/sapi/v1/c2c/ads/update",
-          method: "POST",
-          params: {
-            advNo: targetAdvNo,
-            adNo: targetAdvNo,
-            price: newPrice,
-            priceType: 1,
-          },
-        });
-        if (resFallbackStd.ok && resFallbackStd.data !== false) {
-          updateSucceeded = true;
-          if (isStockUpdateRequested) usedStockPreservedFallback = true;
-        } else {
-          lastError = resFallbackStd;
-
-          // Coba jalur SAPI singular price-only
-          const resFallbackSingular = await binanceMerchantRequest({
-            endpoint: "/sapi/v1/c2c/ad/update",
-            method: "POST",
-            params: {
-              advNo: targetAdvNo,
-              adNo: targetAdvNo,
-              price: newPrice,
-              priceType: 1,
-            },
-          });
-          if (resFallbackSingular.ok && resFallbackSingular.data !== false) {
-            updateSucceeded = true;
-            if (isStockUpdateRequested) usedStockPreservedFallback = true;
-          } else {
-            lastError = resFallbackSingular;
-
-            // Coba jalur Agent SAPI price-only
-            const resFallbackAgent = await binanceAgentRequest({
-              endpoint: "/sapi/v1/c2c/agent/ads/update",
-              method: "POST",
-              body: {
-                advNo: targetAdvNo,
-                price: newPrice,
-                priceType: 1,
-              },
-            });
-            if (resFallbackAgent.ok && resFallbackAgent.data !== false) {
-              updateSucceeded = true;
-              if (isStockUpdateRequested) usedStockPreservedFallback = true;
-            } else {
-              lastError = resFallbackAgent;
-            }
           }
+        : {};
+      if (route === "agent") {
+        const body: Record<string, unknown> = { advNo: targetAdvNo, price: newPrice, priceType: 1, ...stockFields };
+        if (withStock && effectiveTradeMethods && effectiveTradeMethods.length > 0) {
+          body["tradeMethods"] = effectiveTradeMethods;
         }
+        return binanceAgentRequest({ endpoint: "/sapi/v1/c2c/agent/ads/update", method: "POST", body });
+      }
+      return binanceMerchantRequest({
+        endpoint: route === "std" ? "/sapi/v1/c2c/ads/update" : "/sapi/v1/c2c/ad/update",
+        method: "POST",
+        params: { advNo: targetAdvNo, adNo: targetAdvNo, price: newPrice, priceType: 1, ...stockFields },
+      });
+    };
+
+    // Coba rute yang terakhir berhasil dulu, lalu sisanya. Berhenti total pada rate limit / jaringan putus.
+    const tryUpdateRoutes = async (
+      withStock: boolean,
+    ): Promise<{ ok: boolean; lastError: MerchantApiResponse | null; aborted: boolean }> => {
+      const key = withStock ? "full" : "priceOnly";
+      const pref = preferredUpdateRoute[key];
+      const routes = pref ? [pref, ...ALL_UPDATE_ROUTES.filter((r) => r !== pref)] : ALL_UPDATE_ROUTES;
+      let err: MerchantApiResponse | null = null;
+      for (const route of routes) {
+        const res = await runUpdateRoute(route, withStock);
+        if (res.ok && res.data !== false) {
+          preferredUpdateRoute[key] = route;
+          return { ok: true, lastError: null, aborted: false };
+        }
+        err = res;
+        if (isFatalBinanceError(res)) return { ok: false, lastError: err, aborted: true };
+      }
+      return { ok: false, lastError: err, aborted: false };
+    };
+
+    if (isPriceOnlyMode) {
+      const attempt = await tryUpdateRoutes(false);
+      updateSucceeded = attempt.ok;
+      lastError = attempt.lastError;
+      if (updateSucceeded) usedStockPreservedFallback = true;
+    } else {
+      // MODE NORMAL: UPDATE HARGA & STOK, lalu fallback ke Price-Only agar bot tidak telat update harga di pasar.
+      let aborted = false;
+      if (isStockUpdateRequested) {
+        const attempt = await tryUpdateRoutes(true);
+        updateSucceeded = attempt.ok;
+        lastError = attempt.lastError;
+        aborted = attempt.aborted;
+      }
+      if (!updateSucceeded && !aborted) {
+        const attempt = await tryUpdateRoutes(false);
+        updateSucceeded = attempt.ok;
+        lastError = attempt.lastError ?? lastError;
+        if (updateSucceeded && isStockUpdateRequested) usedStockPreservedFallback = true;
       }
     }
 
     // =========================================================================
     // POST-UPDATE VERIFIKASI LANGSUNG KE BINANCE (HARGA & STOK)
+    // Polling cepat (cek ±0,5s, ±1,2s, ±2,2s) dan berhenti begitu harga live cocok, menggantikan
+    // jeda tetap 1,2s + 1,5s. Saat update gagal: cukup 1 kali baca tanpa jeda untuk pesan error.
     // =========================================================================
     let isLivePriceVerified = false;
     let isLiveStockVerified = false;
     let livePriceAfter: number | null = null;
     let liveStockAfter: number | null = null;
 
-    try {
-      await new Promise((r) => setTimeout(r, 1200)); // Beri jeda 1200ms agar database Binance sinkron
+    const readLiveAd = async (): Promise<{ price: number | null; stock: number | null } | null> => {
       const verifyAd = await fetchAdDetailRobustly(targetAdvNo);
-      if (verifyAd) {
-        if (verifyAd["price"] !== undefined && verifyAd["price"] !== null) {
-          livePriceAfter = Math.round(Number(verifyAd["price"]));
-          if (livePriceAfter === newPrice) {
-            isLivePriceVerified = true;
-          }
-        }
-
-        const currentSurplus = Number(
-          verifyAd["surplusAmount"] ??
-          verifyAd["tradableQuantity"] ??
-          verifyAd["amount"] ??
-          verifyAd["initAmount"] ??
-          0
-        );
-        if (currentSurplus > 0) {
-          liveStockAfter = Math.floor(currentSurplus * 100) / 100;
-          if (isStockUpdateRequested && Math.abs(liveStockAfter - targetStock) <= 0.05) {
-            isLiveStockVerified = true;
-          }
-        }
+      if (!verifyAd) return null;
+      const price =
+        verifyAd["price"] !== undefined && verifyAd["price"] !== null ? Math.round(Number(verifyAd["price"])) : null;
+      const currentSurplus = Number(
+        verifyAd["surplusAmount"] ??
+        verifyAd["tradableQuantity"] ??
+        verifyAd["amount"] ??
+        verifyAd["initAmount"] ??
+        0
+      );
+      return { price, stock: currentSurplus > 0 ? Math.floor(currentSurplus * 100) / 100 : null };
+    };
+    const fatalStop = lastError !== null && isFatalBinanceError(lastError);
+    const verifyDelaysMs = updateSucceeded ? [500, 700, 1000] : fatalStop ? [] : [0];
+    for (const delayMs of verifyDelaysMs) {
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+      let live: Awaited<ReturnType<typeof readLiveAd>> = null;
+      try {
+        live = await readLiveAd();
+      } catch {
+        // Abaikan error verifikasi
       }
-    } catch {
-      // Abaikan error verifikasi
+      if (live?.price != null) {
+        livePriceAfter = live.price;
+        isLivePriceVerified = live.price === newPrice;
+      }
+      if (live?.stock != null) {
+        liveStockAfter = live.stock;
+        isLiveStockVerified = isStockUpdateRequested && Math.abs(live.stock - targetStock) <= 0.05;
+      }
+      if (isLivePriceVerified && (!isStockUpdateRequested || usedStockPreservedFallback || isLiveStockVerified)) break;
+      if (binanceRateLimitedUntil > Date.now()) break;
     }
 
     // KASUS A: Binance berhasil menerima request (updateSucceeded === true)
@@ -1216,24 +1149,6 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
             timestamp: Date.now(),
           };
         }
-      }
-
-      // Jika Binance sudah menerima update, tetapi live price pada read-replica belum sinkron setelah 1.2s:
-      // Coba re-check sekali lagi dengan jeda 1.5s
-      try {
-        await new Promise((r) => setTimeout(r, 1500));
-        const verifyAd2 = await fetchAdDetailRobustly(targetAdvNo);
-        if (verifyAd2 && verifyAd2["price"] !== undefined && Math.round(Number(verifyAd2["price"])) === newPrice) {
-          return {
-            ok: true,
-            code: "000000",
-            message: `Iklan #${targetAdvNo} BERHASIL & TERVERIFIKASI berubah di Binance ke Rp ${newPrice.toLocaleString("id-ID")}${isStockUpdateRequested ? ` | Stok: ${liveStockAfter ?? targetStock} USDT` : ""}!`,
-            data: { livePrice: newPrice, targetPrice: newPrice, liveStock: liveStockAfter, targetStock },
-            timestamp: Date.now(),
-          };
-        }
-      } catch {
-        // Abaikan
       }
 
       // Tetap kembalikan ok: true karena server Binance sudah membalas status success (000000)

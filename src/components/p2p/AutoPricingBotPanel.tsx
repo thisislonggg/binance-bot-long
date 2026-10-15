@@ -94,6 +94,9 @@ import {
 } from "@/lib/competitor-bot";
 import { fmtPct, fmtRate, fmtRp, fmtRp2, type Ad } from "@/lib/p2p-engine";
 
+/** Umur maksimal snapshot pasar sebelum auto-push ditahan. */
+const MAX_MARKET_DATA_AGE_MS = 15_000;
+
 const POPULAR_PAYMENT_METHODS = [
   "Bank Transfer",
   "BCA",
@@ -131,6 +134,8 @@ interface AutoPricingBotPanelProps {
   isRefreshing?: boolean;
   /** false selama data P&L (HPP & modal) belum termuat / gagal: auto-push ditahan agar floor HPP tidak 0. */
   pnlReady?: boolean;
+  /** Waktu (ms) snapshot pasar terakhir berhasil diambil. Data lebih tua dari 15 detik menahan auto-push. */
+  marketUpdatedAt?: number;
 }
 
 export function AutoPricingBotPanel({
@@ -148,6 +153,7 @@ export function AutoPricingBotPanel({
   onRefresh,
   isRefreshing = false,
   pnlReady = true,
+  marketUpdatedAt = 0,
 }: AutoPricingBotPanelProps) {
   // ── Konfigurasi Bot dengan LocalStorage ─────────────────────────────────────
   const [config, setConfig] = useState<CompetitorFilterConfig>(() => loadBotConfig());
@@ -927,6 +933,7 @@ export function AutoPricingBotPanel({
   const lastPushTimeRef = useRef<number>(0);
   const pendingSellTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pnlWaitNotifiedRef = useRef(false);
+  const staleMarketNotifiedRef = useRef(false);
   // Backoff per sisi setelah push gagal (5s, 10s, 20s ... maks 60s) agar retry tidak membanjiri Binance SAPI.
   const pushFailRef = useRef<{ buy: number; sell: number }>({ buy: 0, sell: 0 });
   const pushRetryAtRef = useRef<{ buy: number; sell: number }>({ buy: 0, sell: 0 });
@@ -965,6 +972,21 @@ export function AutoPricingBotPanel({
       return;
     }
     pnlWaitNotifiedRef.current = false;
+
+    // Snapshot pasar gagal diperbarui (react-query tetap menyimpan data lama saat request error):
+    // JANGAN push harga dari orderbook basi.
+    const marketAgeMs = marketUpdatedAt > 0 ? Date.now() - marketUpdatedAt : 0;
+    if (marketAgeMs > MAX_MARKET_DATA_AGE_MS) {
+      if (!staleMarketNotifiedRef.current) {
+        staleMarketNotifiedRef.current = true;
+        toast.warning(
+          `Data pasar tidak diperbarui selama ${Math.round(marketAgeMs / 1000)} detik. Auto-push ditahan sampai data Binance segar kembali.`,
+          { id: "auto-push-stale-market" },
+        );
+      }
+      return;
+    }
+    staleMarketNotifiedRef.current = false;
 
     const minIntervalMs = Math.max(1, config.autoPushMinIntervalSec ?? 1) * 1000;
     const now = Date.now();
