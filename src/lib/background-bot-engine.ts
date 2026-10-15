@@ -113,23 +113,23 @@ export async function saveBotConfigServer(config: Partial<CompetitorFilterConfig
  */
 export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
   const now = Date.now();
-  const db = getSupabase();
+  // CRON JOB SERVER DINONAKTIFKAN SECARA PERMANEN
+  // Untuk mencegah server mengeksekusi harga usang/default yang menyebabkan harga anjlok sendiri,
+  // seluruh auto-push kini hanya diproses langsung oleh dashboard browser pengguna.
+  const res: BackgroundBotTickResult = {
+    ok: false,
+    timestamp: now,
+    botEnabled: false,
+    autoPushEnabled: false,
+    message:
+      "Cron job background server telah dinonaktifkan permanen sesuai permintaan Anda. Auto-pricing sepenuhnya berjalan aman langsung dari dashboard browser saat dibuka.",
+  };
+  inMemoryLastCronRun = res;
+  return res;
+}
 
-  try {
-    const config = await getBotConfigServer();
-
-    if (!config.enabled) {
-      const res: BackgroundBotTickResult = {
-        ok: true,
-        timestamp: now,
-        botEnabled: false,
-        autoPushEnabled: config.autoPushToBinance,
-        message: "Bot sedang dinonaktifkan (OFF). Nyalakan toggle 'Status Bot' di dashboard untuk menjalankan auto-push 24/7.",
-      };
-      inMemoryLastCronRun = res;
-      return res;
-    }
-
+// ── Kode runner lama dinonaktifkan untuk mencegah push dari background server ─
+/*
     if (!config.autoPushToBinance) {
       const res: BackgroundBotTickResult = {
         ok: true,
@@ -558,6 +558,7 @@ export async function runBackgroundBotTick(): Promise<BackgroundBotTickResult> {
     return failRes;
   }
 }
+*/
 
 // ── Server Functions untuk Komunikasi Frontend Dashboard ─────────────────────
 

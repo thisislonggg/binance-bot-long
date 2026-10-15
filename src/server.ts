@@ -48,42 +48,40 @@ import { handleIncomingBankNotificationWebhook } from "./lib/payment-verifier";
 import { handleIncomingChatMessageWebhook } from "./lib/liveness-verifier";
 import { runBackgroundBotTick } from "./lib/background-bot-engine";
 
-let serverLoopStarted = false;
-function ensureServerAutoPricingLoop() {
-  if (serverLoopStarted) return;
-  serverLoopStarted = true;
-  // Menjalankan auto-pricing background loop otomatis setiap 20 detik selama server aktif
-  setInterval(async () => {
-    try {
-      await runBackgroundBotTick();
-    } catch {
-      // Abaikan error di background loop
-    }
-  }, 20_000);
-}
+// Catatan: Cron background auto-pricing loop pada server telah dinonaktifkan permanen sesuai permintaan pengguna demi keamanan harga.
+// Auto-pricing sepenuhnya berjalan aman langsung dari dashboard browser pengguna.
 
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
-      ensureServerAutoPricingLoop();
       const url = new URL(request.url);
       const cleanPath = url.pathname.replace(/\/+/g, "/");
 
-      // Webhook / Cron 24/7 Otomatisasi Auto-Pricing (Dapat dipanggil Vercel Cron, pg_cron, atau cron-job.org)
+      // Webhook / Cron Auto-Pricing telah dinonaktifkan permanen
       if (
         cleanPath === "/api/cron/auto-pricing" ||
         cleanPath === "/api/bot/auto-pricing-tick" ||
         cleanPath === "/api/bot/tick"
       ) {
-        const result = await runBackgroundBotTick();
-        return new Response(JSON.stringify(result, null, 2), {
-          status: 200,
-          headers: {
-            "content-type": "application/json",
-            "access-control-allow-origin": "*",
-            "cache-control": "no-store, no-cache, must-revalidate",
-          },
-        });
+        return new Response(
+          JSON.stringify(
+            {
+              ok: false,
+              message:
+                "Cron job server auto-pricing telah dinonaktifkan secara permanen sesuai permintaan Anda. Seluruh pembaruan harga dikendalikan secara aman langsung dari dashboard browser.",
+            },
+            null,
+            2
+          ),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "access-control-allow-origin": "*",
+              "cache-control": "no-store, no-cache, must-revalidate",
+            },
+          }
+        );
       }
 
       // Webhook Penerima Notifikasi Bank (MacroDroid / Android Push Notif Forwarder)
