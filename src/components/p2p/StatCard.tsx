@@ -49,14 +49,14 @@ export function StatCard({
   return (
     <div
       className={cn(
-        "panel-interactive relative overflow-hidden p-4.5 flex flex-col justify-between",
+        "panel-interactive relative min-w-0 overflow-hidden p-3 sm:p-4 flex flex-col justify-between",
         tone && toneClasses[tone],
       )}
     >
       {/* Top Row: Label, Badge, Actions */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className="text-[0.7rem] font-semibold tracking-wider text-muted-foreground uppercase">
+      <div className="flex items-start justify-between gap-1.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <span className="text-[0.65rem] font-semibold leading-tight tracking-wide text-muted-foreground uppercase">
             {label}
           </span>
           {badge ? (
@@ -71,7 +71,7 @@ export function StatCard({
           ) : null}
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5">
           {action}
           {icon ? (
             <span className={cn("p-1 rounded-md bg-surface-2 text-muted-foreground", tone && toneClasses[tone])}>
@@ -82,17 +82,17 @@ export function StatCard({
       </div>
 
       {/* Center Value */}
-      <div className="my-2.5">
-        <div className={cn("num text-2xl font-bold tracking-tight text-foreground", tone && toneClasses[tone])}>
+      <div className="my-2 min-w-0">
+        <div className={cn("num truncate text-lg sm:text-xl font-bold tracking-tight text-foreground", tone && toneClasses[tone])}>
           {value}
         </div>
-        {subvalue ? <div className="num mt-0.5 text-xs text-muted-foreground">{subvalue}</div> : null}
+        {subvalue ? <div className="num mt-0.5 text-[0.7rem] leading-snug text-muted-foreground">{subvalue}</div> : null}
       </div>
 
       {/* Bottom Row: Hint & Trend */}
       {(hint || trend) && (
-        <div className="flex items-center justify-between gap-2 border-t border-border/40 pt-2 text-[0.72rem] text-muted-foreground">
-          {hint ? <div className="truncate">{hint}</div> : <div />}
+        <div className="flex items-center justify-between gap-2 border-t border-border/40 pt-2 text-[0.68rem] text-muted-foreground">
+          {hint ? <div className="min-w-0 truncate">{hint}</div> : <div />}
           {trend ? (
             <span
               className={cn(

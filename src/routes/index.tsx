@@ -3,6 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import {
   Activity,
+  Bot,
   ArrowDownRight,
   ArrowUpRight,
   Calculator,
@@ -111,6 +112,17 @@ const POLL_INTERVAL_STORAGE_KEY = "p2p_market_poll_sec";
 const DEFAULT_POLL_SECONDS = 1;
 const BINANCE_SYNC_SECONDS = 180;
 
+type MainTab = "bot" | "pnl" | "market" | "calculator" | "arbitrage" | "news" | "verifier";
+const NAV_TABS: { id: MainTab; label: string; icon: typeof Bot }[] = [
+  { id: "bot", label: "Bot Harga", icon: Bot },
+  { id: "pnl", label: "Laporan", icon: Wallet },
+  { id: "verifier", label: "Pembayaran", icon: ShieldCheck },
+  { id: "market", label: "Pasar", icon: Layers },
+  { id: "arbitrage", label: "Arbitrase", icon: TrendingUp },
+  { id: "calculator", label: "Simulasi", icon: Calculator },
+  { id: "news", label: "Berita", icon: Globe },
+];
+
 function loadHistory(): HistoryPoint[] {
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
@@ -200,7 +212,7 @@ function Dashboard() {
   // Polling pasar & history chart
   const [history, setHistory] = useState<HistoryPoint[]>(loadHistory);
   const [copiedPrice, setCopiedPrice] = useState<"buy" | "sell" | null>(null);
-  const [activeTab, setActiveTab] = useState<"pnl" | "market" | "calculator" | "arbitrage" | "news" | "verifier">("pnl");
+  const [activeTab, setActiveTab] = useState<MainTab>("bot");
 
   // Interval polling harga real-time (default 1 detik sesuai permintaan user)
   const [pollIntervalSec, setPollIntervalSec] = useState<number>(() => {
@@ -861,6 +873,8 @@ function Dashboard() {
   }
 
   const s = snapshotQuery.data;
+  const newsCount = s?.analyzed_news?.length || s?.news_items?.length || 0;
+  const hasNews = newsCount > 0;
   const pnl = pnlQuery.data;
 
   // Sisa Uang Kas / Saldo Bank Bebas dari Modal PnL & Pendanaan (Default Total Modal 180 Juta)
@@ -884,17 +898,22 @@ function Dashboard() {
 
       {/* ── Top Header ───────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-2 px-3 py-2 sm:px-6">
           {/* Logo & Brand */}
-          <div className="flex items-center gap-2.5">
-            <BrandLogo className="size-6" />
-            <div>
+          <div className="flex min-w-0 items-center gap-2">
+            <BrandLogo className="size-6 shrink-0" />
+            <div className="min-w-0 leading-tight">
               <div className="flex items-center gap-1.5">
-                <span className="text-sm font-bold text-foreground">Radar P2P</span>
-                <span className="rounded bg-surface-2 border border-border px-1.5 py-0.2 text-[0.6rem] font-semibold text-muted-foreground">
+                <span className="whitespace-nowrap text-sm font-bold text-foreground">Radar P2P</span>
+                <span className="hidden sm:inline rounded bg-surface-2 border border-border px-1.5 text-[0.6rem] font-semibold text-muted-foreground">
                   USDT/IDR
                 </span>
               </div>
+              {s ? (
+                <div className="md:hidden num whitespace-nowrap text-[0.65rem] text-muted-foreground">
+                  {fmtRp(s.fair_price)} · <span className="text-primary">+{fmtRp(s.spread_abs).replace("Rp ", "")}</span>
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -903,7 +922,7 @@ function Dashboard() {
             <div className="hidden md:flex items-center gap-2.5 text-xs">
               <div className="flex items-center gap-1.5 rounded border border-border bg-surface-2 px-2.5 py-1">
                 <span className="text-muted-foreground">Nilai Wajar:</span>
-                <span className="num font-bold text-foreground">{fmtRp2(s.fair_price)}</span>
+                <span className="num font-bold text-foreground">{fmtRp(s.fair_price)}</span>
               </div>
 
               <div className="flex items-center gap-1.5 rounded border border-border bg-surface-2 px-2.5 py-1">
@@ -971,222 +990,105 @@ function Dashboard() {
             </Button>
           </div>
         </div>
+        {/* ── Navigasi utama (selalu terlihat) ─────────────────────────────── */}
+        <nav className="mx-auto max-w-7xl px-2 sm:px-6">
+          <div className="no-scrollbar -mb-px flex gap-1 overflow-x-auto">
+            {NAV_TABS.filter((t) => t.id !== "news" || hasNews).map((t) => {
+              const Icon = t.icon;
+              const active = activeTab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setActiveTab(t.id)}
+                  className={cn(
+                    "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2 text-xs font-semibold transition-colors",
+                    active
+                      ? "border-primary text-foreground"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <Icon className={cn("size-3.5", active && "text-primary")} />
+                  {t.label}
+                  {t.id === "news" && newsCount > 0 ? (
+                    <span className="rounded-full bg-surface-3 px-1.5 text-[0.6rem] text-muted-foreground">{newsCount}</span>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        </nav>
       </header>
 
       {/* ── Main Body ───────────────────────────────────────────────────────── */}
       <main className="mx-auto max-w-7xl px-4 pt-5 sm:px-6 space-y-5">
 
-        {/* ── Bot Auto-Pricing: Merchant Tracker & Competitor Filter ─────── */}
-        {s && (
-          <AutoPricingBotPanel
-            sellRefAds={s.all_sell_ads || s.top_sell_ref_ads || []}
-            buyRefAds={s.all_buy_ads || s.top_buy_ref_ads || []}
-            fairPrice={s.fair_price || 0}
-            stockHpp={effectiveCost}
-            pnlReady={pnlQuery.isSuccess && !!pnl}
-            marketUpdatedAt={snapshotQuery.dataUpdatedAt}
-            bankBalanceIdr={freeCashIdr}
-            initialCapitalIdr={initialCapital}
-            liveStockUsdt={stockUsdt}
-            stockCapitalIdr={stockCapitalIdr}
-            sessionToken={sessionToken ?? undefined}
-            indodaxSpotPrice={s.cross_platform?.indodax_usdt_idr_spot || 0}
-            onApplyPrice={(payload) => {
-              const side = payload.targetSide || tradeSide;
-              setTradeSide(side);
-              const chosenPrice =
-                side === "buy" ? Math.round(payload.buyPrice) : Math.round(payload.sellPrice);
-              setTradePrice(String(chosenPrice));
-              if (side === "buy" && payload.buyAmountUsdt && payload.buyAmountUsdt > 0) {
-                setTradeAmount(String(payload.buyAmountUsdt));
-              } else if (side === "sell" && payload.sellAmountUsdt && payload.sellAmountUsdt > 0) {
-                setTradeAmount(String(payload.sellAmountUsdt));
-              }
-              setTradeRoleState("maker");
-              setShowManualForm(true);
-              toast.success(
-                side === "buy" && payload.buyAmountUsdt
-                  ? `Iklan Beli: Harga Rp ${chosenPrice.toLocaleString("id-ID")} & Stok ${payload.buyAmountUsdt.toLocaleString("id-ID")} USDT dimasukkan ke form!`
-                  : side === "sell" && payload.sellAmountUsdt
-                  ? `Iklan Jual: Harga Rp ${chosenPrice.toLocaleString("id-ID")} & All Stok ${payload.sellAmountUsdt.toLocaleString("id-ID")} USDT dimasukkan ke form!`
-                  : `Harga ${side === "buy" ? "Beli" : "Jual"} Rp ${chosenPrice.toLocaleString("id-ID")} dimasukkan ke form!`
-              );
-            }}
-            onRefresh={() => {
-              snapshotQuery.refetch();
-              pnlQuery.refetch();
-              fundingBalanceQuery.refetch();
-              syncMutation.mutate({ isSilent: true });
-            }}
-            isRefreshing={snapshotQuery.isFetching}
-          />
-        )}
-
-        {/* ── Sinkronisasi Benchmark Multi-Platform ─────────────────────────── */}
-        {s && (
-          <div className="panel p-3.5 border-border/70 bg-surface-2/40 space-y-2.5 text-xs">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-2">
-              <div className="flex items-center gap-2">
-                <Globe className="size-3.5 text-primary" />
-                <span className="font-bold text-foreground">Sinkronisasi Pasar Multi-Platform:</span>
-              </div>
-              <span className="text-[0.68rem] text-muted-foreground">
-                Nilai Wajar Pasar P2P: <strong className="text-foreground">{fmtRp2(s.fair_price)}</strong>
-              </span>
+        <div className={activeTab === "bot" ? "" : "hidden"}>
+          {!s && (
+            <div className="panel flex flex-col items-center justify-center gap-3 p-10 text-center text-sm text-muted-foreground">
+              {snapshotQuery.isError ? (
+                <>
+                  <span>Gagal memuat data pasar Binance.</span>
+                  <Button size="sm" variant="outline" onClick={() => snapshotQuery.refetch()} className="gap-1.5">
+                    <RefreshCw className="size-3.5" /> Coba lagi
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="size-5 animate-spin text-primary" />
+                  <span>Memuat data pasar Binance…</span>
+                </>
+              )}
             </div>
+          )}
+          {/* ── Bot Auto-Pricing: Merchant Tracker & Competitor Filter ─────── */}
+          {s && (
+            <AutoPricingBotPanel
+              sellRefAds={s.all_sell_ads || s.top_sell_ref_ads || []}
+              buyRefAds={s.all_buy_ads || s.top_buy_ref_ads || []}
+              fairPrice={s.fair_price || 0}
+              stockHpp={effectiveCost}
+              pnlReady={pnlQuery.isSuccess && !!pnl}
+              marketUpdatedAt={snapshotQuery.dataUpdatedAt}
+              bankBalanceIdr={freeCashIdr}
+              initialCapitalIdr={initialCapital}
+              liveStockUsdt={stockUsdt}
+              stockCapitalIdr={stockCapitalIdr}
+              sessionToken={sessionToken ?? undefined}
+              indodaxSpotPrice={s.cross_platform?.indodax_usdt_idr_spot || 0}
+              onApplyPrice={(payload) => {
+                const side = payload.targetSide || tradeSide;
+                setTradeSide(side);
+                const chosenPrice =
+                  side === "buy" ? Math.round(payload.buyPrice) : Math.round(payload.sellPrice);
+                setTradePrice(String(chosenPrice));
+                if (side === "buy" && payload.buyAmountUsdt && payload.buyAmountUsdt > 0) {
+                  setTradeAmount(String(payload.buyAmountUsdt));
+                } else if (side === "sell" && payload.sellAmountUsdt && payload.sellAmountUsdt > 0) {
+                  setTradeAmount(String(payload.sellAmountUsdt));
+                }
+                setTradeRoleState("maker");
+                setShowManualForm(true);
+                toast.success(
+                  side === "buy" && payload.buyAmountUsdt
+                    ? `Iklan Beli: Harga Rp ${chosenPrice.toLocaleString("id-ID")} & Stok ${payload.buyAmountUsdt.toLocaleString("id-ID")} USDT dimasukkan ke form!`
+                    : side === "sell" && payload.sellAmountUsdt
+                    ? `Iklan Jual: Harga Rp ${chosenPrice.toLocaleString("id-ID")} & All Stok ${payload.sellAmountUsdt.toLocaleString("id-ID")} USDT dimasukkan ke form!`
+                    : `Harga ${side === "buy" ? "Beli" : "Jual"} Rp ${chosenPrice.toLocaleString("id-ID")} dimasukkan ke form!`
+                );
+              }}
+              onRefresh={() => {
+                snapshotQuery.refetch();
+                pnlQuery.refetch();
+                fundingBalanceQuery.refetch();
+                syncMutation.mutate({ isSilent: true });
+              }}
+              isRefreshing={snapshotQuery.isFetching}
+            />
+          )}
+        </div>
 
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 text-center">
-              {/* Indodax Spot */}
-              <div className="rounded border border-border/60 bg-surface/80 p-2">
-                <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
-                  🇮🇩 Indodax Orderbook
-                </div>
-                <div className="num font-bold text-foreground mt-0.5">
-                  {s.cross_platform?.indodax_ask ? fmtRp(s.cross_platform.indodax_ask) : s.cross_platform?.indodax_usdt_idr_spot ? fmtRp(s.cross_platform.indodax_usdt_idr_spot) : "—"}
-                </div>
-                <div className="text-[0.62rem] text-muted-foreground flex items-center justify-center gap-1.5 mt-0.5">
-                  <span className="text-bid font-semibold">Ask: {s.cross_platform?.indodax_ask ? fmtRp(s.cross_platform.indodax_ask) : "—"}</span>
-                  <span>|</span>
-                  <span className="text-ask font-semibold">Bid: {s.cross_platform?.indodax_bid ? fmtRp(s.cross_platform.indodax_bid) : "—"}</span>
-                </div>
-              </div>
-
-              {/* Bybit Benchmark */}
-              <div className="rounded border border-border/60 bg-surface/80 p-2">
-                <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
-                  🌐 Bybit
-                </div>
-                <div className="num font-bold text-foreground mt-0.5">
-                  {s.cross_platform?.bybit_usdt_idr ? fmtRp(s.cross_platform.bybit_usdt_idr) : "—"}
-                </div>
-                <div className="text-[0.62rem] text-muted-foreground">USDT/IDR Est</div>
-              </div>
-
-              {/* OKX Benchmark */}
-              <div className="rounded border border-border/60 bg-surface/80 p-2">
-                <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
-                  🌐 OKX
-                </div>
-                <div className="num font-bold text-foreground mt-0.5">
-                  {s.cross_platform?.okx_usdt_idr ? fmtRp(s.cross_platform.okx_usdt_idr) : "—"}
-                </div>
-                <div className="text-[0.62rem] text-muted-foreground">USDT/IDR Est</div>
-              </div>
-
-              {/* CoinGecko */}
-              <div className="rounded border border-border/60 bg-surface/80 p-2">
-                <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
-                  🪙 CoinGecko
-                </div>
-                <div className="num font-bold text-foreground mt-0.5">
-                  {s.cross_platform?.coingecko_usdt_idr ? fmtRp(s.cross_platform.coingecko_usdt_idr) : "—"}
-                </div>
-                <div className="text-[0.62rem] text-muted-foreground">Tether Global IDR</div>
-              </div>
-
-              {/* Forex Kurs USD/IDR */}
-              <div className="rounded border border-border/60 bg-surface/80 p-2 col-span-2 sm:col-span-1">
-                <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
-                  🏦 Kurs USD/IDR
-                </div>
-                <div className="num font-bold text-foreground mt-0.5">
-                  {s.cross_platform?.forex_usd_idr ? fmtRp(s.cross_platform.forex_usd_idr) : "—"}
-                </div>
-                <div className="text-[0.62rem] text-muted-foreground">Pasar Uang Antar Bank</div>
-              </div>
-            </div>
-          </div>
-        )}
-
-
-
-
-        {/* ── Navigation Tabs ──────────────────────────────────────────────── */}
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2.5">
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                onClick={() => setActiveTab("pnl")}
-                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                  activeTab === "pnl"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-surface-2 text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Wallet className="size-3.5" />
-                Laporan & Transaksi
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab("market")}
-                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                  activeTab === "market"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-surface-2 text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Layers className="size-3.5" />
-                Buku Pesanan
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab("calculator")}
-                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                  activeTab === "calculator"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-surface-2 text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Calculator className="size-3.5" />
-                Simulasi Margin
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setActiveTab("arbitrage")}
-                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                  activeTab === "arbitrage"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-surface-2 text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <TrendingUp className="size-3.5" />
-                Radar Arbitrase
-              </button>
-
-              {((s?.analyzed_news && s.analyzed_news.length > 0) || (s?.news_items && s.news_items.length > 0)) ? (
-                <button
-                  type="button"
-                  onClick={() => setActiveTab("news")}
-                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                    activeTab === "news"
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-surface-2 text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <Globe className="size-3.5" />
-                  Berita & Dampak Pasar ({s?.analyzed_news?.length || s?.news_items?.length || 0})
-                </button>
-              ) : null}
-
-              <button
-                type="button"
-                onClick={() => setActiveTab("verifier")}
-                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                  activeTab === "verifier"
-                    ? "bg-primary text-primary-foreground shadow-sm"
-                    : "bg-surface-2 text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <ShieldCheck className="size-3.5 text-emerald-400" />
-                Pantau Pembayaran & Liveness (WA)
-              </button>
-
-            </div>
-          </div>
 
           {/* ── TAB 1: LAPORAN & TRANSAKSI ──────────────────────────────────── */}
           {activeTab === "pnl" && (
@@ -1215,7 +1117,7 @@ function Dashboard() {
                 const cashPct = Math.max(0, 100 - utilPct);
 
                 return (
-                  <div className="panel p-4.5 border-primary/25 bg-gradient-to-br from-surface to-primary/5 space-y-4">
+                  <div className="panel p-3.5 sm:p-4.5 border-primary/25 bg-gradient-to-br from-surface to-primary/5 space-y-4">
                     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 pb-3">
                       <div className="flex items-center gap-2.5">
                         <div className="rounded-lg bg-primary/15 p-2 text-primary border border-primary/30">
@@ -1223,15 +1125,15 @@ function Dashboard() {
                         </div>
                         <div>
                           <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
-                            Manajemen Modal Awal & Posisi Ekuitas
+                            Modal & Ekuitas
                             {initialCapital > 0 && (
                               <span className="rounded bg-primary/20 text-primary px-1.5 py-0.5 text-[0.65rem] font-semibold">
                                 Aktif
                               </span>
                             )}
                           </h2>
-                          <p className="text-xs text-muted-foreground">
-                            Modal awal otomatis berkurang saat beli stok USDT, kas bertambah saat jual, dan profit otomatis diakumulasikan.
+                          <p className="hidden sm:block text-xs text-muted-foreground">
+                            Kas berkurang saat beli USDT, bertambah saat jual. Laba diakumulasikan otomatis.
                           </p>
                         </div>
                       </div>
@@ -1280,14 +1182,14 @@ function Dashboard() {
                     </div>
 
                     {/* 4 Kartu Metrik Modal Utama */}
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="grid grid-cols-2 gap-2.5 sm:gap-3 lg:grid-cols-4">
                       {/* Kartu 1: Modal Awal */}
-                      <div className="rounded-lg border border-border/70 bg-surface-2/60 p-3.5 space-y-1">
+                      <div className="rounded-lg border border-border/70 bg-surface-2/60 p-3 sm:p-3.5 space-y-1 min-w-0">
                         <div className="flex items-center justify-between text-muted-foreground text-xs">
                           <span>Modal Awal (Bankroll)</span>
                           <PiggyBank className="size-3.5 text-primary" />
                         </div>
-                        <div className="num text-xl sm:text-2xl font-bold text-foreground">
+                        <div className="num truncate text-base sm:text-2xl font-bold text-foreground">
                           {initialCapital > 0 ? fmtRp(initialCapital) : "Belum diinput"}
                         </div>
                         <div className="text-[0.68rem] text-muted-foreground">
@@ -1296,12 +1198,12 @@ function Dashboard() {
                       </div>
 
                       {/* Kartu 2: Sisa Kas Bebas (IDR) */}
-                      <div className="rounded-lg border border-border/70 bg-surface-2/60 p-3.5 space-y-1">
+                      <div className="rounded-lg border border-border/70 bg-surface-2/60 p-3 sm:p-3.5 space-y-1 min-w-0">
                         <div className="flex items-center justify-between text-muted-foreground text-xs">
                           <span>Sisa Kas Bebas (IDR)</span>
                           <Coins className="size-3.5 text-sky-400" />
                         </div>
-                        <div className="num text-xl sm:text-2xl font-bold text-sky-400">
+                        <div className="num truncate text-base sm:text-2xl font-bold text-sky-400">
                           {initialCapital > 0 ? fmtRp(freeCashIdr) : "—"}
                         </div>
                         <div className="text-[0.68rem] text-muted-foreground">
@@ -1310,12 +1212,12 @@ function Dashboard() {
                       </div>
 
                       {/* Kartu 3: Modal di Stok USDT */}
-                      <div className="rounded-lg border border-border/70 bg-surface-2/60 p-3.5 space-y-1">
+                      <div className="rounded-lg border border-border/70 bg-surface-2/60 p-3 sm:p-3.5 space-y-1 min-w-0">
                         <div className="flex items-center justify-between text-muted-foreground text-xs">
                           <span>Modal di Stok USDT</span>
                           <Wallet className="size-3.5 text-amber-400" />
                         </div>
-                        <div className="num text-xl sm:text-2xl font-bold text-amber-400">
+                        <div className="num truncate text-base sm:text-2xl font-bold text-amber-400">
                           {fmtRp(stockCapitalIdr)}
                         </div>
                         <div className="text-[0.68rem] text-muted-foreground">
@@ -1326,12 +1228,12 @@ function Dashboard() {
                       </div>
 
                       {/* Kartu 4: Total Ekuitas & ROI */}
-                      <div className="rounded-lg border border-bid/30 bg-bid/5 p-3.5 space-y-1">
+                      <div className="rounded-lg border border-bid/30 bg-bid/5 p-3 sm:p-3.5 space-y-1 min-w-0">
                         <div className="flex items-center justify-between text-bid text-xs font-semibold">
                           <span>Total Ekuitas Portofolio</span>
                           <TrendingUp className="size-3.5 text-bid" />
                         </div>
-                        <div className="num text-xl sm:text-2xl font-bold text-bid">
+                        <div className="num truncate text-base sm:text-2xl font-bold text-bid">
                           {fmtRp(totalEquityIdr)}
                         </div>
                         <div className="text-[0.68rem] text-bid/90 font-medium">
@@ -1346,8 +1248,8 @@ function Dashboard() {
                     {initialCapital > 0 && (
                       <div className="space-y-1.5 pt-1">
                         <div className="flex items-center justify-between text-xs text-muted-foreground">
-                          <span>Alokasi Modal: <strong>Kas Bebas ({cashPct.toFixed(1)}%)</strong> vs <strong>Stok USDT ({utilPct.toFixed(1)}%)</strong></span>
-                          <span>Total: <strong>{fmtRp(totalEquityIdr)}</strong></span>
+                          <span><span className="text-sky-400">●</span> Kas {cashPct.toFixed(0)}% · <span className="text-amber-400">●</span> Stok USDT {utilPct.toFixed(0)}%</span>
+                          <span className="num">{fmtRp(totalEquityIdr)}</span>
                         </div>
                         <div className="h-2 w-full overflow-hidden rounded-full bg-surface-3 flex">
                           <div
@@ -1368,7 +1270,7 @@ function Dashboard() {
               })()}
 
               {/* Financial Metric Cards */}
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+              <div className="grid grid-cols-2 gap-2.5 sm:gap-3 lg:grid-cols-3 xl:grid-cols-6">
                 <StatCard
                   label="Hari Ini"
                   value={pnl ? `+${fmtRp(pnl.today_profit_idr)}` : "—"}
@@ -1439,7 +1341,7 @@ function Dashboard() {
                   // Hint: info mutasi saldo & margin
                   const hintFee = isFundingLive
                     ? "Live saldo Funding Binance"
-                    : "Beli: +(nominal - fee) · Jual: -(nominal + fee)";
+                    : "Dihitung dari riwayat transaksi";
                   const hintProfit = pnl && pnl.avg_profit_per_usdt_idr !== 0
                     ? `Margin avg: +${fmtRp(pnl.avg_profit_per_usdt_idr)}/USDT`
                     : "";
@@ -1890,6 +1792,81 @@ function Dashboard() {
           {/* ── TAB 2: BUKU PESANAN (ORDER BOOK) ────────────────────────────── */}
           {activeTab === "market" && (
             <div className="space-y-5">
+            {/* ── Sinkronisasi Benchmark Multi-Platform ─────────────────────────── */}
+            {s && (
+              <div className="panel p-3.5 border-border/70 bg-surface-2/40 space-y-2.5 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Globe className="size-3.5 text-primary" />
+                    <span className="font-bold text-foreground">Sinkronisasi Pasar Multi-Platform:</span>
+                  </div>
+                  <span className="text-[0.68rem] text-muted-foreground">
+                    Nilai Wajar Pasar P2P: <strong className="text-foreground">{fmtRp2(s.fair_price)}</strong>
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 text-center">
+                  {/* Indodax Spot */}
+                  <div className="rounded border border-border/60 bg-surface/80 p-2">
+                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                      🇮🇩 Indodax Orderbook
+                    </div>
+                    <div className="num font-bold text-foreground mt-0.5">
+                      {s.cross_platform?.indodax_ask ? fmtRp(s.cross_platform.indodax_ask) : s.cross_platform?.indodax_usdt_idr_spot ? fmtRp(s.cross_platform.indodax_usdt_idr_spot) : "—"}
+                    </div>
+                    <div className="text-[0.62rem] text-muted-foreground flex items-center justify-center gap-1.5 mt-0.5">
+                      <span className="text-bid font-semibold">Ask: {s.cross_platform?.indodax_ask ? fmtRp(s.cross_platform.indodax_ask) : "—"}</span>
+                      <span>|</span>
+                      <span className="text-ask font-semibold">Bid: {s.cross_platform?.indodax_bid ? fmtRp(s.cross_platform.indodax_bid) : "—"}</span>
+                    </div>
+                  </div>
+
+                  {/* Bybit Benchmark */}
+                  <div className="rounded border border-border/60 bg-surface/80 p-2">
+                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                      🌐 Bybit
+                    </div>
+                    <div className="num font-bold text-foreground mt-0.5">
+                      {s.cross_platform?.bybit_usdt_idr ? fmtRp(s.cross_platform.bybit_usdt_idr) : "—"}
+                    </div>
+                    <div className="text-[0.62rem] text-muted-foreground">USDT/IDR Est</div>
+                  </div>
+
+                  {/* OKX Benchmark */}
+                  <div className="rounded border border-border/60 bg-surface/80 p-2">
+                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                      🌐 OKX
+                    </div>
+                    <div className="num font-bold text-foreground mt-0.5">
+                      {s.cross_platform?.okx_usdt_idr ? fmtRp(s.cross_platform.okx_usdt_idr) : "—"}
+                    </div>
+                    <div className="text-[0.62rem] text-muted-foreground">USDT/IDR Est</div>
+                  </div>
+
+                  {/* CoinGecko */}
+                  <div className="rounded border border-border/60 bg-surface/80 p-2">
+                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                      🪙 CoinGecko
+                    </div>
+                    <div className="num font-bold text-foreground mt-0.5">
+                      {s.cross_platform?.coingecko_usdt_idr ? fmtRp(s.cross_platform.coingecko_usdt_idr) : "—"}
+                    </div>
+                    <div className="text-[0.62rem] text-muted-foreground">Tether Global IDR</div>
+                  </div>
+
+                  {/* Forex Kurs USD/IDR */}
+                  <div className="rounded border border-border/60 bg-surface/80 p-2 col-span-2 sm:col-span-1">
+                    <div className="text-[0.65rem] text-muted-foreground font-medium uppercase tracking-wider">
+                      🏦 Kurs USD/IDR
+                    </div>
+                    <div className="num font-bold text-foreground mt-0.5">
+                      {s.cross_platform?.forex_usd_idr ? fmtRp(s.cross_platform.forex_usd_idr) : "—"}
+                    </div>
+                    <div className="text-[0.62rem] text-muted-foreground">Pasar Uang Antar Bank</div>
+                  </div>
+                </div>
+              </div>
+            )}
               <div className="panel p-4 space-y-3">
                 <Tabs defaultValue="sell">
                   <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-border pb-2.5">
@@ -1925,7 +1902,7 @@ function Dashboard() {
                     </div>
                   </div>
 
-                  <TabsContent value="sell" className="mt-3">
+                  <TabsContent value="sell" className="mt-3 max-h-[32rem] overflow-y-auto">
                     {snapshotQuery.isPending && !s ? (
                       <div className="flex flex-col items-center justify-center py-10 text-center text-muted-foreground text-xs">
                         <RefreshCw className="size-5 animate-spin text-primary mb-2" />
@@ -1936,7 +1913,7 @@ function Dashboard() {
                     )}
                   </TabsContent>
 
-                  <TabsContent value="buy" className="mt-3">
+                  <TabsContent value="buy" className="mt-3 max-h-[32rem] overflow-y-auto">
                     {snapshotQuery.isPending && !s ? (
                       <div className="flex flex-col items-center justify-center py-10 text-center text-muted-foreground text-xs">
                         <RefreshCw className="size-5 animate-spin text-primary mb-2" />

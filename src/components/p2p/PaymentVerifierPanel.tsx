@@ -433,21 +433,23 @@ Completed`;
   const activeOrders = state?.activeOrders ?? [];
   const baseline = state?.baselineBalanceIdr ?? 0;
   const recentLogs = state?.recentLogs ?? [];
-  const livenessVerifiedCount = activeOrders.filter((o) => o.livenessVerified).length;
+  // Liveness hanya relevan untuk order SELL yang memang diminta verifikasi wajah oleh Binance.
+  const livenessOrders = activeOrders.filter((o) => o.tradeType === "SELL" && o.additionalKycVerify !== 0);
+  const livenessVerifiedCount = livenessOrders.filter((o) => o.livenessVerified).length;
 
   return (
     <div className="space-y-5">
       {/* ── Header & Banner Status Verifier ──────────────────────────────── */}
-      <div className="panel p-4.5 border-primary/25 bg-gradient-to-br from-surface to-primary/5 space-y-4">
+      <div className="panel p-3.5 sm:p-4.5 border-primary/25 bg-gradient-to-br from-surface to-primary/5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 pb-3">
           <div className="flex items-center gap-3">
-            <div className="rounded-xl bg-primary/15 p-2.5 text-primary border border-primary/30 shadow-sm shadow-primary/10">
+            <div className="hidden sm:block rounded-xl bg-primary/15 p-2.5 text-primary border border-primary/30 shadow-sm shadow-primary/10">
               <ShieldCheck className="size-6" />
             </div>
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-base font-bold text-foreground">
-                  Pemantau Saldo Bank & Verifikasi Liveness P2P
+                  Pembayaran & Liveness
                 </h2>
                 <Badge variant={baseline > 0 ? "bid" : "outline"} className="text-[0.65rem] px-2 py-0.5">
                   {baseline > 0 ? "Aktif & Siaga" : "Menunggu Setup"}
@@ -462,18 +464,18 @@ Completed`;
                 >
                   <span className={`size-1.5 rounded-full ${!livenessEnabled ? "bg-muted-foreground" : "bg-emerald-400 animate-pulse"}`} />
                   {!livenessEnabled
-                    ? "Fitur Liveness: Nonaktif (OFF)"
+                    ? "Liveness OFF"
                     : autoVerifyOnBuyerPayed
                       ? autoVerifyMode === "buyer_payed"
-                        ? "⚡ Auto-Verify: Aktif (Status Buyer Bayar)"
+                        ? "Auto-Verify: Buyer Bayar"
                         : autoVerifyMode === "chat_only"
-                        ? "⚡ Auto-Verify: Mode Chat Liveness"
-                        : "⚡ Auto-Verify: Aktif (Semua Order Buyer)"
+                        ? "Auto-Verify: Chat Liveness"
+                        : "Auto-Verify: Semua Order"
                       : "Auto-Verify: Manual"}
                 </Badge>
               </div>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Mendeteksi mutasi BRI & auto-verifikasi liveness wajah buyer dari Binance chat secara otomatis. Rilis kripto tetap dilakukan manual di aplikasi Binance.
+              <p className="hidden sm:block text-xs text-muted-foreground mt-0.5">
+                Cek mutasi BRI & verifikasi wajah buyer otomatis. Release kripto tetap manual di Binance.
               </p>
             </div>
           </div>
@@ -507,7 +509,7 @@ Completed`;
               className="h-8 text-xs gap-1.5 bg-surface hover:bg-surface-3 text-sky-400 border-sky-500/30 hover:border-sky-500/50"
             >
               <Camera className="size-3.5" />
-              {isPasteChatModalOpen ? "Tutup Verif Chat" : "Verifikasi Wajah / Chat"}
+              {isPasteChatModalOpen ? "Tutup" : "Tempel Chat"}
             </Button>
             {activeOrders.length > 0 && (
               <Button
@@ -530,7 +532,7 @@ Completed`;
               className="h-8 text-xs gap-1.5 bg-surface"
             >
               <RefreshCw className={`size-3.5 ${verifierQuery.isFetching ? "animate-spin" : ""}`} />
-              Refresh
+              <span className="hidden sm:inline">Refresh</span>
             </Button>
             <Button
               variant={isEditingSettings ? "default" : "outline"}
@@ -539,17 +541,17 @@ Completed`;
               className="h-8 text-xs gap-1.5 bg-surface hover:bg-surface-3"
             >
               <Sliders className="size-3.5" />
-              {isEditingSettings ? "Tutup Pengaturan" : "Pengaturan Notifikasi"}
+              {isEditingSettings ? "Tutup" : "Pengaturan"}
             </Button>
           </div>
         </div>
 
         {/* 4 Kartu Metrik Ringkas */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4 text-xs">
+        <div className="grid grid-cols-2 gap-2.5 sm:gap-3 lg:grid-cols-4 text-xs">
           {/* Kartu 1: Saldo Terpantau */}
           <div className="rounded-xl border border-border/70 bg-surface/80 p-3.5 space-y-1.5">
             <span className="text-[0.68rem] text-muted-foreground uppercase font-semibold tracking-wider">
-              Saldo Baseline Terpantau
+              Saldo Baseline
             </span>
             <div className="num font-bold text-foreground text-lg">
               {baseline > 0 ? `Rp ${baseline.toLocaleString("id-ID")}` : "Belum Disetel"}
@@ -597,10 +599,10 @@ Completed`;
               <Camera className="size-3 text-sky-400" />
             </span>
             <div className="num font-bold text-sky-400 text-lg flex items-center gap-1.5">
-              {livenessVerifiedCount} / {activeOrders.length} Selesai
+              {livenessVerifiedCount} / {livenessOrders.length} Selesai
             </div>
             <div className="flex items-center justify-between text-[0.7rem] text-muted-foreground">
-              <span>{activeOrders.length > 0 && activeOrders.every((o) => o.livenessVerified) ? "Semua Terverifikasi ✅" : "Pantau Chat Binance"}</span>
+              <span>{livenessOrders.length === 0 ? "Tidak ada yang perlu dicek" : livenessVerifiedCount === livenessOrders.length ? "Semua terverifikasi ✅" : "Menunggu buyer"}</span>
               <button
                 type="button"
                 onClick={() => setIsPasteChatModalOpen(true)}
@@ -1034,16 +1036,16 @@ Completed`;
       {/* ── Section Order P2P Aktif Menunggu Dana & Input Saldo ─────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Kolom Kiri (2 Kolom): Tabel Order Aktif Menunggu Dana */}
-        <div className="lg:col-span-2 panel p-4.5 space-y-4">
+        <div className="lg:col-span-2 panel p-3.5 sm:p-4.5 space-y-4">
           <div className="flex items-center justify-between border-b border-border/60 pb-2.5">
             <div className="flex items-center gap-2">
               <Clock className="size-4 text-amber-400" />
               <h3 className="text-sm font-bold text-foreground uppercase tracking-wide">
-                Order P2P Aktif Menunggu Pembayaran ({activeOrders.length})
+                Order Aktif ({activeOrders.length})
               </h3>
             </div>
-            <span className="text-[0.7rem] text-muted-foreground">
-              Auto-refresh tiap 10 detik dari Binance
+            <span className="hidden sm:inline text-[0.7rem] text-muted-foreground">
+              Diperbarui otomatis
             </span>
           </div>
 
@@ -1063,6 +1065,7 @@ Completed`;
                 const isVerified = Boolean(ord.livenessVerified);
                 const paymentOpened = Boolean(ord.kycVerifiedInBinance || ord.additionalKycVerify === 2);
                 const record = ord.livenessRecord;
+                const needsLiveness = ord.tradeType === "SELL" && ord.additionalKycVerify !== 0;
                 const autoVerify = ord.autoVerify;
 
                 return (
@@ -1088,22 +1091,8 @@ Completed`;
                             {ord.tradeType} · {ord.orderStatus || "MENUNGGU DANA"}
                           </Badge>
 
-                          {/* Badge Indikator Additional KYC */}
-                          {ord.tradeType === "SELL" && ord.additionalKycVerify === 1 && !isVerified && (
-                            <Badge variant="outline" className="text-[0.62rem] border-sky-500/40 text-sky-400 font-semibold flex items-center gap-1">
-                              <ShieldCheck className="size-2.5 text-sky-400" />
-                              Butuh Liveness (KYC)
-                            </Badge>
-                          )}
-                          {ord.tradeType === "SELL" && (ord.additionalKycVerify === 2 || isVerified) && (
-                            <Badge variant="outline" className="text-[0.62rem] border-emerald-500/40 text-emerald-400 font-semibold flex items-center gap-1">
-                              <ShieldCheck className="size-2.5 text-emerald-400" />
-                              Liveness Lolos (KYC)
-                            </Badge>
-                          )}
-
                           {/* Liveness Status Badge */}
-                          {!livenessEnabled ? (
+                          {!needsLiveness ? null : !livenessEnabled ? (
                             <Badge variant="outline" className="text-[0.65rem] border-border text-muted-foreground font-semibold">
                               Liveness OFF
                             </Badge>
@@ -1168,7 +1157,7 @@ Completed`;
 
                         <div className="flex flex-wrap items-center gap-1.5">
                           {/* Tombol Liveness */}
-                          {!paymentOpened ? (
+                          {!needsLiveness ? null : !paymentOpened ? (
                             <Button
                               size="sm"
                               variant="default"
@@ -1193,6 +1182,7 @@ Completed`;
                             </Button>
                           )}
 
+                          {needsLiveness && (
                           <Button
                             size="sm"
                             variant="outline"
@@ -1206,18 +1196,8 @@ Completed`;
                             <MessageSquare className="size-3" />
                             Chat
                           </Button>
+                          )}
 
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => handleSimulatePayment(ord)}
-                            disabled={checkBalanceMutation.isPending}
-                            className="h-8 text-xs gap-1 bg-surface-2 hover:bg-emerald-500/20 border-emerald-500/30 text-emerald-400"
-                            title="Simulasikan seolah saldo bank naik pas sebesar nominal ini"
-                          >
-                            <ArrowUpRight className="size-3" />
-                            Tes Dana
-                          </Button>
                         </div>
                       </div>
                     </div>
@@ -1248,25 +1228,38 @@ Completed`;
 
                     {/* Banner Status Kesiapan Release (Rilis Tetap Manual di Binance) */}
                     <div className="pt-2 border-t border-border/50 flex flex-wrap items-center justify-between gap-2 text-xs">
-                      {!livenessEnabled ? (
+                      {ord.tradeType !== "SELL" ? (
                         <div className="flex items-center gap-1.5 text-muted-foreground font-medium text-[0.72rem]">
                           <Info className="size-3.5 shrink-0" />
-                          <span>Fitur liveness dinonaktifkan di pengaturan. Release tetap dilakukan secara manual di Binance saat saldo bank cocok.</span>
+                          <span>Order beli: transfer ke penjual, lalu tandai sudah bayar di Binance.</span>
+                        </div>
+                      ) : !needsLiveness || !livenessEnabled ? (
+                        <div className="flex items-center gap-1.5 text-muted-foreground font-medium text-[0.72rem]">
+                          <Info className="size-3.5 shrink-0" />
+                          <span>Cek mutasi bank. Jika dana cocok, release manual di Binance.</span>
                         </div>
                       ) : isVerified ? (
                         <div className="flex items-center gap-1.5 text-emerald-400 font-medium text-[0.72rem]">
                           <CheckCircle2 className="size-3.5 shrink-0" />
-                          <span>Liveness Selesai: Buyer telah lolos verifikasi wajah. Jika saldo bank sudah masuk cocok, order aman direlease manual di Binance.</span>
+                          <span>Buyer lolos verifikasi wajah. Jika dana sudah masuk, release manual di Binance.</span>
                         </div>
                       ) : (
                         <div className="flex items-center gap-1.5 text-amber-400 font-medium text-[0.72rem]">
                           <AlertTriangle className="size-3.5 shrink-0" />
-                          <span>Menunggu Liveness: Minta buyer verifikasi wajah di chat Binance sebelum Anda merelease koin!</span>
+                          <span>Menunggu buyer verifikasi wajah. Jangan release dulu.</span>
                         </div>
                       )}
-                      <span className="text-[0.68rem] text-muted-foreground font-semibold shrink-0">
-                        ⚠️ Rilis Kripto Tetap Manual di Binance
-                      </span>
+                      {ord.tradeType === "SELL" && (
+                        <button
+                          type="button"
+                          onClick={() => handleSimulatePayment(ord)}
+                          disabled={checkBalanceMutation.isPending}
+                          className="shrink-0 text-[0.65rem] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                          title="Hanya simulasi: anggap saldo bank naik sebesar nominal ini (tidak mengubah apa pun di Binance)"
+                        >
+                          Simulasi dana masuk
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -1276,7 +1269,7 @@ Completed`;
         </div>
 
         {/* Kolom Kanan (1 Kolom): Input & Update Saldo Bank Manual/Emulator */}
-        <div className="panel p-4.5 space-y-4">
+        <div className="panel p-3.5 sm:p-4.5 space-y-4">
           <div className="border-b border-border/60 pb-2.5">
             <h3 className="text-sm font-bold text-foreground flex items-center gap-2 uppercase tracking-wide">
               <CreditCard className="size-4 text-primary" />
@@ -1355,7 +1348,7 @@ Completed`;
       <LivenessDiagnostics activeOrders={activeOrders} />
 
       {/* ── Log Riwayat Pembayaran & Alert Masuk ─────────────────────────── */}
-      <div className="panel p-4.5 space-y-3">
+      <div className="panel p-3.5 sm:p-4.5 space-y-3">
         <div className="flex items-center justify-between border-b border-border/60 pb-2.5">
           <div className="flex items-center gap-2">
             <Bell className="size-4 text-primary" />

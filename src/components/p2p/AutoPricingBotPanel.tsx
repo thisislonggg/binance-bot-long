@@ -1241,9 +1241,9 @@ export function AutoPricingBotPanel({
             <Bot className="size-4.5" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-bold text-foreground">
-                Bot Auto-Pricing: Advanced Market Engine
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <h3 className="whitespace-nowrap text-sm font-bold text-foreground">
+                Bot Auto-Pricing
               </h3>
               {config.enabled ? (
                 hasAnyGuardTriggered ? (
@@ -1261,8 +1261,8 @@ export function AutoPricingBotPanel({
                 </span>
               )}
             </div>
-            <p className="text-xs text-muted-foreground">
-              Filter multi-kriteria: modal USDT, bank transfer, batas limit, anti-pancingan, dan proteksi modal.
+            <p className="hidden sm:block text-xs text-muted-foreground">
+              Otomatis mengikuti kompetitor dengan proteksi modal & anti-pancingan.
             </p>
           </div>
         </div>
@@ -1321,12 +1321,12 @@ export function AutoPricingBotPanel({
         </div>
       </div>
 
-      <div className="p-4 sm:p-5 space-y-4.5">
+      <div className="p-2.5 sm:p-5 space-y-4">
         {/* ── Rekomendasi Harga Jual & Beli Berdampingan ───────────────────────── */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {/* Sisi Rekomendasi BELI */}
           <div
-            className={`rounded-xl border p-4 transition-all ${
+            className={`rounded-xl border p-3 sm:p-4 transition-all ${
               buyGuard.triggered
                 ? "border-amber-500/40 bg-amber-500/5"
                 : "border-bid/35 bg-gradient-to-br from-surface to-bid/5"
@@ -1386,9 +1386,9 @@ export function AutoPricingBotPanel({
 
             {/* Target Merchant Acuan yang Diikuti */}
             <div className="mt-3 rounded-lg border border-border/70 bg-surface-2/80 p-2.5 space-y-1.5 text-xs">
-              <div className="flex items-center justify-between text-muted-foreground">
-                <span className="font-medium text-[0.72rem]">Dasar Acuan:</span>
-                <span className="font-bold text-foreground inline-flex items-center gap-1">
+              <div className="flex items-start justify-between gap-2 text-muted-foreground">
+                <span className="shrink-0 font-medium text-[0.72rem]">Acuan:</span>
+                <span className="min-w-0 text-right font-bold text-foreground inline-flex items-center justify-end gap-1">
                   {config.manualBuyPriceOverrideRp && config.manualBuyPriceOverrideRp > 0
                     ? `Manual Override (Rp ${config.manualBuyPriceOverrideRp.toLocaleString("id-ID")})`
                     : targetMethodDescription.buy}
@@ -1399,12 +1399,12 @@ export function AutoPricingBotPanel({
               </div>
 
               {buyTargetMerchant && !config.manualBuyPriceOverrideRp && (
-                <div className="flex items-center justify-between text-[0.72rem] text-muted-foreground pt-0.5 border-t border-border/40">
-                  <span>
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-[0.72rem] text-muted-foreground pt-0.5 border-t border-border/40">
+                  <span className="whitespace-nowrap">
                     Stok: <strong className="text-foreground">{Math.round(buyTargetMerchant.available_usdt || (buyTargetMerchant.price > 0 ? buyTargetMerchant.available_idr / buyTargetMerchant.price : 0))} USDT</strong>
                   </span>
-                  <span>
-                    Harga Mereka: <strong className="num text-foreground">{fmtRp2(buyTargetMerchant.price)}</strong>
+                  <span className="whitespace-nowrap">
+                    Harga: <strong className="num text-foreground">{fmtRp2(buyTargetMerchant.price)}</strong>
                   </span>
                   <span>
                     Rate: <strong className="text-foreground">{buyTargetMerchant ? fmtRate(buyTargetMerchant.completion_rate) : "—"}</strong>
@@ -1474,7 +1474,7 @@ export function AutoPricingBotPanel({
                   </span>
                   {buyGuard.spotDumpTriggered ? (
                     <span className="font-bold text-amber-400 flex items-center gap-1" title={buyGuard.reason}>
-                      <ShieldAlert className="size-3" /> Tertahan di Rp {fmtRp2(buyGuard.spotCeilingPrice || recommendedBuyPrice)}
+                      <ShieldAlert className="size-3" /> Tertahan di {fmtRp2(buyGuard.spotCeilingPrice || recommendedBuyPrice)}
                     </span>
                   ) : (
                     <span className="font-semibold text-bid flex items-center gap-1">
@@ -1487,11 +1487,11 @@ export function AutoPricingBotPanel({
 
             {/* Fitur Otomatis Pasang Stok Sesuai Sisa Saldo Bank */}
             <div className="mt-3 rounded-lg border border-bid/30 bg-bid/5 p-3 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <CreditCard className="size-3.5 text-bid" />
                   <span className="text-[0.72rem] font-bold text-foreground">
-                    Pasang Stok dari Sisa Saldo Bank
+                    Stok dari Saldo Bank
                   </span>
                   <Badge
                     variant="outline"
@@ -1630,8 +1630,8 @@ export function AutoPricingBotPanel({
 
               {/* Quick chips penyesuaian jika saldo sudah ada */}
               {bankAllocation.effectiveBankBalance > 0 && (
-                <div className="flex items-center justify-between text-[0.65rem] text-muted-foreground pt-0.5">
-                  <span>Quick Ganti Saldo:</span>
+                <div className="flex flex-wrap items-center justify-between gap-1.5 text-[0.65rem] text-muted-foreground pt-0.5">
+                  <span>Ganti Saldo:</span>
                   <div className="flex items-center gap-1 flex-wrap">
                     {[
                       { label: "5 Jt", val: 5_000_000 },
@@ -1666,9 +1666,9 @@ export function AutoPricingBotPanel({
                             ? "bg-primary text-primary-foreground font-bold"
                             : "bg-surface-2 text-muted-foreground hover:text-foreground"
                         }`}
-                        title="Gunakan Saldo Kas Bebas PnL (Total Modal Rp 180 Juta)"
+                        title="Gunakan sisa kas bebas dari Laporan P&L"
                       >
-                        Auto Kas (180 Jt)
+                        Auto Kas{initialCapitalIdr > 0 ? ` (${Math.round(initialCapitalIdr / 1_000_000)} Jt)` : ""}
                       </button>
                     )}
                   </div>
@@ -1676,12 +1676,12 @@ export function AutoPricingBotPanel({
               )}
 
               {/* Action Buttons: Terapkan ke Form Beli, Salin Rincian Iklan Beli, & Push API */}
-              <div className="flex items-center gap-1.5 pt-1">
+              <div className="grid grid-cols-2 gap-1.5 pt-1 sm:flex sm:items-center">
                 <Button
                   size="sm"
                   type="button"
                   onClick={handleApplyBuyOnly}
-                  className="flex-1 h-7 text-xs font-semibold bg-bid text-bid-foreground hover:bg-bid/90 gap-1.5 shadow-sm"
+                  className="col-span-2 sm:flex-1 h-8 sm:h-7 text-xs font-semibold bg-bid text-bid-foreground hover:bg-bid/90 gap-1.5 shadow-sm"
                 >
                   <Zap className="size-3.5" />
                   <span>Terapkan ke Form Beli</span>
@@ -1692,7 +1692,7 @@ export function AutoPricingBotPanel({
                   type="button"
                   onClick={() => handlePushPrice("buy")}
                   disabled={isPushingBuy}
-                  className="h-7 text-xs px-2.5 border-bid/40 text-bid hover:bg-bid/10 gap-1 font-semibold"
+                  className="h-8 sm:h-7 text-xs px-2.5 border-bid/40 text-bid hover:bg-bid/10 gap-1 font-semibold"
                   title="Update harga & stok iklan langsung ke Binance C2C via API"
                 >
                   <Send className={`size-3 ${isPushingBuy ? "animate-pulse" : ""}`} />
@@ -1703,7 +1703,7 @@ export function AutoPricingBotPanel({
                   variant="outline"
                   type="button"
                   onClick={handleCopyBuyDetails}
-                  className="h-7 text-xs px-2.5 border-border/80 text-muted-foreground hover:text-foreground hover:bg-surface-2"
+                  className="h-8 sm:h-7 text-xs px-2.5 border-border/80 text-muted-foreground hover:text-foreground hover:bg-surface-2"
                   title="Salin Harga Beli, Stok USDT, dan Plafon Limit IDR"
                 >
                   <Copy className="size-3 mr-1" />
@@ -1715,7 +1715,7 @@ export function AutoPricingBotPanel({
 
           {/* Sisi Rekomendasi JUAL */}
           <div
-            className={`rounded-xl border p-4 transition-all ${
+            className={`rounded-xl border p-3 sm:p-4 transition-all ${
               sellGuard.triggered
                 ? "border-amber-500/40 bg-amber-500/5"
                 : "border-ask/35 bg-gradient-to-br from-surface to-ask/5"
@@ -1777,9 +1777,9 @@ export function AutoPricingBotPanel({
 
             {/* Target Merchant Acuan yang Diikuti */}
             <div className="mt-3 rounded-lg border border-border/70 bg-surface-2/80 p-2.5 space-y-1.5 text-xs">
-              <div className="flex items-center justify-between text-muted-foreground">
-                <span className="font-medium text-[0.72rem]">Dasar Acuan:</span>
-                <span className="font-bold text-foreground inline-flex items-center gap-1">
+              <div className="flex items-start justify-between gap-2 text-muted-foreground">
+                <span className="shrink-0 font-medium text-[0.72rem]">Acuan:</span>
+                <span className="min-w-0 text-right font-bold text-foreground inline-flex items-center justify-end gap-1">
                   {config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0
                     ? `Manual Override (Rp ${config.manualSellPriceOverrideRp.toLocaleString("id-ID")})`
                     : targetMethodDescription.sell}
@@ -1790,12 +1790,12 @@ export function AutoPricingBotPanel({
               </div>
 
               {sellTargetMerchant && !config.manualSellPriceOverrideRp && (
-                <div className="flex items-center justify-between text-[0.72rem] text-muted-foreground pt-0.5 border-t border-border/40">
-                  <span>
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-[0.72rem] text-muted-foreground pt-0.5 border-t border-border/40">
+                  <span className="whitespace-nowrap">
                     Stok: <strong className="text-foreground">{Math.round(sellTargetMerchant.available_usdt || (sellTargetMerchant.price > 0 ? sellTargetMerchant.available_idr / sellTargetMerchant.price : 0))} USDT</strong>
                   </span>
-                  <span>
-                    Harga Mereka: <strong className="num text-foreground">{fmtRp2(sellTargetMerchant.price)}</strong>
+                  <span className="whitespace-nowrap">
+                    Harga: <strong className="num text-foreground">{fmtRp2(sellTargetMerchant.price)}</strong>
                   </span>
                   <span>
                     Rate: <strong className="text-foreground">{sellTargetMerchant ? fmtRate(sellTargetMerchant.completion_rate) : "—"}</strong>
@@ -1858,12 +1858,12 @@ export function AutoPricingBotPanel({
               </div>
 
               {/* Action Buttons: Terapkan ke Form Jual, Push API, & Salin */}
-              <div className="flex items-center gap-1.5 pt-1">
+              <div className="grid grid-cols-2 gap-1.5 pt-1 sm:flex sm:items-center">
                 <Button
                   size="sm"
                   type="button"
                   onClick={handleApplySellOnly}
-                  className="flex-1 h-7 text-xs font-semibold bg-ask text-ask-foreground hover:bg-ask/90 gap-1.5 shadow-sm"
+                  className="col-span-2 sm:flex-1 h-8 sm:h-7 text-xs font-semibold bg-ask text-ask-foreground hover:bg-ask/90 gap-1.5 shadow-sm"
                 >
                   <Zap className="size-3.5" />
                   <span>Terapkan ke Form Jual</span>
@@ -1874,7 +1874,7 @@ export function AutoPricingBotPanel({
                   type="button"
                   onClick={() => handlePushPrice("sell")}
                   disabled={isPushingSell}
-                  className="h-7 text-xs px-2.5 border-ask/40 text-ask hover:bg-ask/10 gap-1 font-semibold"
+                  className="h-8 sm:h-7 text-xs px-2.5 border-ask/40 text-ask hover:bg-ask/10 gap-1 font-semibold"
                   title="Update harga & all stok iklan langsung ke Binance C2C via API"
                 >
                   <Send className={`size-3 ${isPushingSell ? "animate-pulse" : ""}`} />
@@ -1885,7 +1885,7 @@ export function AutoPricingBotPanel({
                   variant="outline"
                   type="button"
                   onClick={handleCopySellDetails}
-                  className="h-7 text-xs px-2.5 border-border/80 text-muted-foreground hover:text-foreground hover:bg-surface-2"
+                  className="h-8 sm:h-7 text-xs px-2.5 border-border/80 text-muted-foreground hover:text-foreground hover:bg-surface-2"
                   title="Salin Harga Jual, Stok USDT, dan Plafon Limit IDR"
                 >
                   <Copy className="size-3 mr-1" />
@@ -1898,24 +1898,24 @@ export function AutoPricingBotPanel({
 
         {/* ── Banner Ringkasan Spread & Profit ─────────────────────────────────── */}
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/80 bg-surface-2/60 p-3 text-xs">
-          <div className="flex flex-wrap items-center gap-4 sm:gap-6">
-            <div>
-              <span className="text-muted-foreground">Spread Target:</span>{" "}
+          <div className="grid w-full grid-cols-3 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:gap-6">
+            <div className="flex flex-col sm:block">
+              <span className="text-muted-foreground">Spread:</span>{" "}
               <strong className="num font-bold text-primary">+{fmtRp(spreadAbs)} ({fmtPct(spreadPct)})</strong>
             </div>
-            <div>
-              <span className="text-muted-foreground">Total Fee Maker:</span>{" "}
-              <strong className="num font-semibold text-foreground">Rp {fmtRp2(makerFeeSellPerUsdt + makerFeeBuyPerUsdt)}/USDT</strong>
+            <div className="flex flex-col sm:block">
+              <span className="text-muted-foreground">Fee Maker:</span>{" "}
+              <strong className="num font-semibold text-foreground">{fmtRp2(makerFeeSellPerUsdt + makerFeeBuyPerUsdt)}/USDT</strong>
             </div>
-            <div>
-              <span className="text-muted-foreground">Estimasi Laba Bersih:</span>{" "}
+            <div className="flex flex-col sm:block">
+              <span className="text-muted-foreground">Laba Bersih:</span>{" "}
               <strong className={`num font-bold ${estimatedNetProfitPerUsdt > 0 ? "text-bid" : "text-destructive"}`}>
-                +{fmtRp2(estimatedNetProfitPerUsdt)}/USDT
+                {estimatedNetProfitPerUsdt > 0 ? "+" : ""}{fmtRp2(estimatedNetProfitPerUsdt)}/USDT
               </strong>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
             <Button
               size="sm"
               variant="default"
@@ -2373,42 +2373,42 @@ export function AutoPricingBotPanel({
         {/* ── Tab Konfigurasi Filter, Presets, Boundaries & Manajemen Merchant ── */}
         <div className="rounded-xl border border-border/80 bg-surface p-3.5 space-y-3.5">
           <Tabs defaultValue="presets" className="w-full">
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-2.5">
+            <div className="flex flex-col gap-2 border-b border-border/60 pb-2.5 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex items-center gap-2">
                 <Settings2 className="size-4 text-primary" />
                 <span className="text-xs font-bold text-foreground uppercase tracking-wider">
-                  Pengaturan Bot & Filter Pasar
+                  Pengaturan Bot
                 </span>
               </div>
-              <TabsList className="h-7 bg-surface-2 flex flex-wrap max-w-full overflow-x-auto">
-                <TabsTrigger value="presets" className="text-xs px-2.5 h-6">
+              <TabsList className="no-scrollbar h-8 w-full justify-start overflow-x-auto bg-surface-2 lg:w-auto">
+                <TabsTrigger value="presets" className="shrink-0 text-xs px-2.5 h-6">
                   ⚡ Preset
                 </TabsTrigger>
-                <TabsTrigger value="filter" className="text-xs px-2.5 h-6">
+                <TabsTrigger value="filter" className="shrink-0 text-xs px-2.5 h-6">
                   ⚙️ Akun & Modal
                 </TabsTrigger>
-                <TabsTrigger value="targeting" className="text-xs px-2.5 h-6">
+                <TabsTrigger value="targeting" className="shrink-0 text-xs px-2.5 h-6">
                   🎯 Target Acuan
                 </TabsTrigger>
-                <TabsTrigger value="payment" className="text-xs px-2.5 h-6">
+                <TabsTrigger value="payment" className="shrink-0 text-xs px-2.5 h-6">
                   💳 Bank & Bayar {config.filterPaymentMethods?.length > 0 ? `(${config.filterPaymentMethods.length})` : ""}
                 </TabsTrigger>
-                <TabsTrigger value="anti_spoof" className="text-xs px-2.5 h-6">
+                <TabsTrigger value="anti_spoof" className="shrink-0 text-xs px-2.5 h-6">
                   🛡️ Anti-Pancingan
                 </TabsTrigger>
-                <TabsTrigger value="merchants" className="text-xs px-2.5 h-6">
+                <TabsTrigger value="merchants" className="shrink-0 text-xs px-2.5 h-6">
                   👥 Blacklist & Whitelist
                 </TabsTrigger>
-                <TabsTrigger value="boundaries" className="text-xs px-2.5 h-6">
+                <TabsTrigger value="boundaries" className="shrink-0 text-xs px-2.5 h-6">
                   🔒 Batas Aman
                 </TabsTrigger>
-                <TabsTrigger value="offset" className="text-xs px-2.5 h-6">
+                <TabsTrigger value="offset" className="shrink-0 text-xs px-2.5 h-6">
                   🎯 Offset
                 </TabsTrigger>
-                <TabsTrigger value="backup" className="text-xs px-2.5 h-6">
+                <TabsTrigger value="backup" className="shrink-0 text-xs px-2.5 h-6">
                   💾 Cadangan & Reset
                 </TabsTrigger>
-                <TabsTrigger value="c2c_api" className="text-xs px-2.5 h-6 font-semibold border-primary/30 text-primary">
+                <TabsTrigger value="c2c_api" className="shrink-0 text-xs px-2.5 h-6 font-semibold border-primary/30 text-primary">
                   🔌 C2C Merchant API {config.autoPushToBinance ? "(Auto)" : ""}
                 </TabsTrigger>
               </TabsList>
@@ -3599,13 +3599,13 @@ export function AutoPricingBotPanel({
                       <div className="flex items-center justify-between text-muted-foreground">
                         <span>Rank 1 Beli Saat Ini:</span>
                         <strong className="num text-foreground">
-                          Rp {fmtRp(buySideGaps.rank1.price)} (@{buySideGaps.rank1.merchant_name})
+                          {fmtRp(buySideGaps.rank1.price)} (@{buySideGaps.rank1.merchant_name})
                         </strong>
                       </div>
                       <div className="flex items-center justify-between text-muted-foreground">
                         <span>Rank 2 Beli Saat Ini:</span>
                         <strong className="num text-foreground">
-                          Rp {fmtRp(buySideGaps.rank2.price)} (@{buySideGaps.rank2.merchant_name})
+                          {fmtRp(buySideGaps.rank2.price)} (@{buySideGaps.rank2.merchant_name})
                         </strong>
                       </div>
                       <div className="flex items-center justify-between border-t border-border/40 pt-1 font-semibold">
@@ -3724,7 +3724,7 @@ export function AutoPricingBotPanel({
                         <span>Spot Indodax USDT/IDR Live:</span>
                       </span>
                       <strong className="num text-primary font-bold">
-                        {indodaxSpotPrice > 10_000 ? `Rp ${fmtRp(indodaxSpotPrice)}` : "Mengambil data..."}
+                        {indodaxSpotPrice > 10_000 ? `${fmtRp(indodaxSpotPrice)}` : "Mengambil data..."}
                       </strong>
                     </div>
 
@@ -3732,7 +3732,7 @@ export function AutoPricingBotPanel({
                       <span>Plafon Maksimal Beli (Spot + Buffer):</span>
                       <strong className="num text-foreground font-bold">
                         {indodaxSpotPrice > 10_000
-                          ? `Rp ${fmtRp(indodaxSpotPrice + (config.spotDumpBufferRp ?? 15))}`
+                          ? `${fmtRp(indodaxSpotPrice + (config.spotDumpBufferRp ?? 15))}`
                           : "—"}
                       </strong>
                     </div>

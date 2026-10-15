@@ -824,7 +824,7 @@ export const fmtRp = (x: number) =>
 
 export const fmtRp2 = (x: number) =>
   Number.isFinite(x)
-    ? "Rp " + x.toLocaleString("id-ID", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    ? "Rp " + x.toLocaleString("id-ID", { minimumFractionDigits: 0, maximumFractionDigits: 2 })
     : "—";
 
 export const fmtPct = (x: number, d = 2) => (Number.isFinite(x) ? `${x.toFixed(d)}%` : "—");
