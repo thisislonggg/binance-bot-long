@@ -211,10 +211,12 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
       if (isDestroyed) return;
 
       try {
-        const baseWs = creds.chatWssUrl!.startsWith("wss://") || creds.chatWssUrl!.startsWith("ws://")
-          ? creds.chatWssUrl!
-          : `wss://${creds.chatWssUrl!}`;
-        const url = `${baseWs}/${creds.listenKey}?token=${creds.listenToken}&clientType=web`;
+        const rawWss = (creds.chatWssUrl || "").trim();
+        const baseWs = rawWss.startsWith("wss://") || rawWss.startsWith("ws://")
+          ? rawWss
+          : `wss://${rawWss}`;
+        const cleanBaseWs = baseWs.replace(/\/+$/, "");
+        const url = `${cleanBaseWs}/${creds.listenKey}?token=${creds.listenToken}&clientType=web`;
 
         const ws = new WebSocket(url);
         wsRef.current = ws;
@@ -243,32 +245,44 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
               }
             }
 
-            // Dukungan payload pesan tipe system atau card dari Binance P2P Chat
-            const msgType = String(payload?.type || payload?.msgType || payload?.data?.type || "").toLowerCase();
-            const isSystemOrCard = msgType === "system" || msgType === "card" || msgType.includes("sys");
+            // Handle array of messages atau single message
+            const items = Array.isArray(payload) ? payload : [payload];
+            for (const item of items) {
+              if (!item) continue;
+              const msgType = String(item?.type || item?.msgType || item?.data?.type || "").toLowerCase();
+              const isSystemOrCard = msgType === "system" || msgType === "card" || msgType.includes("sys");
 
-            const content = typeof payload === "string"
-              ? payload
-              : payload?.data?.content || payload?.content || payload?.text || payload?.data?.text || (isSystemOrCard ? JSON.stringify(payload) : "");
+              const content =
+                typeof item === "string"
+                  ? item
+                  : item?.data?.content ||
+                    item?.content ||
+                    item?.text ||
+                    item?.data?.text ||
+                    item?.message ||
+                    (isSystemOrCard ? JSON.stringify(item) : "");
 
-            const parsed = parseLivenessChatMessage(content);
-            if (parsed.isLivenessMessage && parsed.isCompleted) {
-              const orderHint =
-                parsed.orderNumber ||
-                payload?.data?.orderNo ||
-                payload?.data?.orderNumber ||
-                payload?.orderNo ||
-                payload?.orderNumber;
+              const parsed = parseLivenessChatMessage(content);
+              if (parsed.isLivenessMessage && parsed.isCompleted) {
+                const orderHint =
+                  parsed.orderNumber ||
+                  item?.data?.orderNo ||
+                  item?.data?.orderNumber ||
+                  item?.orderNo ||
+                  item?.orderNumber ||
+                  item?.params?.orderNo ||
+                  item?.params?.orderNumber;
 
-              if (orderHint) {
-                saveLocalVerifiedOrder(orderHint);
+                if (orderHint) {
+                  saveLocalVerifiedOrder(orderHint);
+                }
+
+                processChatMutation.mutate({
+                  chatText: content,
+                  orderNumberHint: orderHint,
+                  source: "binance_chat_ws",
+                });
               }
-
-              processChatMutation.mutate({
-                chatText: content,
-                orderNumberHint: orderHint,
-                source: "binance_chat_ws",
-              });
             }
           } catch {}
         };

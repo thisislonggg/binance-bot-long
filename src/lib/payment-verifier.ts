@@ -183,7 +183,7 @@ export const getVerifierState = createServerFn({ method: "POST" })
         statusUpper.includes("RELEASE") ||
         statusUpper === "2";
 
-      const { executeAutoVerifyForSellOrder, isOrderKycVerified } = await import("./binance-merchant");
+      const { executeAutoVerifyForSellOrder, isOrderKycVerified, getUserOrderDetail } = await import("./binance-merchant");
       const isSell = ord.tradeType === "SELL";
       const isPending =
         ord.orderStatus === "1" ||
@@ -191,12 +191,37 @@ export const getVerifierState = createServerFn({ method: "POST" })
         ord.orderStatus === "TRADING" ||
         ord.rawOrderStatus === 1;
 
-      // 1. Cek apakah di Binance sudah berstatus additionalKycVerify === 2 (Lolos KYC di Binance)
+      // Ambil detail langsung dari Binance SAPI untuk order SELL pending yang belum terverifikasi
+      // listUserOrderHistory tidak menyertakan additionalKycVerify, sehingga getUserOrderDetail wajib dipanggil
+      if (isSell && isPending && (!liveRec || liveRec.status !== "COMPLETED")) {
+        try {
+          const detailRes = await getUserOrderDetail(ord.orderNumber);
+          if (detailRes.ok && detailRes.data) {
+            const d = (detailRes.data.data || detailRes.data) as Record<string, unknown>;
+            if (d["additionalKycVerify"] !== undefined) {
+              ord.additionalKycVerify = Number(d["additionalKycVerify"]);
+            }
+            if (d["additionalKycStatus"] !== undefined) {
+              ord.additionalKycStatus = String(d["additionalKycStatus"]);
+            }
+            if (d["orderStatus"] !== undefined) {
+              const detailStatus = String(d["orderStatus"]);
+              if (detailStatus) ord.orderStatus = detailStatus;
+            }
+          }
+        } catch (err) {
+          console.debug(`[ORDER-DETAIL] Gagal ambil detail order #${ord.orderNumber}:`, err);
+        }
+      }
+
+      // 1. Cek apakah di Binance sudah berstatus additionalKycVerify === 2 atau Status Completed (Lolos KYC di Binance)
       const isBinanceKycCompleted =
         ord.additionalKycVerify === 2 ||
         isOrderKycVerified(ord.orderNumber) ||
         String(ord.additionalKycStatus || "").toUpperCase().includes("COMPLET") ||
-        String(ord.additionalKycStatus || "").toUpperCase().includes("PASS");
+        String(ord.additionalKycStatus || "").toUpperCase().includes("PASS") ||
+        String(ord.additionalKycStatus || "").toUpperCase().includes("VERIF") ||
+        String(ord.additionalKycStatus || "").toUpperCase().includes("LOLOS");
 
       if (isBinanceKycCompleted && (!liveRec || liveRec.status !== "COMPLETED")) {
         liveRec = {
@@ -212,11 +237,22 @@ export const getVerifierState = createServerFn({ method: "POST" })
         await saveLivenessRecordInternal(liveRec);
         await notifyLivenessCompleted(liveRec);
         livenessRecords[ord.orderNumber] = liveRec;
+
+        // Buka payment details ke buyer di Binance SAPI
+        if (isSell && isPending) {
+          executeAutoVerifyForSellOrder({
+            orderNumber: ord.orderNumber,
+            tradeType: ord.tradeType,
+            orderStatus: ord.rawOrderStatus ?? ord.orderStatus,
+            additionalKycVerify: 2,
+            livenessCompleted: true,
+            force: true,
+          }).catch(() => {});
+        }
       }
 
       // 2. Mode auto-verifikasi saat pembeli transfer (BUYER_PAYED):
       // HANYA auto-verifikasi jika mode 'buyer_payed' dipilih dan buyer benar-benar sudah klik 'Saya sudah transfer'.
-      // DILARANG KERAS auto-verifikasi saat order masih dalam tahap pending/trading/paying sebelum ada bukti liveness selesai!
       const shouldAutoVerifyOnPayed =
         isLivenessActive &&
         isAutoVerifyActive &&

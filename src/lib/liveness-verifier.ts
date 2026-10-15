@@ -61,14 +61,29 @@ export function parseLivenessChatMessage(text: string): ParsedLivenessMessage {
     return { isLivenessMessage: false, isCompleted: false, rawText: "" };
   }
 
+  // Handle jika input memiliki escaped newlines dari JSON stringify
+  clean = clean.replace(/\\n/g, "\n").replace(/\\r/g, "");
+
   // Handle jika input adalah string JSON dari WebSocket atau webhook
   let orderNumberFromPayload: string | undefined;
   if (clean.startsWith("{") && clean.endsWith("}")) {
     try {
       const obj = JSON.parse(clean);
       if (typeof obj === "object" && obj !== null) {
-        orderNumberFromPayload = obj.orderNo || obj.orderNumber || obj.data?.orderNo || obj.data?.orderNumber;
-        const innerText = obj.content || obj.text || obj.data?.content || obj.data?.text || obj.message;
+        orderNumberFromPayload =
+          obj.orderNo ||
+          obj.orderNumber ||
+          obj.data?.orderNo ||
+          obj.data?.orderNumber ||
+          obj.params?.orderNo ||
+          obj.params?.orderNumber;
+        const innerText =
+          obj.content ||
+          obj.text ||
+          obj.data?.content ||
+          obj.data?.text ||
+          obj.message ||
+          obj.data?.message;
         if (typeof innerText === "string") {
           clean = innerText.trim();
         }
@@ -116,7 +131,7 @@ export function parseLivenessChatMessage(text: string): ParsedLivenessMessage {
   // 3. Ekstrak Order Number: 15-25 digit
   let orderNumber: string | undefined = orderNumberFromPayload;
   if (!orderNumber) {
-    const orderRegex = /(?:Order\s*number|Order\s*no|Nomor\s*pesanan|Pesanan|Order)[:\s]+(\d{15,25})/i;
+    const orderRegex = /(?:Order\s*number|Order\s*no|Nomor\s*pesanan|Pesanan|Order)[*:\s]+(\d{15,25})/i;
     const matchOrder = clean.match(orderRegex);
     if (matchOrder) {
       orderNumber = matchOrder[1].trim();
@@ -131,7 +146,7 @@ export function parseLivenessChatMessage(text: string): ParsedLivenessMessage {
 
   // 4. Ekstrak Last verification time
   let verificationTime: string | undefined;
-  const timeRegex = /(?:Last\s*verification\s*time|Waktu\s*verifikasi(?:\s*terakhir)?)[:\s]+([0-9:\-\s]{10,25})/i;
+  const timeRegex = /(?:Last\s*verification\s*time|Waktu\s*verifikasi(?:\s*terakhir)?)[*:\s]+([0-9:\-\s]{10,25})/i;
   const matchTime = clean.match(timeRegex);
   if (matchTime) {
     verificationTime = matchTime[1].trim();
@@ -345,6 +360,7 @@ export const getBinanceChatCredentials = createServerFn({ method: "POST" })
     try {
       const timestamp = Date.now();
       const params = {
+        clientType: "web",
         timestamp,
         recvWindow: 10_000,
       };

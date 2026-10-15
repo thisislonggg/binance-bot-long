@@ -1526,20 +1526,48 @@ export async function getUserOrderDetail(
     return { ok: false, code: "INVALID_PARAM", message: "Nomor order tidak boleh kosong" };
   }
 
-  // Coba ambil detail via adOrderNo
-  const res = await binanceMerchantRequest<Record<string, unknown>>({
-    endpoint: "/sapi/v1/c2c/orderMatch/getUserOrderDetail",
-    method: "GET",
-    params: { adOrderNo: cleanNo },
-  });
+  // 1. Coba POST ke /sapi/v1/c2c/orderMatch/getUserOrderDetail dengan orderNumber (Rekomendasi Utama SAPI)
+  try {
+    const resPost = await binanceMerchantRequest<Record<string, unknown>>({
+      endpoint: "/sapi/v1/c2c/orderMatch/getUserOrderDetail",
+      method: "POST",
+      params: { orderNumber: cleanNo },
+    });
+    if (resPost.ok && resPost.data && (resPost.code === "000000" || resPost.code === "0" || !resPost.code)) {
+      return resPost;
+    }
+  } catch {}
 
-  if (res.ok) return res;
+  // 2. Coba GET ke /sapi/v1/c2c/orderMatch/getUserOrderDetail dengan orderNumber
+  try {
+    const resGet = await binanceMerchantRequest<Record<string, unknown>>({
+      endpoint: "/sapi/v1/c2c/orderMatch/getUserOrderDetail",
+      method: "GET",
+      params: { orderNumber: cleanNo },
+    });
+    if (resGet.ok && resGet.data && (resGet.code === "000000" || resGet.code === "0" || !resGet.code)) {
+      return resGet;
+    }
+  } catch {}
 
-  // Fallback via param orderNumber jika adOrderNo tidak cocok
+  // 3. Fallback: Coba POST ke /sapi/v1/c2c/agent/orderMatch/getUserOrderDetail
+  try {
+    const resAgent = await binanceAgentRequest<Record<string, unknown>>({
+      endpoint: "/sapi/v1/c2c/agent/orderMatch/getUserOrderDetail",
+      method: "POST",
+      queryParams: { orderNumber: cleanNo },
+      body: { orderNumber: cleanNo },
+    });
+    if (resAgent.ok && resAgent.data) {
+      return resAgent;
+    }
+  } catch {}
+
+  // 4. Fallback dengan adOrderNo jika orderNumber adalah adOrderNo
   return await binanceMerchantRequest<Record<string, unknown>>({
     endpoint: "/sapi/v1/c2c/orderMatch/getUserOrderDetail",
     method: "GET",
-    params: { orderNumber: cleanNo },
+    params: { adOrderNo: cleanNo },
   });
 }
 
@@ -1681,7 +1709,7 @@ export async function executeAutoVerifyForSellOrder(params: {
     try {
       const detailRes = await getUserOrderDetail(cleanOrderNo);
       if (detailRes.ok && detailRes.data) {
-        const d = detailRes.data as Record<string, unknown>;
+        const d = (detailRes.data.data || detailRes.data) as Record<string, unknown>;
         tradeType = String(d["tradeType"] || tradeType).toUpperCase();
         statusStr = String(d["orderStatus"] || statusStr).toUpperCase();
         if (additionalKyc === undefined && d["additionalKycVerify"] !== undefined) {
@@ -1757,14 +1785,20 @@ export async function executeAutoVerifyForSellOrder(params: {
   // DILARANG KERAS auto-verify jika pembeli belum menyelesaikan verifikasi wajah di Binance!
   // Fungsi ini HANYA dieksekusi jika:
   // - Pesan chat liveness selesai terdeteksi (livenessCompleted === true), ATAU
+  // - Detail order dari Binance SAPI berstatus lolos (additionalKycVerify === 2 atau status Passed/Completed), ATAU
   // - Merchant menekan tombol manual (force === true)
-  const isLivenessTrulyDone = params.livenessCompleted === true || params.force === true;
+  const isLivenessTrulyDone =
+    params.livenessCompleted === true ||
+    params.force === true ||
+    Number(params.additionalKycVerify) === 2 ||
+    Number(additionalKyc) === 2;
+
   if (!isLivenessTrulyDone) {
     return {
       ok: false,
       skipped: true,
       verified: false,
-      message: `[KEAMANAN] Order #${cleanOrderNo} ditahan karena belum ada bukti liveness check selesai dari buyer. Auto-verify HANYA dieksekusi setelah pesan chat Completed terdeteksi atau tombol verifikasi manual ditekan.`,
+      message: `[KEAMANAN] Order #${cleanOrderNo} ditahan karena belum ada bukti liveness check selesai dari buyer. Auto-verify HANYA dieksekusi setelah pesan chat Completed terdeteksi, SAPI Binance menyatakan lolos KYC, atau tombol verifikasi manual ditekan.`,
     };
   }
 
