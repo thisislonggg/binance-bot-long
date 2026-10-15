@@ -183,12 +183,78 @@ export const getVerifierState = createServerFn({ method: "POST" })
         statusUpper.includes("RELEASE") ||
         statusUpper === "2";
 
-      // Mode auto-verifikasi:
-      // KRUSIAL: Jika order memiliki additionalKycVerify === 1 (membutuhkan liveness check),
-      // DILARANG KERAS membuat status COMPLETED otomatis jika pembeli belum menyelesaikan liveness di Binance!
-      // Status liveness HANYA boleh COMPLETED jika ada bukti pesan chat resmi Binance "Status: Completed".
+      const { executeAutoVerifyForSellOrder, isOrderKycVerified } = await import("./binance-merchant");
+      const isSell = ord.tradeType === "SELL";
+      const isPending =
+        ord.orderStatus === "1" ||
+        ord.orderStatus === "PAYING" ||
+        ord.orderStatus === "TRADING" ||
+        ord.rawOrderStatus === 1;
+
+      // 1. Cek apakah di Binance sudah berstatus additionalKycVerify === 2 (Lolos KYC di Binance)
+      const isBinanceKycCompleted =
+        ord.additionalKycVerify === 2 ||
+        isOrderKycVerified(ord.orderNumber) ||
+        String(ord.additionalKycStatus || "").toUpperCase().includes("COMPLET") ||
+        String(ord.additionalKycStatus || "").toUpperCase().includes("PASS");
+
+      if (isBinanceKycCompleted && (!liveRec || liveRec.status !== "COMPLETED")) {
+        liveRec = {
+          orderNumber: ord.orderNumber,
+          status: "COMPLETED",
+          verifiedAt: new Date().toISOString(),
+          verificationTimeText: new Date().toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta" }) + " WIB",
+          requester: "Binance P2P (Liveness Verified)",
+          counterPartNickName: ord.counterPartNickName,
+          source: "binance_chat_ws",
+          rawSnippet: `Buyer telah menyelesaikan verifikasi wajah di Binance: ${ord.orderNumber}`,
+        };
+        await saveLivenessRecordInternal(liveRec);
+        await notifyLivenessCompleted(liveRec);
+        livenessRecords[ord.orderNumber] = liveRec;
+      }
+
+      // 2. Order SELL PENDING dengan additionalKycVerify === 1 (membutuhkan liveness check)
+      // Jalankan auto-verify background ke Binance SAPI untuk memeriksa apakah buyer sudah menyelesaikan liveness:
       const requiresAdditionalKyc = ord.additionalKycVerify === 1;
 
+      if (
+        isLivenessActive &&
+        isAutoVerifyActive &&
+        isSell &&
+        isPending &&
+        requiresAdditionalKyc &&
+        (!liveRec || liveRec.status !== "COMPLETED")
+      ) {
+        try {
+          const kycResult = await executeAutoVerifyForSellOrder({
+            orderNumber: ord.orderNumber,
+            tradeType: ord.tradeType,
+            orderStatus: ord.rawOrderStatus ?? ord.orderStatus,
+            additionalKycVerify: ord.additionalKycVerify,
+          });
+
+          if (kycResult.ok && kycResult.verified) {
+            liveRec = {
+              orderNumber: ord.orderNumber,
+              status: "COMPLETED",
+              verifiedAt: new Date().toISOString(),
+              verificationTimeText: new Date().toLocaleTimeString("id-ID", { timeZone: "Asia/Jakarta" }) + " WIB",
+              requester: "Auto-Verify (Liveness Selesai)",
+              counterPartNickName: ord.counterPartNickName,
+              source: "binance_chat_ws",
+              rawSnippet: `Buyer telah menyelesaikan liveness check & payment details dibuka di Binance: ${ord.orderNumber}`,
+            };
+            await saveLivenessRecordInternal(liveRec);
+            await notifyLivenessCompleted(liveRec);
+            livenessRecords[ord.orderNumber] = liveRec;
+          }
+        } catch (err) {
+          console.debug("[AUTO-VERIFY] Error saat panggil executeAutoVerifyForSellOrder:", err);
+        }
+      }
+
+      // 3. Order non-KYC umum (tanpa syarat additionalKyc):
       if (shouldAutoVerify && !requiresAdditionalKyc) {
         if (!liveRec || liveRec.status !== "COMPLETED") {
           liveRec = {
@@ -207,20 +273,8 @@ export const getVerifierState = createServerFn({ method: "POST" })
         }
       }
 
-      // Auto-verify ke Binance SAPI untuk membuka Payment Details:
-      // HANYA dipanggil jika liveness pembeli BENAR-BENAR sudah berstatus COMPLETED dari Binance Chat!
-      // Jangan pernah panggil jika pembeli masih Pending!
-      const { executeAutoVerifyForSellOrder, isOrderKycVerified } = await import("./binance-merchant");
-      const isSell = ord.tradeType === "SELL";
-      const isPending =
-        ord.orderStatus === "1" ||
-        ord.orderStatus === "PAYING" ||
-        ord.orderStatus === "TRADING" ||
-        ord.rawOrderStatus === 1;
-
-      const isLivenessTrulyDone = Boolean(liveRec && liveRec.status === "COMPLETED");
-
-      if (isSell && isPending && isLivenessTrulyDone) {
+      // 4. Jika order sudah berstatus COMPLETED tetapi belum dibuka payment details-nya di Binance:
+      if (isSell && isPending && liveRec?.status === "COMPLETED" && !isOrderKycVerified(ord.orderNumber)) {
         executeAutoVerifyForSellOrder({
           orderNumber: ord.orderNumber,
           tradeType: ord.tradeType,

@@ -1567,11 +1567,12 @@ export async function verifiedAdditionalKyc(
     };
   }
 
-  // 1. SAPI POST dengan JSON body {"orderNumber": cleanOrderNo} (Rekomendasi Resmi Binance SAPI)
+  // 1. SAPI POST dengan JSON body {"orderNumber": cleanOrderNo} dan queryParams (Rekomendasi Resmi Binance SAPI)
   try {
     const res1 = await binanceAgentRequest<{ success?: boolean }>({
       endpoint: "/sapi/v1/c2c/orderMatch/verifiedAdditionalKyc",
       method: "POST",
+      queryParams: { orderNumber: cleanOrderNo },
       body: { orderNumber: cleanOrderNo },
     });
 
@@ -1583,6 +1584,7 @@ export async function verifiedAdditionalKyc(
     const res2 = await binanceAgentRequest<{ success?: boolean }>({
       endpoint: "/sapi/v1/c2c/orderMatch/verifiedAdditionalKyc",
       method: "POST",
+      queryParams: { adOrderNo: cleanOrderNo, orderNumber: cleanOrderNo },
       body: { adOrderNo: cleanOrderNo, orderNumber: cleanOrderNo },
     });
 
@@ -1594,7 +1596,7 @@ export async function verifiedAdditionalKyc(
     const res3 = await binanceMerchantRequest<{ success?: boolean }>({
       endpoint: "/sapi/v1/c2c/orderMatch/verifiedAdditionalKyc",
       method: "POST",
-      params: { orderNumber: cleanOrderNo },
+      params: { orderNumber: cleanOrderNo, adOrderNo: cleanOrderNo },
     });
 
     if (res3.ok && (res3.code === "000000" || res3.code === "0")) {
@@ -1630,7 +1632,7 @@ export async function verifiedAdditionalKyc(
  *  1. HANYA order SELL (`tradeType === "SELL"`).
  *  2. HANYA order berstatus PENDING / Menunggu Pembayaran (`orderStatus == 1` atau `PAYING`/`TRADING`).
  *  3. HANYA order yang membutuhkan verifikasi tambahan (`additionalKycVerify == 1` atau sinyal liveness selesai).
- *  4. DILARANG KERAS memanggil fungsi releaseCoin (hanya verifiedAdditionalKyc).
+ *  4. DILARANG KERAS memanggil fungsi releaseCoin (hanya verifiedAdditionalKyc untuk membuka payment details).
  *  5. Deduplikasi in-memory & cooldown anti-spam request.
  */
 export async function executeAutoVerifyForSellOrder(params: {
@@ -1638,8 +1640,9 @@ export async function executeAutoVerifyForSellOrder(params: {
   tradeType?: string;
   orderStatus?: string | number;
   additionalKycVerify?: number | boolean;
+  livenessCompleted?: boolean;
   force?: boolean;
-}): Promise<{ ok: boolean; message: string; skipped?: boolean }> {
+}): Promise<{ ok: boolean; message: string; skipped?: boolean; verified?: boolean }> {
   const cleanOrderNo = params.orderNumber.trim();
   if (!cleanOrderNo) {
     return { ok: false, message: "Nomor order kosong." };
@@ -1650,6 +1653,7 @@ export async function executeAutoVerifyForSellOrder(params: {
     return {
       ok: true,
       skipped: true,
+      verified: true,
       message: `Order SELL #${cleanOrderNo} sudah diverifikasi sebelumnya (deduplikasi aktif).`,
     };
   }
@@ -1661,6 +1665,7 @@ export async function executeAutoVerifyForSellOrder(params: {
     return {
       ok: false,
       skipped: true,
+      verified: false,
       message: `Order SELL #${cleanOrderNo} sedang dalam cooldown retry (${Math.round((15_000 - (now - lastAttempt)) / 1000)}s).`,
     };
   }
@@ -1748,18 +1753,9 @@ export async function executeAutoVerifyForSellOrder(params: {
     }
   }
 
-  // KONSISTENSI KEAMANAN 4 (CRITICAL): Liveness check pembeli WAJIB sudah selesai (Status: Completed)
-  // DILARANG KERAS auto-verify jika pembeli belum menyelesaikan verifikasi wajah di Binance (masih Pending)!
-  const isLivenessTrulyDone = params.livenessCompleted === true || params.force === true;
-  if (!isLivenessTrulyDone) {
-    return {
-      ok: false,
-      skipped: true,
-      message: `[LIVENESS BELUM SELESAI] Order #${cleanOrderNo} ditahan karena pembeli belum menyelesaikan verifikasi wajah di Binance (Status masih Pending). Auto-verify HANYA dieksekusi setelah status liveness menjadi Completed.`,
-    };
-  }
-
   // 4. Eksekusi Panggilan API verifiedAdditionalKyc (TIDAK ADA RELEASE COIN!)
+  // Endpoint ini HANYA membuka payment details ke buyer jika buyer sudah menyelesaikan liveness di Binance.
+  // Jika buyer belum selesai liveness di Binance, Binance akan menolak secara aman.
   try {
     const res = await verifiedAdditionalKyc(cleanOrderNo);
 
@@ -1772,14 +1768,16 @@ export async function executeAutoVerifyForSellOrder(params: {
 
       return {
         ok: true,
+        verified: true,
         message: `[AUTO-VERIFY] Order SELL ${cleanOrderNo} berhasil diverifikasi. Payment details telah dibuka ke buyer.`,
       };
     } else {
       // Tangkap error dengan tenang (silent/debug log) tanpa menghentikan loop bot
-      const errMsg = res.message || res.error || "Gagal verifikasi di Binance";
-      console.debug(`[AUTO-VERIFY] Order SELL ${cleanOrderNo} belum siap atau gagal: ${errMsg} (code: ${res.code})`);
+      const errMsg = res.message || res.error || "Buyer belum menyelesaikan verifikasi liveness di Binance";
+      console.debug(`[AUTO-VERIFY] Order SELL ${cleanOrderNo} belum siap atau belum lolos: ${errMsg} (code: ${res.code})`);
       return {
         ok: false,
+        verified: false,
         message: errMsg,
       };
     }
@@ -1787,6 +1785,7 @@ export async function executeAutoVerifyForSellOrder(params: {
     console.debug(`[AUTO-VERIFY] Exception pada order ${cleanOrderNo}:`, err);
     return {
       ok: false,
+      verified: false,
       message: `Exception: ${String(err)}`,
     };
   }

@@ -373,7 +373,7 @@ Completed`;
       if (res.completed) {
         saveLocalVerifiedOrder(res.orderNumber);
         if (soundEnabled) playLivenessChime();
-        toast.success(`Liveness order #${res.orderNumber} berhasil diverifikasi!`);
+        toast.success(res.message || `Liveness order #${res.orderNumber} berhasil diverifikasi! Rekening dibuka.`);
       } else {
         try {
           const raw = localStorage.getItem("binance_verified_liveness_orders_cache");
@@ -382,7 +382,7 @@ Completed`;
             localStorage.setItem("binance_verified_liveness_orders_cache", JSON.stringify(arr));
           }
         } catch {}
-        toast.info(`Status liveness order #${res.orderNumber} dibatalkan.`);
+        toast.info(res.message || `Status liveness order #${res.orderNumber} dibatalkan.`);
       }
       verifierQuery.refetch();
     },
@@ -1085,10 +1085,16 @@ Completed`;
                           </Badge>
 
                           {/* Badge Indikator Additional KYC */}
-                          {ord.tradeType === "SELL" && ord.additionalKycVerify === 1 && (
+                          {ord.tradeType === "SELL" && ord.additionalKycVerify === 1 && !isVerified && (
                             <Badge variant="outline" className="text-[0.62rem] border-sky-500/40 text-sky-400 font-semibold flex items-center gap-1">
                               <ShieldCheck className="size-2.5 text-sky-400" />
                               Butuh Liveness (KYC)
+                            </Badge>
+                          )}
+                          {ord.tradeType === "SELL" && (ord.additionalKycVerify === 2 || isVerified) && (
+                            <Badge variant="outline" className="text-[0.62rem] border-emerald-500/40 text-emerald-400 font-semibold flex items-center gap-1">
+                              <ShieldCheck className="size-2.5 text-emerald-400" />
+                              Liveness Lolos (KYC)
                             </Badge>
                           )}
 

@@ -93,16 +93,25 @@ export function parseLivenessChatMessage(text: string): ParsedLivenessMessage {
   }
 
   // 2. Cek status: Completed / Selesai / Success / Pass / Passed / Lolos / Approved / Done
-  const statusMatch = clean.match(/status[:\s]+([A-Za-z]+)/i);
+  const statusMatch = clean.match(/(?:status|\*status\*|\*\*status\*\*)[*:\s]+([A-Za-z]+)/i);
   const statusStr = statusMatch ? statusMatch[1].trim() : "";
 
   // Jika status secara eksplisit PENDING / WAITING / FAILED / MENUNGGU, MAKA WAJIB BELUM SELESAI!
   const isExplicitPending = /pending|menunggu|waiting|unverified|proses|process/i.test(statusStr);
   const isExplicitFailed = /failed|gagal|rejected|ditolak/i.test(statusStr);
-  const isExplicitCompleted = /completed|selesai|passed|approved|lolos/i.test(statusStr);
+  const isExplicitCompleted = /completed|selesai|passed|approved|lolos|success/i.test(statusStr);
 
   // isCompleted HANYA true jika statusStr adalah completed dan TIDAK pending/failed
-  const isCompleted = isExplicitCompleted && !isExplicitPending && !isExplicitFailed;
+  let isCompleted = isExplicitCompleted && !isExplicitPending && !isExplicitFailed;
+
+  // Fallback: jika tidak ada kata status spesifik, cek kata kelulusan tanpa indikasi pending/failed
+  if (!statusMatch) {
+    const hasPendingWords = /\b(pending|menunggu|waiting|unverified|proses)\b/i.test(clean);
+    const hasCompletedWords = /\b(completed|selesai|passed|approved|lolos|success|terverifikasi)\b/i.test(clean);
+    if (hasCompletedWords && !hasPendingWords) {
+      isCompleted = true;
+    }
+  }
 
   // 3. Ekstrak Order Number: 15-25 digit
   let orderNumber: string | undefined = orderNumberFromPayload;
@@ -491,7 +500,7 @@ const setOrderLivenessStatusSchema = z.object({
 
 export const setOrderLivenessStatus = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => setOrderLivenessStatusSchema.parse(data))
-  .handler(async ({ data }): Promise<{ ok: boolean; orderNumber: string; completed: boolean }> => {
+  .handler(async ({ data }): Promise<{ ok: boolean; orderNumber: string; completed: boolean; message?: string }> => {
     await requireSession(data.sessionToken);
 
     if (!data.completed) {
@@ -500,7 +509,7 @@ export const setOrderLivenessStatus = createServerFn({ method: "POST" })
         const { unmarkOrderKycVerified } = await import("./binance-merchant");
         unmarkOrderKycVerified(data.orderNumber);
       } catch {}
-      return { ok: true, orderNumber: data.orderNumber, completed: false };
+      return { ok: true, orderNumber: data.orderNumber, completed: false, message: "Status liveness order telah dibatalkan." };
     }
 
     const newRecord: OrderLivenessRecord = {
@@ -508,7 +517,7 @@ export const setOrderLivenessStatus = createServerFn({ method: "POST" })
       status: "COMPLETED",
       verifiedAt: new Date().toISOString(),
       verificationTimeText: new Date().toLocaleString("id-ID"),
-      requester: "Merchant",
+      requester: "Merchant (Manual Auto-Verif)",
       counterPartNickName: data.counterPartNickName,
       source: "manual_click",
     };
@@ -516,17 +525,21 @@ export const setOrderLivenessStatus = createServerFn({ method: "POST" })
     await saveLivenessRecordInternal(newRecord);
     await notifyLivenessCompleted(newRecord);
 
+    let kycMsg = "Order berhasil diverifikasi & notifikasi terkirim.";
     // Eksekusi auto-verify ke Binance SAPI untuk membuka payment details
     try {
       const { executeAutoVerifyForSellOrder } = await import("./binance-merchant");
-      await executeAutoVerifyForSellOrder({
+      const kycRes = await executeAutoVerifyForSellOrder({
         orderNumber: data.orderNumber,
         livenessCompleted: true,
         force: true,
       });
+      if (kycRes.message) {
+        kycMsg = kycRes.message;
+      }
     } catch {}
 
-    return { ok: true, orderNumber: data.orderNumber, completed: true };
+    return { ok: true, orderNumber: data.orderNumber, completed: true, message: kycMsg };
   });
 
 // ── Webhook Handler untuk Integrasi Eksternal ────────────────────────────────

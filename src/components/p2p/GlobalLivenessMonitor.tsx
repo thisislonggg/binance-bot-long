@@ -121,14 +121,25 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
           );
         }
       } else if (livenessEnabled && isAutoVerify && !triggeringOrders.current.has(ord.orderNumber)) {
-        // KRITIKAL: Jika order membutuhkan Additional KYC (liveness wajah),
-        // JANGAN PERNAH auto-verifikasi dari watchdog ini!
-        // Order WAJIB menunggu pembeli benar-benar selesai verifikasi wajah (Chat Status: Completed).
+        // Jika order memiliki Additional KYC dan Binance sudah menandai lolos (additionalKycVerify === 2)
+        if (ord.additionalKycVerify === 2) {
+          triggeringOrders.current.add(ord.orderNumber);
+          saveLocalVerifiedOrder(ord.orderNumber);
+          setStatusMutation.mutate({
+            orderNumber: ord.orderNumber,
+            completed: true,
+            counterPartNickName: ord.counterPartNickName,
+          });
+          continue;
+        }
+
+        // Jika order membutuhkan Additional KYC dan masih 1 (menunggu verifikasi liveness buyer di Binance),
+        // watchdog server (getVerifierState) yang akan mengecek Binance SAPI tiap polling.
         if (ord.additionalKycVerify === 1) {
           continue;
         }
 
-        // Watchdog hanya berlaku untuk order umum tanpa syarat additional KYC
+        // Watchdog untuk order umum non-KYC
         const statusUpper = (ord.orderStatus || "").toUpperCase();
         const isBuyerPayed =
           statusUpper.includes("PAYED") ||
