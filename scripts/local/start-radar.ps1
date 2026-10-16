@@ -52,6 +52,9 @@ if (-not $env:DASHBOARD_PASSWORD) {
 $env:NODE_ENV = "production"
 $env:PORT = "$Port"
 $env:NITRO_PORT = "$Port"
+# Hanya terima koneksi dari komputer ini; akses dari HP lewat "tailscale serve" (terenkripsi,
+# khusus perangkat di akun Tailscale Anda). Isi NITRO_HOST=0.0.0.0 di .env untuk membuka ke jaringan lokal.
+if (-not $env:NITRO_HOST) { $env:NITRO_HOST = "127.0.0.1" }
 
 # PowerShell 5.1: dengan "Stop", baris stderr dari node/npm dianggap error fatal dan mematikan skrip.
 $ErrorActionPreference = "Continue"
