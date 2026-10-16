@@ -524,3 +524,83 @@ export const getMarketSnapshot = createServerFn({ method: "POST" })
     return snapshot;
   });
 
+
+// ── Diagnostik Level Merchant ───────────────────────────────────────────────
+// Mengambil data mentah advertiser dari Binance (hanya saat tombol diklik) untuk mencocokkan level
+// yang terdeteksi bot dengan badge asli di aplikasi Binance. Data pribadi dibuang.
+const PERSONAL_ADVERTISER_FIELDS = new Set(["realName", "email", "mobile", "userNo", "registrationTime", "phone"]);
+
+export type MerchantLevelSample = {
+  side: "BUY" | "SELL";
+  rank: number;
+  nickName: string;
+  price: number;
+  detectedLevel: string;
+  detectedVerified: boolean;
+  advertiser: Record<string, SampleValue>;
+  advMeta: Record<string, SampleValue>;
+};
+type SampleValue = string | number | boolean | null;
+// Nilai bertingkat (array/objek) dijadikan teks JSON agar bisa dikirim lewat server function.
+const toSampleValue = (v: unknown): SampleValue =>
+  v === null || v === undefined ? null : typeof v === "object" ? JSON.stringify(v) : (v as string | number | boolean);
+
+export const getMerchantLevelSample = createServerFn({ method: "POST" })
+  .inputValidator((data: unknown) => z.object({ sessionToken: z.string().optional() }).parse(data))
+  .handler(async ({ data }): Promise<{ ok: boolean; error: string | null; samples: MerchantLevelSample[] }> => {
+    await requireSession(data.sessionToken);
+    const customProxy = process.env["BINANCE_P2P_PROXY_URL"] || process.env["BINANCE_PROXY_URL"];
+    const urls = customProxy ? [customProxy, ...DEFAULT_BINANCE_P2P_URLS] : DEFAULT_BINANCE_P2P_URLS;
+    const samples: MerchantLevelSample[] = [];
+    let lastError = "";
+
+    for (const side of ["SELL", "BUY"] as const) {
+      let raw: any[] = [];
+      for (const url of urls) {
+        try {
+          const pages = await Promise.all(
+            [1, 2, 3].map(async (page) => {
+              const r = await fetch(url, {
+                method: "POST",
+                headers: HEADERS,
+                signal: AbortSignal.timeout(6000),
+                body: JSON.stringify({ page, rows: 20, payTypes: [], asset: CFG.ASSET, tradeType: side, fiat: CFG.FIAT, publisherType: null, merchantCheck: false }),
+              });
+              if (!r.ok) throw new Error(`HTTP ${r.status}`);
+              const d: any = await r.json();
+              return Array.isArray(d?.data) ? d.data : [];
+            }),
+          );
+          raw = pages.flat();
+          if (raw.length > 0) break;
+        } catch (err) {
+          lastError = err instanceof Error ? err.message : String(err);
+        }
+      }
+      raw.forEach((item, idx) => {
+        const adv = item?.adv ?? {};
+        const seller = item?.advertiser ?? {};
+        const parsed = parseAds([item])[0];
+        const advertiser: Record<string, SampleValue> = {};
+        for (const [k, v] of Object.entries(seller)) {
+          if (!PERSONAL_ADVERTISER_FIELDS.has(k)) advertiser[k] = toSampleValue(v);
+        }
+        samples.push({
+          side,
+          rank: idx + 1,
+          nickName: String(seller.nickName ?? ""),
+          price: Number(adv.price) || 0,
+          detectedLevel: parsed?.merchant_level ?? "?",
+          detectedVerified: Boolean(parsed?.is_verified),
+          advertiser,
+          advMeta: {
+            classify: toSampleValue(adv.classify),
+            tags: toSampleValue(adv.tags),
+            isTradable: toSampleValue(adv.isTradable),
+            advVisibleRet: toSampleValue(adv.advVisibleRet),
+          },
+        });
+      });
+    }
+    return { ok: samples.length > 0, error: samples.length === 0 ? lastError || "Tidak ada data dari Binance" : null, samples };
+  });

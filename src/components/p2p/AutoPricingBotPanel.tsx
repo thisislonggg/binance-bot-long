@@ -81,6 +81,7 @@ import {
 } from "@/lib/binance-merchant";
 import { getActiveP2pOrdersSummary } from "@/lib/payment-verifier";
 import { CommitNumberInput } from "./CommitNumberInput";
+import { MerchantLevelDiagnostics } from "./MerchantLevelDiagnostics";
 import {
   computeCompetitorPricing,
   DEFAULT_BOT_CONFIG,
@@ -2969,6 +2970,8 @@ export function AutoPricingBotPanel({
                   })}
                 </div>
               </div>
+
+              <MerchantLevelDiagnostics sessionToken={effectiveToken} />
 
               {/* Kedalaman Scan Orderbook / Limit Jumlah User */}
               <div className="rounded-lg border border-border/70 bg-surface-2/40 p-3 space-y-2">
