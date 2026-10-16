@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireSession } from "./auth";
 import { buildSnapshot, parseAds, CFG, type Ad, type HistoryPoint, type Snapshot } from "./p2p-engine";
 import { getSupabase } from "./supabase";
+import { packSnapshot, type SnapshotWire } from "./snapshot-wire";
 
 const DEFAULT_BINANCE_P2P_URLS = [
   "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search",
@@ -479,11 +480,13 @@ const inputSchema = z.object({
     .array(z.object({ ts: z.string(), fair_price: z.number() }))
     .max(CFG.HISTORY_MAX_POINTS)
     .default([]),
+  // Versi data yang sudah dipegang browser: bagian yang tidak berubah tidak dikirim ulang.
+  have: z.object({ ads: z.string().max(20).optional(), news: z.string().max(20).optional(), history: z.string().max(20).optional() }).default({}),
 });
 
 export const getMarketSnapshot = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => inputSchema.parse(data))
-  .handler(async ({ data }): Promise<Snapshot> => {
+  .handler(async ({ data }): Promise<SnapshotWire> => {
     await requireSession(data.sessionToken);
     const [crossPlatform, newsResult, dbHistory] = await Promise.all([
       fetchCrossPlatform(),
@@ -521,7 +524,7 @@ export const getMarketSnapshot = createServerFn({ method: "POST" })
     const latest = snapshot.history[snapshot.history.length - 1];
     if (latest) await saveHistoryPoint(latest);
 
-    return snapshot;
+    return packSnapshot(snapshot, data.have);
   });
 
 

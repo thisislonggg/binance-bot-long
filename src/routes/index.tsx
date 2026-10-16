@@ -75,6 +75,8 @@ import {
   type SyncResult,
 } from "@/lib/binance-sync";
 import { getMarketSnapshot } from "@/lib/p2p.functions";
+import { unpackSnapshot, type SnapshotHave } from "@/lib/snapshot-wire";
+import type { Snapshot } from "@/lib/p2p-engine";
 import {
   deleteTrade,
   getInitialCapital,
@@ -208,6 +210,7 @@ function ImpactBadge({ impact }: { impact?: string }) {
 
 function Dashboard() {
   const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const snapshotWireRef = useRef<{ snapshot: Snapshot; have: SnapshotHave } | null>(null);
   const [botRunnerRole, setBotRunnerRole] = useState<"leader" | "follower" | "idle">("idle");
   const [authInitialized, setAuthInitialized] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
@@ -314,7 +317,16 @@ function Dashboard() {
   // Query Market Snapshot (Refresh harga ultra-cepat hingga 1 detik)
   const snapshotQuery = useQuery({
     queryKey: ["p2p-snapshot"],
-    queryFn: () => getSnapshotFn({ data: { sessionToken: sessionToken ?? undefined } }),
+    queryFn: async () => {
+      // Kirim versi yang sudah dipegang: server hanya mengirim bagian yang berubah (hemat transfer Vercel).
+      const prev = snapshotWireRef.current;
+      const wire = await getSnapshotFn({
+        data: { sessionToken: sessionToken ?? undefined, have: prev?.have ?? {} },
+      });
+      const next = unpackSnapshot(wire, prev);
+      snapshotWireRef.current = next;
+      return next.snapshot;
+    },
     // Tab yang hanya memantau bot yang dijalankan tab/perangkat lain tidak perlu data pasar per detik.
     refetchInterval: botRunnerRole === "follower" ? FOLLOWER_POLL_MS : Math.max(1, pollIntervalSec) * 1000,
     enabled: Boolean(sessionToken),
