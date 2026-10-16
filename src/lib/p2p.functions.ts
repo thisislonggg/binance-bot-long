@@ -30,8 +30,16 @@ let lastLiveBuyAt = 0;
 // fallback ke data mock (adv_no "mock_"), yang otomatis MEMBLOKIR push harga ke Binance.
 const MAX_STALE_ORDERBOOK_MS = 15_000;
 const inFlightP2p: { BUY: Promise<Ad[]> | null; SELL: Promise<Ad[]> | null } = { BUY: null, SELL: null };
+// Orderbook live dipakai bersama oleh semua request (tab/perangkat) selama ini. Tanpa cache ini setiap
+// polling 1 detik dari setiap tab memicu 10 request ke Binance + parsing 200 iklan (boros CPU Vercel).
+const SHARED_ORDERBOOK_CACHE_MS = 2_000;
 
 export async function fetchP2pAds(tradeType: "BUY" | "SELL", benchmarkBasePrice: number = 16850): Promise<Ad[]> {
+  const cached = tradeType === "BUY" ? lastLiveSellAds : lastLiveBuyAds;
+  const cachedAt = tradeType === "BUY" ? lastLiveSellAt : lastLiveBuyAt;
+  if (cached.length > 0 && Date.now() - cachedAt < SHARED_ORDERBOOK_CACHE_MS) {
+    return cached;
+  }
   if (inFlightP2p[tradeType]) {
     return inFlightP2p[tradeType]!;
   }

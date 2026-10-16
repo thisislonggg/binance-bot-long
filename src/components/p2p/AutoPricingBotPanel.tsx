@@ -71,7 +71,6 @@ import {
   saveBotConfigToServer,
   getBotConfigFromServer,
   triggerBackgroundBotTickServer,
-  getBackgroundBotStatusServer,
   heartbeatBotRunnerServer,
   type BotRunnerLease,
 } from "@/lib/background-bot-engine";
@@ -147,6 +146,8 @@ interface AutoPricingBotPanelProps {
   marketUpdatedAt?: number;
   /** Saklar utama semua bot (server). OFF = tidak ada auto-push dari tab ini. */
   botsEnabled?: boolean;
+  /** Peran tab ini: "leader" menjalankan auto-push, "follower" hanya memantau tab lain, "idle" auto-push mati. */
+  onRunnerRoleChange?: (role: "leader" | "follower" | "idle") => void;
 }
 
 export function AutoPricingBotPanel({
@@ -166,6 +167,7 @@ export function AutoPricingBotPanel({
   pnlReady = true,
   marketUpdatedAt = 0,
   botsEnabled = true,
+  onRunnerRoleChange,
 }: AutoPricingBotPanelProps) {
   // ── Konfigurasi Bot dengan LocalStorage ─────────────────────────────────────
   const [config, setConfig] = useState<CompetitorFilterConfig>(() => loadBotConfig());
@@ -192,18 +194,8 @@ export function AutoPricingBotPanel({
   const saveConfigToServerFn = useServerFn(saveBotConfigToServer);
   const getConfigFromServerFn = useServerFn(getBotConfigFromServer);
   const triggerTickFn = useServerFn(triggerBackgroundBotTickServer);
-  const getStatusFn = useServerFn(getBackgroundBotStatusServer);
   const [isTriggeringServerTick, setIsTriggeringServerTick] = useState(false);
 
-  // Polling status background runner dari server setiap 5 detik
-  const { data: serverBotStatus, refetch: refetchServerStatus } = useQuery({
-    queryKey: ["p2p-background-bot-status"],
-    queryFn: async () => {
-      const res = await getStatusFn({ data: { sessionToken: effectiveToken } });
-      return res.ok ? res.lastRun : null;
-    },
-    refetchInterval: 5000,
-  });
 
   // Sync initial config from server if available
   useEffect(() => {
@@ -405,7 +397,8 @@ export function AutoPricingBotPanel({
     queryKey: ["active-p2p-orders-summary", effectiveSessionToken],
     queryFn: () => getActiveOrdersFn({ data: { sessionToken: effectiveSessionToken } }),
     enabled: Boolean(effectiveSessionToken),
-    refetchInterval: 2_500,
+    // Hanya dipakai untuk menghitung modal yang tertahan order beli aktif: 10 detik cukup.
+    refetchInterval: 10_000,
   });
 
   const activeBuyOrdersUsdt = activeOrdersQuery.data?.totalActiveBuyUsdt || 0;
@@ -692,6 +685,12 @@ export function AutoPricingBotPanel({
   const [isRunnerLeader, setIsRunnerLeader] = useState(false);
   const [runnerHolder, setRunnerHolder] = useState<BotRunnerLease | null>(null);
   const autoRunActive = Boolean(botsEnabled && config.enabled && config.autoPushToBinance);
+  const runnerRole: "leader" | "follower" | "idle" = !autoRunActive ? "idle" : isRunnerLeader ? "leader" : "follower";
+  const onRunnerRoleChangeRef = useRef(onRunnerRoleChange);
+  onRunnerRoleChangeRef.current = onRunnerRoleChange;
+  useEffect(() => {
+    onRunnerRoleChangeRef.current?.(runnerRole);
+  }, [runnerRole]);
 
   const runnerHeartbeat = async (takeover = false) => {
     if (!runnerIdRef.current) {

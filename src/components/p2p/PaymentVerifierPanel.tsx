@@ -131,7 +131,7 @@ export function PaymentVerifierPanel({ sessionToken }: PaymentVerifierPanelProps
     queryKey: ["payment-verifier-state"],
     queryFn: () => getVerifierState({ data: { sessionToken: sessionToken ?? undefined } }),
     enabled: Boolean(sessionToken),
-    refetchInterval: 10_000,
+    refetchInterval: 15_000,
   });
 
   const state = verifierQuery.data;

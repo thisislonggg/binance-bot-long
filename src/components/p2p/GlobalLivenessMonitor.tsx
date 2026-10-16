@@ -114,7 +114,8 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
     queryKey: ["payment-verifier-state"],
     queryFn: () => getVerifierState({ data: { sessionToken: sessionToken ?? undefined } }),
     enabled: Boolean(sessionToken),
-    refetchInterval: 7_000,
+    // Liveness terdeteksi instan lewat WebSocket chat; polling ini cadangan (auto-verify ulang, status).
+    refetchInterval: 15_000,
   });
 
   const livenessEnabled = verifierQuery.data?.settings?.liveness_enabled !== false;

@@ -113,6 +113,7 @@ const SESSION_KEY = "p2p_session_token";
 const POLL_INTERVAL_STORAGE_KEY = "p2p_market_poll_sec";
 const DEFAULT_POLL_SECONDS = 1;
 const BINANCE_SYNC_SECONDS = 180;
+const FOLLOWER_POLL_MS = 15_000;
 
 type MainTab = "bot" | "pnl" | "market" | "calculator" | "arbitrage" | "news" | "verifier";
 const NAV_TABS: { id: MainTab; label: string; icon: typeof Bot }[] = [
@@ -207,6 +208,7 @@ function ImpactBadge({ impact }: { impact?: string }) {
 
 function Dashboard() {
   const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const [botRunnerRole, setBotRunnerRole] = useState<"leader" | "follower" | "idle">("idle");
   const [authInitialized, setAuthInitialized] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
@@ -313,7 +315,8 @@ function Dashboard() {
   const snapshotQuery = useQuery({
     queryKey: ["p2p-snapshot"],
     queryFn: () => getSnapshotFn({ data: { sessionToken: sessionToken ?? undefined } }),
-    refetchInterval: Math.max(1, pollIntervalSec) * 1000,
+    // Tab yang hanya memantau bot yang dijalankan tab/perangkat lain tidak perlu data pasar per detik.
+    refetchInterval: botRunnerRole === "follower" ? FOLLOWER_POLL_MS : Math.max(1, pollIntervalSec) * 1000,
     enabled: Boolean(sessionToken),
   });
 
@@ -1095,6 +1098,7 @@ function Dashboard() {
               stockHpp={effectiveCost}
               pnlReady={pnlQuery.isSuccess && !!pnl}
             botsEnabled={botsEnabled}
+            onRunnerRoleChange={setBotRunnerRole}
               marketUpdatedAt={snapshotQuery.dataUpdatedAt}
               bankBalanceIdr={freeCashIdr}
               initialCapitalIdr={initialCapital}
