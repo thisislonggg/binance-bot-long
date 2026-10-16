@@ -304,7 +304,9 @@ function Dashboard() {
 
   const handleAuthError = useCallback((err: unknown) => {
     const msg = String(err);
-    if (msg.includes("AUTH_REQUIRED") || msg.includes("UNAUTHORIZED")) {
+    // Server melempar "unauthorized" (huruf kecil, lihat requireSession). Cocokkan tanpa peduli huruf
+    // besar/kecil agar sesi kedaluwarsa (mis. setelah DASHBOARD_SESSION_SECRET diganti) kembali ke login.
+    if (/auth_required|unauthori[sz]ed/i.test(msg)) {
       setSessionToken(null);
       try {
         sessionStorage.removeItem(SESSION_KEY);
