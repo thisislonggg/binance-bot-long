@@ -46,6 +46,7 @@ import { GlobalLivenessMonitor } from "@/components/p2p/GlobalLivenessMonitor";
 import { AutoPricingBotPanel } from "@/components/p2p/AutoPricingBotPanel";
 
 import { StatCard } from "@/components/p2p/StatCard";
+import { ProfitReport } from "@/components/p2p/ProfitReport";
 import { TradesTable } from "@/components/p2p/TradesTable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1345,50 +1346,11 @@ function Dashboard() {
                 );
               })()}
 
-              {/* Financial Metric Cards */}
-              <div className="grid grid-cols-2 gap-2.5 sm:gap-3 lg:grid-cols-3 xl:grid-cols-6">
-                <StatCard
-                  label="Hari Ini"
-                  value={pnl ? `+${fmtRp(pnl.today_profit_idr)}` : "—"}
-                  subvalue={
-                    pnl
-                      ? `${pnl.today_trades_count} transaksi (${fmtRp(pnl.today_turnover_idr)} omset)`
-                      : undefined
-                  }
-                  tone="bid"
-                  hint="Sejak 00:00 WIB"
-                />
+              {/* Laporan keuntungan: laba hari ini, grafik 30 hari, perbandingan periode */}
+              <ProfitReport pnl={pnl} />
 
-                <StatCard
-                  label="Kemarin"
-                  value={pnl ? `+${fmtRp(pnl.yesterday_profit_idr)}` : "—"}
-                  tone="neutral"
-                  hint="24 jam penuh kemarin"
-                />
-
-                <StatCard
-                  label="24 Jam Terakhir"
-                  value={pnl ? `+${fmtRp(pnl.last_24h_profit_idr)}` : "—"}
-                  tone="bid"
-                  hint="Performa rolling 24 jam"
-                />
-
-                <StatCard
-                  label="7 Hari"
-                  value={pnl ? `+${fmtRp(pnl.week_profit_idr)}` : "—"}
-                  subvalue={pnl ? `+${fmtRp(pnl.month_profit_idr)} (30 hari)` : undefined}
-                  tone="neutral"
-                  hint="Akumulasi mingguan"
-                />
-
-                <StatCard
-                  label="Total Realisasi"
-                  value={pnl ? `+${fmtRp(pnl.all_time_profit_idr)}` : "—"}
-                  subvalue={pnl ? `${pnl.total_trades_count} total transaksi` : undefined}
-                  tone="neutral"
-                  hint="Laba bersih setelah fee"
-                />
-
+              {/* Saldo stok USDT */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {/* ── Sisa Stok & Modal: Live Funding Wallet Binance / Akumulasi ── */}
                 {(() => {
                   const fb = fundingBalanceQuery.data;

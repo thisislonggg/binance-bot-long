@@ -154,8 +154,26 @@ export function isTakerTrade(trade: {
   );
 }
 
+/** Rekap satu hari kalender WIB (laba direalisasi saat penjualan). */
+export type DailyPnl = {
+  /** Tanggal WIB, format YYYY-MM-DD */
+  date: string;
+  profit_idr: number;
+  /** Jumlah transaksi jual (yang merealisasikan laba) */
+  sells: number;
+  sell_usdt: number;
+  /** Omset jual (IDR) */
+  sell_idr: number;
+  fees_idr: number;
+  buys: number;
+  buy_usdt: number;
+  buy_idr: number;
+};
+
 export type PnlSummary = {
   configured: boolean;
+  /** 30 hari terakhir (WIB), urut lama -> baru, termasuk hari tanpa transaksi. Hari terakhir = hari ini. */
+  daily: DailyPnl[];
   today_profit_idr: number;
   yesterday_profit_idr: number;
   last_24h_profit_idr: number;
@@ -210,6 +228,7 @@ export type PnlSummary = {
 
 const EMPTY_SUMMARY: PnlSummary = {
   configured: false,
+  daily: [],
   today_profit_idr: 0,
   yesterday_profit_idr: 0,
   last_24h_profit_idr: 0,
@@ -821,6 +840,42 @@ export async function computePnlSummaryInternal(): Promise<PnlSummary> {
       }
     }
 
+    // ── Rekap harian 30 hari terakhir (WIB) untuk grafik & perbandingan periode ──
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const wibDate = (ms: number) => new Date(ms + WIB_OFFSET_MS).toISOString().slice(0, 10);
+    const dailyMap = new Map<string, DailyPnl>();
+    for (let i = 29; i >= 0; i--) {
+      const date = wibDate(startOfTodayMs - i * DAY_MS);
+      dailyMap.set(date, { date, profit_idr: 0, sells: 0, sell_usdt: 0, sell_idr: 0, fees_idr: 0, buys: 0, buy_usdt: 0, buy_idr: 0 });
+    }
+    for (const r of realized) {
+      const day = dailyMap.get(wibDate(new Date(r.ts).getTime()));
+      if (!day) continue;
+      day.profit_idr += r.profit_idr;
+      day.sells += 1;
+      day.sell_usdt += r.matched_usdt;
+      day.sell_idr += r.sell_idr;
+      day.fees_idr += r.fee_idr;
+    }
+    for (const t of rawTrades) {
+      if (t.side !== "buy") continue;
+      const day = dailyMap.get(wibDate(new Date(t.ts).getTime()));
+      if (!day) continue;
+      const amount = Number(t.amount_usdt);
+      day.buys += 1;
+      day.buy_usdt += amount;
+      day.buy_idr += amount * normalizeTradePrice(Number(t.price));
+    }
+    const daily = [...dailyMap.values()].map((d) => ({
+      ...d,
+      profit_idr: Math.round(d.profit_idr),
+      sell_usdt: Math.round(d.sell_usdt * 100) / 100,
+      sell_idr: Math.round(d.sell_idr),
+      fees_idr: Math.round(d.fees_idr),
+      buy_usdt: Math.round(d.buy_usdt * 100) / 100,
+      buy_idr: Math.round(d.buy_idr),
+    }));
+
     // ── Ambil Custom Saldo Stok & Custom Harga Modal dari user_settings ─────
     let customStockCostIdr = 0;
     let customStockAmountUsdt = 0;
@@ -879,6 +934,7 @@ export async function computePnlSummaryInternal(): Promise<PnlSummary> {
 
     return {
       configured: true,
+      daily,
       today_profit_idr: todayProfit,
       yesterday_profit_idr: yesterdayProfit,
       last_24h_profit_idr: last24hProfit,
