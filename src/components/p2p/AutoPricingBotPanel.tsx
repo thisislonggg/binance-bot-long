@@ -332,61 +332,64 @@ export function AutoPricingBotPanel({
       : config.whitelistedMerchants || [];
   };
 
+  // Tulis daftar satu sisi + salin sisi lain apa adanya, lalu kosongkan daftar lama (gabungan).
+  // Tanpa ini, daftar sisi yang kosong jatuh kembali ke daftar lama dan merchant yang sudah dihapus
+  // "bangkit lagi" (di tampilan maupun di filter bot).
+  const writeMerchantList = (kind: "black" | "white", side: "sell" | "buy", next: string[]) => {
+    const other = side === "sell" ? "buy" : "sell";
+    const otherList = kind === "black" ? getActiveBlacklist(other) : getActiveWhitelist(other);
+    const keys =
+      kind === "black"
+        ? { sell: "blacklistedSellMerchants", buy: "blacklistedBuyMerchants", legacy: "blacklistedMerchants" }
+        : { sell: "whitelistedSellMerchants", buy: "whitelistedBuyMerchants", legacy: "whitelistedMerchants" };
+    updateConfig({ [keys[side]]: next, [keys[other]]: [...otherList], [keys.legacy]: [] } as Partial<CompetitorFilterConfig>);
+  };
+
   const addBlacklistedMerchant = (name: string, targetSide: "sell" | "buy" = merchantFilterSide) => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    const sideKey = targetSide === "sell" ? "blacklistedSellMerchants" : "blacklistedBuyMerchants";
     const current = getActiveBlacklist(targetSide);
     if (current.some((m) => m.toLowerCase() === trimmed.toLowerCase())) {
       toast.info(`Merchant "${trimmed}" sudah ada di blacklist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"}.`);
       return;
     }
-    const next = [...current, trimmed];
-    updateConfig({ [sideKey]: next });
+    writeMerchantList("black", targetSide, [...current, trimmed]);
     toast.success(`"${trimmed}" ditambahkan ke blacklist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"}.`);
     setBlacklistInput("");
   };
 
   const removeBlacklistedMerchant = (name: string, targetSide: "sell" | "buy" = merchantFilterSide) => {
-    const sideKey = targetSide === "sell" ? "blacklistedSellMerchants" : "blacklistedBuyMerchants";
     const current = getActiveBlacklist(targetSide);
-    const next = current.filter((m) => m.toLowerCase() !== name.toLowerCase());
-    updateConfig({ [sideKey]: next });
+    writeMerchantList("black", targetSide, current.filter((m) => m.toLowerCase() !== name.toLowerCase()));
     toast.info(`Merchant "${name}" dihapus dari blacklist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"}.`);
   };
 
   const clearBlacklist = (targetSide: "sell" | "buy" = merchantFilterSide) => {
-    const sideKey = targetSide === "sell" ? "blacklistedSellMerchants" : "blacklistedBuyMerchants";
-    updateConfig({ [sideKey]: [] });
+    writeMerchantList("black", targetSide, []);
     toast.info(`Daftar blacklist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"} dikosongkan.`);
   };
 
   const addWhitelistedMerchant = (name: string, targetSide: "sell" | "buy" = merchantFilterSide) => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    const sideKey = targetSide === "sell" ? "whitelistedSellMerchants" : "whitelistedBuyMerchants";
     const current = getActiveWhitelist(targetSide);
     if (current.some((m) => m.toLowerCase() === trimmed.toLowerCase())) {
       toast.info(`Merchant "${trimmed}" sudah ada di whitelist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"}.`);
       return;
     }
-    const next = [...current, trimmed];
-    updateConfig({ [sideKey]: next });
+    writeMerchantList("white", targetSide, [...current, trimmed]);
     toast.success(`"${trimmed}" ditambahkan ke whitelist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"}.`);
     setWhitelistInput("");
   };
 
   const removeWhitelistedMerchant = (name: string, targetSide: "sell" | "buy" = merchantFilterSide) => {
-    const sideKey = targetSide === "sell" ? "whitelistedSellMerchants" : "whitelistedBuyMerchants";
     const current = getActiveWhitelist(targetSide);
-    const next = current.filter((m) => m.toLowerCase() !== name.toLowerCase());
-    updateConfig({ [sideKey]: next });
+    writeMerchantList("white", targetSide, current.filter((m) => m.toLowerCase() !== name.toLowerCase()));
     toast.info(`Merchant "${name}" dihapus dari whitelist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"}.`);
   };
 
   const clearWhitelist = (targetSide: "sell" | "buy" = merchantFilterSide) => {
-    const sideKey = targetSide === "sell" ? "whitelistedSellMerchants" : "whitelistedBuyMerchants";
-    updateConfig({ [sideKey]: [] });
+    writeMerchantList("white", targetSide, []);
     toast.info(`Daftar whitelist Iklan ${targetSide === "sell" ? "Jual (SELL)" : "Beli (BUY)"} dikosongkan.`);
   };
 
@@ -2339,12 +2342,9 @@ export function AutoPricingBotPanel({
                         ((radarTab === "sell" && sellTargetMerchant?.merchant_name === item.ad.merchant_name && sellTargetMerchant?.price === item.ad.price) ||
                           (radarTab === "buy" && buyTargetMerchant?.merchant_name === item.ad.merchant_name && buyTargetMerchant?.price === item.ad.price));
 
-                      const sideBlacklist = radarTab === "sell"
-                        ? (config.blacklistedSellMerchants ?? config.blacklistedMerchants ?? [])
-                        : (config.blacklistedBuyMerchants ?? config.blacklistedMerchants ?? []);
-                      const sideWhitelist = radarTab === "sell"
-                        ? (config.whitelistedSellMerchants ?? config.whitelistedMerchants ?? [])
-                        : (config.whitelistedBuyMerchants ?? config.whitelistedMerchants ?? []);
+                      // Sama persis dengan yang dipakai filter bot (termasuk cadangan daftar lama).
+                      const sideBlacklist = getActiveBlacklist(radarTab);
+                      const sideWhitelist = getActiveWhitelist(radarTab);
 
                       const isBlacklisted = sideBlacklist.some(
                         (b) => b && b.toLowerCase() === item.ad.merchant_name.toLowerCase(),
@@ -2472,9 +2472,9 @@ export function AutoPricingBotPanel({
                                 type="button"
                                 onClick={() => {
                                   if (isBlacklisted) {
-                                    removeBlacklistedMerchant(item.ad.merchant_name);
+                                    removeBlacklistedMerchant(item.ad.merchant_name, radarTab);
                                   } else {
-                                    addBlacklistedMerchant(item.ad.merchant_name);
+                                    addBlacklistedMerchant(item.ad.merchant_name, radarTab);
                                   }
                                 }}
                                 className={`h-6 w-6 p-0 text-xs ${
@@ -2494,9 +2494,9 @@ export function AutoPricingBotPanel({
                                 type="button"
                                 onClick={() => {
                                   if (isWhitelisted) {
-                                    removeWhitelistedMerchant(item.ad.merchant_name);
+                                    removeWhitelistedMerchant(item.ad.merchant_name, radarTab);
                                   } else {
-                                    addWhitelistedMerchant(item.ad.merchant_name);
+                                    addWhitelistedMerchant(item.ad.merchant_name, radarTab);
                                   }
                                 }}
                                 className={`h-6 w-6 p-0 text-xs ${
