@@ -138,6 +138,28 @@ const pstdev = (xs: number[]) => {
   return Math.sqrt(mean(xs.map((x) => (x - m) ** 2)));
 };
 
+/**
+ * Level merchant P2P sesuai badge di aplikasi Binance, dari data advertiser API adv/search.
+ * Dikalibrasi dengan data produksi (USDT/IDR):
+ *  - userIdentity "BLOCK_MERCHANT" (badges ["Block"])         -> Block
+ *  - userIdentity "MASS_MERCHANT" / userType "merchant"        -> merchant terverifikasi;
+ *      tingkatnya dari vipLevel: 1 = Bronze, 2 = Silver, 3 = Gold
+ *      (merchant baru selalu mulai di Bronze, jadi vipLevel kosong dianggap Bronze)
+ *  - userType "user" tanpa userIdentity (vipLevel null)       -> Regular, TIDAK terverifikasi
+ * userGrade TIDAK menunjukkan tingkat: semua merchant bernilai 3, user biasa bernilai 2.
+ */
+export function detectMerchantLevel(seller: any): { level: MerchantLevel; isVerified: boolean } {
+  const identity = String(seller?.userIdentity ?? "").toUpperCase();
+  const badges = Array.isArray(seller?.badges) ? seller.badges.map((b: unknown) => String(b).toLowerCase()) : [];
+  if (identity === "BLOCK_MERCHANT" || badges.includes("block")) return { level: "block", isVerified: true };
+  const isMerchant = identity.includes("MERCHANT") || String(seller?.userType ?? "").toLowerCase() === "merchant";
+  if (!isMerchant) return { level: "regular", isVerified: false };
+  const vip = Number(seller?.vipLevel);
+  if (vip >= 3) return { level: "gold", isVerified: true };
+  if (vip === 2) return { level: "silver", isVerified: true };
+  return { level: "bronze", isVerified: true };
+}
+
 export function parseAds(rawAds: any[]): Ad[] {
   const parsed: Ad[] = [];
   for (const item of rawAds ?? []) {
@@ -206,95 +228,12 @@ export function parseAds(rawAds: any[]): Ad[] {
     const effectiveQty = tradableQty > 0 ? tradableQty : surplus;
     const availableIdr = effectiveMaxLimit > 0 ? Math.min(effectiveQty * price, effectiveMaxLimit) : effectiveQty * price;
 
-    // Deteksi Level Merchant Sebenarnya (Real Binance Merchant Level): Block, Gold, Silver, Bronze, atau Regular
-    const badgesRaw: any[] = Array.isArray(seller.badges)
-      ? seller.badges
-      : Array.isArray(seller.userBadges)
-      ? seller.userBadges
-      : [];
-    const tagIconsRaw: any[] = Array.isArray(seller.tagIconUrls) ? seller.tagIconUrls : [];
-    const advTagsRaw: any[] = Array.isArray(adv.tags) ? adv.tags : [];
-
-    const stringifyMeta = (items: any[]): string => {
-      return items
-        .map((x) => (typeof x === "string" ? x : x && typeof x === "object" ? JSON.stringify(x) : String(x ?? "")))
-        .join(" ")
-        .toLowerCase();
-    };
-
-    const badges: string[] = badgesRaw
-      .map((b: any) =>
-        typeof b === "string" ? b : b && typeof b === "object" ? (b.name || b.iconCategory || JSON.stringify(b)) : String(b ?? ""),
-      )
-      .filter(Boolean);
-
-    const allMetadataText = [
-      stringifyMeta(badgesRaw),
-      stringifyMeta(tagIconsRaw),
-      stringifyMeta(advTagsRaw),
-      String(adv.classify ?? "").toLowerCase(),
-      String(adv.tradeType ?? "").toLowerCase(),
-      String(seller.userType ?? "").toLowerCase(),
-      String(seller.userIdentity ?? "").toLowerCase(),
-      String(seller.vipLevel ?? "").toLowerCase(),
-    ].join(" ");
-
+    // Level merchant sesuai badge Binance (lihat detectMerchantLevel).
+    const badgesRaw: any[] = Array.isArray(seller.badges) ? seller.badges : [];
+    const badges: string[] = badgesRaw.map((x: any) => String(x ?? "")).filter(Boolean);
     const userGrade = Number(seller.userGrade ?? 0);
-    const vipLevel = Number(seller.vipLevel ?? 0);
-    const isPro = Boolean(seller.proMerchant || seller.isPro || seller.userType === "pro");
-
-    // 1. Level BLOCK: Pedagang Block Trade (Diamond Badge / Block Trade Zone di Binance)
-    const isBlock =
-      adv.classify === "block" ||
-      seller.userType === "block" ||
-      Boolean(adv.isBlock) ||
-      Boolean(adv.isBlockTrade) ||
-      Boolean(seller.isBlockMerchant) ||
-      Boolean(seller.isDiamondMerchant) ||
-      allMetadataText.includes("block_merchant") ||
-      allMetadataText.includes("block trade") ||
-      allMetadataText.includes("block-trade") ||
-      allMetadataText.includes("diamond");
-
-    let merchantLevel: MerchantLevel = "regular";
-
-    if (isBlock) {
-      merchantLevel = "block";
-    } else if (
-      userGrade >= 3 ||
-      vipLevel >= 3 ||
-      allMetadataText.includes("gold") ||
-      isPro
-    ) {
-      merchantLevel = "gold";
-    } else if (
-      userGrade === 2 ||
-      vipLevel === 2 ||
-      allMetadataText.includes("silver")
-    ) {
-      merchantLevel = "silver";
-    } else if (
-      userGrade === 1 ||
-      vipLevel === 1 ||
-      allMetadataText.includes("bronze") ||
-      seller.userType === "merchant" ||
-      Boolean(seller.userIdentity) ||
-      Boolean(seller.userGrade)
-    ) {
-      merchantLevel = "bronze";
-    } else {
-      merchantLevel = "regular";
-    }
-
-    const isVerified = Boolean(
-      seller.userIdentity ||
-      seller.userGrade ||
-      seller.userType === "merchant" ||
-      seller.userType === "block" ||
-      seller.is_verified ||
-      isPro ||
-      merchantLevel !== "regular"
-    );
+    const isPro = Boolean(seller.proMerchant);
+    const { level: merchantLevel, isVerified } = detectMerchantLevel(seller);
 
     parsed.push({
       adv_no: cleanAdvNo,
