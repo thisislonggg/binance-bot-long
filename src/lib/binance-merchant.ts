@@ -884,6 +884,19 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
       };
     }
 
+    // Sisa stok "remah" (mis. 10 USDT setelah stok habis terjual): iklan dengan nilai sekecil itu ditolak
+    // Binance (-9000) dan tidak bisa diambil buyer. Anggap habis: OFFLINE-kan, nyala lagi saat stok terisi.
+    const SELL_DUST_IDR = 1_000_000;
+    if (!isBuy && isStockUpdateRequested && targetStock * newPrice < SELL_DUST_IDR) {
+      await toggleMerchantAdStatusInternal(cleanAdvNo, "OFFLINE");
+      return {
+        ok: true,
+        code: "AUTO_OFFLINED_DUST",
+        message: `Sisa stok jual hanya ${targetStock} USDT (± Rp ${Math.round(targetStock * newPrice).toLocaleString("id-ID")}), terlalu kecil untuk iklan. Iklan jual #${cleanAdvNo} di-OFFLINE-kan sampai stok terisi lagi.`,
+        timestamp: Date.now(),
+      };
+    }
+
     // Untuk iklan JUAL (SELL):
     // Binance memotong maker reserved fee (~0.05%) saat memasang stok.
     // Jika targetStock dikirim mentah dari total saldo funding, potong reserved fee persis sesuai "Max. available: ... USDT All" di Binance

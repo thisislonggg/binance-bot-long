@@ -61,6 +61,8 @@ type State = {
   pushFail: { buy: number; sell: number };
   pushRetryAt: { buy: number; sell: number };
   buyAdOfflined: boolean;
+  /** Stok saat iklan di-OFFLINE-kan otomatis (stok habis/remah): jangan push ulang sampai stok berubah. */
+  offlinedAtStock: { buy?: number | undefined; sell?: number | undefined };
   war: { buy: typeof EMPTY_WAR_SIDE; sell: typeof EMPTY_WAR_SIDE };
   ticking: boolean;
   submittedLiveness: Set<string>;
@@ -94,6 +96,7 @@ const st = (): State =>
     pushFail: { buy: 0, sell: 0 },
     pushRetryAt: { buy: 0, sell: 0 },
     buyAdOfflined: false,
+    offlinedAtStock: {},
     war: { buy: EMPTY_WAR_SIDE, sell: EMPTY_WAR_SIDE },
     ticking: false,
     submittedLiveness: new Set(),
@@ -134,7 +137,7 @@ async function cached<T>(slot: { value: T | null; at: number }, ttlMs: number, l
   return slot.value;
 }
 
-// ── 1. Auto-push harga ──────────────────────────────────────────────────────
+// â”€â”€ 1. Auto-push harga â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 type TickContext = {
   config: CompetitorFilterConfig;
@@ -240,7 +243,11 @@ function recordPushResult(side: Side, res: { ok: boolean; code?: string; price: 
   }
   s.pushFail[side] = 0;
   s.pushRetryAt[side] = 0;
-  if (res.code?.startsWith("AUTO_OFFLINED")) return;
+  if (res.code?.startsWith("AUTO_OFFLINED")) {
+    s.offlinedAtStock[side] = stock ?? 0;
+    return;
+  }
+  delete s.offlinedAtStock[side];
   s.lastPushedPrice[side] = res.price;
   if (recordStock) s.lastPushedStock[side] = stock;
 }
@@ -271,7 +278,7 @@ async function autoPushTick(): Promise<void> {
 
   const [pnl, funding, orders] = await Promise.all([
     cached(s.pnl, 60_000, computePnlSummaryInternal),
-    cached(s.funding, 30_000, fetchFundingBalanceInternal),
+    cached(s.funding, 10_000, fetchFundingBalanceInternal),
     cached(s.orders, 10_000, getActiveOrdersSummaryInternal),
   ]);
   if (!pnl) {
@@ -333,14 +340,14 @@ async function autoPushTick(): Promise<void> {
     cleanSellAdvNo && (orders?.activeSellOrders ?? []).some((o) => o.advNo && o.advNo.trim().replace(/^#/, "") === cleanSellAdvNo),
   );
   const ctx: TickContext = { config, pricing, recommendedBuyPrice, recommendedSellPrice, fairPrice: market.fairPrice, maxAvailableSellStockUsdt, hasActiveSellOrder };
-  s.status.lastTickNote = `Beli Rp ${Math.round(recommendedBuyPrice).toLocaleString("id-ID")} · Jual Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")}`;
+  s.status.lastTickNote = `Beli Rp ${Math.round(recommendedBuyPrice).toLocaleString("id-ID")} Â· Jual Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")}`;
 
   const minIntervalMs = Math.max(1, config.autoPushMinIntervalSec ?? 1) * 1000;
   if (now - s.lastPushTime < minIntervalMs) return;
   const maxStep = Math.max(50, (config.maxPriceStepRp || MAX_STEP_DEFAULT) * 2);
   let buyTriggered = false;
 
-  // ── Sisi BELI ──
+  // â”€â”€ Sisi BELI â”€â”€
   if (config.merchantBuyAdvNo && recommendedBuyPrice > 0 && now >= s.pushRetryAt.buy) {
     const isBuyBlocked =
       (!config.manualBuyStockUsdt || config.manualBuyStockUsdt <= 0) &&
@@ -368,7 +375,8 @@ async function autoPushTick(): Promise<void> {
         }
         const stock =
           config.manualBuyStockUsdt && config.manualBuyStockUsdt > 0 ? config.manualBuyStockUsdt : pricing.bankAllocation.autoBuyStockUsdt;
-        if (s.lastPushedPrice.buy !== rounded || s.lastPushedStock.buy !== stock) {
+        const waitingForStock = s.offlinedAtStock.buy !== undefined && s.offlinedAtStock.buy === stock;
+        if ((s.lastPushedPrice.buy !== rounded || s.lastPushedStock.buy !== stock) && !waitingForStock) {
           s.lastPushTime = now;
           buyTriggered = true;
           const res = await pushSide("buy", rounded, ctx).catch((err) => {
@@ -381,7 +389,7 @@ async function autoPushTick(): Promise<void> {
     }
   }
 
-  // ── Sisi JUAL ──
+  // â”€â”€ Sisi JUAL â”€â”€
   if (config.merchantSellAdvNo && recommendedSellPrice > 0 && Date.now() >= s.pushRetryAt.sell) {
     const sellFloor = Math.max(pricing.sellGuard.floorPrice || 0, config.manualSellFloorRp || 0, config.minPriceBoundRp || 0);
     let rounded = Math.round(recommendedSellPrice);
@@ -408,7 +416,9 @@ async function autoPushTick(): Promise<void> {
           : undefined;
     const priceChanged = s.lastPushedPrice.sell !== rounded;
     const stockChanged = !hasActiveSellOrder && s.lastPushedStock.sell !== stock;
-    if (priceChanged || stockChanged) {
+    // Iklan sedang OFFLINE karena stok habis: tunggu stok berubah, jangan OFFLINE-kan berulang tiap detik.
+    const waitingForStock = s.offlinedAtStock.sell !== undefined && s.offlinedAtStock.sell === (stock ?? 0);
+    if ((priceChanged || stockChanged) && !waitingForStock) {
       s.lastPushTime = Date.now();
       // Jeda 1 detik setelah push beli agar request tidak bertabrakan di Binance SAPI.
       if (buyTriggered) await new Promise((r) => setTimeout(r, 1000));
@@ -441,7 +451,7 @@ async function tickLoop(): Promise<void> {
   }
 }
 
-// ── 2. Auto-verify liveness (chat Binance) ──────────────────────────────────
+// â”€â”€ 2. Auto-verify liveness (chat Binance) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function connectChat(): void {
   const s = st();
@@ -528,7 +538,7 @@ async function verifierBackupLoop(): Promise<void> {
   }
 }
 
-// ── 3. Auto-sync riwayat transaksi ──────────────────────────────────────────
+// â”€â”€ 3. Auto-sync riwayat transaksi â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function syncLoop(): Promise<void> {
   await new Promise((r) => setTimeout(r, 20_000));
