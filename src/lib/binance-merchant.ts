@@ -766,10 +766,14 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
       }
     }
 
+    // Nyalakan lagi iklan yang OFFLINE begitu stok/kas tersedia (bisa dimatikan di pengaturan).
+    let autoOnline = true;
+
     // ── DEFENSE-IN-DEPTH: Proteksi Batas Bawah Iklan Jual & Batas Iklan Beli (Hard Floor/Ceiling Clamp) ──
     try {
       const { getBotConfigServer } = await import("./background-bot-engine");
       const botCfg = await getBotConfigServer();
+      autoOnline = botCfg.autoOnlineWhenStockAvailable !== false;
 
       if (!isBuy || targetSide === "sell") {
         // Proteksi JUAL (SELL) - HARD FLOOR MUTLAK
@@ -1076,6 +1080,25 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
       }
     }
 
+    // ── Nyalakan kembali iklan yang OFFLINE ──────────────────────────────────
+    // Bot meng-OFFLINE-kan iklan saat stok/kas 0, dan Binance sendiri meng-OFFLINE-kan iklan yang kuotanya
+    // habis terisi. Update harga/stok TIDAK mengubah status, jadi tanpa langkah ini iklan tetap mati
+    // walau stok & kas sudah tersedia lagi.
+    let onlineNote = "";
+    const rawAdvStatus = existingAd["advStatus"] ?? existingAd["status"];
+    const advStatusNum = Number(rawAdvStatus);
+    const isAdOffline =
+      rawAdvStatus !== undefined &&
+      rawAdvStatus !== null &&
+      (Number.isFinite(advStatusNum) ? advStatusNum !== 1 : /OFFLINE|CLOSE|PAUSE/i.test(String(rawAdvStatus)));
+    if (updateSucceeded && isAdOffline && autoOnline && targetStock > 0) {
+      const onlineRes = await toggleMerchantAdStatusInternal(targetAdvNo, "ONLINE");
+      onlineNote = onlineRes.ok
+        ? " Iklan otomatis dinyalakan kembali (ONLINE)."
+        : ` Iklan masih OFFLINE: gagal menyalakan (${onlineRes.message || onlineRes.code}).`;
+      console.log(`[BinanceMerchant] Re-online iklan #${targetAdvNo} (${isBuy ? "BUY" : "SELL"}): ${onlineRes.ok ? "OK" : onlineRes.message}`);
+    }
+
     // =========================================================================
     // POST-UPDATE VERIFIKASI LANGSUNG KE BINANCE (HARGA & STOK)
     // Polling cepat (cek ±0,5s, ±1,2s, ±2,2s) dan berhenti begitu harga live cocok, menggantikan
@@ -1129,7 +1152,7 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
           return {
             ok: true,
             code: "000000",
-            message: `Iklan #${targetAdvNo} BERHASIL & TERVERIFIKASI berubah di Binance ke Rp ${newPrice.toLocaleString("id-ID")}${isStockUpdateRequested ? ` | Stok: ${liveStockAfter ?? targetStock} USDT` : ""}!`,
+            message: `Iklan #${targetAdvNo} BERHASIL & TERVERIFIKASI berubah di Binance ke Rp ${newPrice.toLocaleString("id-ID")}${isStockUpdateRequested ? ` | Stok: ${liveStockAfter ?? targetStock} USDT` : ""}!${onlineNote}`,
             data: { livePrice: newPrice, targetPrice: newPrice, liveStock: liveStockAfter, targetStock },
             timestamp: Date.now(),
           };
@@ -1137,7 +1160,7 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
           return {
             ok: true,
             code: "000000",
-            message: `Harga iklan #${targetAdvNo} BERHASIL terupdate ke Rp ${newPrice.toLocaleString("id-ID")}! (Stok di Binance dipertahankan: ${liveStockAfter !== null ? `${liveStockAfter} USDT` : "asli"} karena pesanan aktif mengunci kuota stok).`,
+            message: `Harga iklan #${targetAdvNo} BERHASIL terupdate ke Rp ${newPrice.toLocaleString("id-ID")}! (Stok di Binance dipertahankan: ${liveStockAfter !== null ? `${liveStockAfter} USDT` : "asli"} karena pesanan aktif mengunci kuota stok).${onlineNote}`,
             data: { livePrice: newPrice, targetPrice: newPrice, liveStock: liveStockAfter, targetStock },
             timestamp: Date.now(),
           };
@@ -1145,7 +1168,7 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
           return {
             ok: true,
             code: "000000",
-            message: `Iklan #${targetAdvNo} BERHASIL terupdate di Binance ke Rp ${newPrice.toLocaleString("id-ID")}${isStockUpdateRequested ? ` | Stok: ${targetStock} USDT` : ""}!`,
+            message: `Iklan #${targetAdvNo} BERHASIL terupdate di Binance ke Rp ${newPrice.toLocaleString("id-ID")}${isStockUpdateRequested ? ` | Stok: ${targetStock} USDT` : ""}!${onlineNote}`,
             data: { livePrice: newPrice, targetPrice: newPrice, liveStock: liveStockAfter ?? targetStock, targetStock },
             timestamp: Date.now(),
           };
@@ -1156,7 +1179,7 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
       return {
         ok: true,
         code: "000000",
-        message: `Pembaruan harga ke Rp ${newPrice.toLocaleString("id-ID")} berhasil diterima server Binance untuk iklan #${targetAdvNo}. (Sinkronisasi live Binance sedang berlangsung).`,
+        message: `Pembaruan harga ke Rp ${newPrice.toLocaleString("id-ID")} berhasil diterima server Binance untuk iklan #${targetAdvNo}. (Sinkronisasi live Binance sedang berlangsung).${onlineNote}`,
         data: { livePrice: livePriceAfter ?? newPrice, targetPrice: newPrice, liveStock: liveStockAfter, targetStock },
         timestamp: Date.now(),
       };

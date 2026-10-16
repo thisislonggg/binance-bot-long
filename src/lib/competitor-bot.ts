@@ -95,6 +95,7 @@ export type CompetitorFilterConfig = {
   manualSellPriceOverrideRp?: number;     // Override pasang harga jual manual tetap (0 = auto bot)
   autoPushToBinance: boolean;             // Otomatis push perubahan harga ke Binance P2P
   autoPushMinIntervalSec: number;         // Interval minimal push (detik, default 1)
+  autoOnlineWhenStockAvailable?: boolean; // Nyalakan lagi iklan OFFLINE otomatis saat stok/kas tersedia kembali (default true)
 };
 
 export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
@@ -1711,6 +1712,7 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (typeof merged.manualBuyFloorRp !== "number") merged.manualBuyFloorRp = 0;
     if (typeof merged.manualBuyPriceOverrideRp !== "number") merged.manualBuyPriceOverrideRp = 0;
     if (typeof merged.autoPushToBinance !== "boolean") merged.autoPushToBinance = false;
+    if (typeof merged.autoOnlineWhenStockAvailable !== "boolean") merged.autoOnlineWhenStockAvailable = true;
     if (typeof merged.autoPushMinIntervalSec !== "number" || merged.autoPushMinIntervalSec < 1) merged.autoPushMinIntervalSec = 1;
     if (typeof merged.autoFollowNextWhenLimitReached !== "boolean") merged.autoFollowNextWhenLimitReached = true;
     if (typeof merged.ownMerchantNickname !== "string") merged.ownMerchantNickname = "";

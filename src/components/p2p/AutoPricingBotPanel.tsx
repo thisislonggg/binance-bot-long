@@ -5575,6 +5575,21 @@ export function AutoPricingBotPanel({
                   />
                 </div>
 
+                <div className="flex items-start justify-between gap-3 text-xs">
+                  <div className="space-y-0.5">
+                    <Label className="text-xs font-semibold text-foreground">Nyalakan otomatis saat stok/kas tersedia</Label>
+                    <p className="text-[0.66rem] text-muted-foreground">
+                      Iklan yang OFFLINE (karena stok/kas sempat 0 atau kuota habis terisi) dinyalakan lagi saat push berikutnya.
+                      Matikan jika Anda sengaja menjeda iklan dari aplikasi Binance.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={config.autoOnlineWhenStockAvailable !== false}
+                    onCheckedChange={(val) => updateConfig({ autoOnlineWhenStockAvailable: val })}
+                    className="scale-90 data-[state=checked]:bg-primary"
+                  />
+                </div>
+
                 {config.autoPushToBinance && (
                   <div className="space-y-2 pt-1 text-xs">
                     <div className="flex items-center justify-between">
