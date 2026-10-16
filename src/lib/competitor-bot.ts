@@ -406,6 +406,8 @@ export function evaluateCompetitorAds(
 
   const scanLimit = config.scanAdLimit && config.scanAdLimit > 0 ? config.scanAdLimit : 100;
   const adsToScan = sortedAds.slice(0, scanLimit);
+  // Gap Trap sisi beli hanya membandingkan merchant TERVERIFIKASI (Rank 1 vs Rank 2 versi terverifikasi).
+  const verifiedSorted = sortedAds.filter((a) => a.is_verified);
 
   let currentRank = 1;
 
@@ -680,16 +682,34 @@ export function evaluateCompetitorAds(
             // Jika Rank 1 menawar jauh lebih tinggi dibanding Rank 2 (ad.price > nextAd.price)
             const gap = ad.price - nextAd.price;
             const gapTrapActive = config.buyGapTrapEnabled !== false;
-            const gapThreshold = gapTrapActive
-              ? (config.buyGapTrapThresholdRp && config.buyGapTrapThresholdRp > 0 ? config.buyGapTrapThresholdRp : 20)
-              : (config.maxOutlierGapRp || 40);
+            const outlierGap = config.maxOutlierGapRp || 40;
+            let trapped = false;
 
-            if (gap >= gapThreshold && adIndex === 0) {
+            if (gapTrapActive) {
+              // Rank 1 & Rank 2 dihitung HANYA dari merchant terverifikasi; merchant tidak terverifikasi
+              // tidak ikut dibandingkan dan tidak pernah kena Gap Trap.
+              const verifiedNext = verifiedSorted[1];
+              if (ad.is_verified && verifiedSorted[0] === ad && verifiedNext) {
+                const gapThreshold =
+                  config.buyGapTrapThresholdRp && config.buyGapTrapThresholdRp > 0 ? config.buyGapTrapThresholdRp : 20;
+                const verifiedGap = ad.price - verifiedNext.price;
+                if (verifiedGap >= gapThreshold) {
+                  trapped = true;
+                  reasons.push({
+                    code: "PRICE_OUTLIER",
+                    message: `Gap Trap Beli: Selisih Rp ${verifiedGap} dari Rank #2 terverifikasi (${verifiedNext.merchant_name} @ Rp ${verifiedNext.price.toLocaleString("id-ID")}) melebihi batas Rp ${gapThreshold} (indikasi pancingan pucuk/spoofing)`,
+                  });
+                }
+              }
+            } else if (gap >= outlierGap && adIndex === 0) {
+              trapped = true;
               reasons.push({
                 code: "PRICE_OUTLIER",
-                message: `Gap Trap Beli: Selisih Rp ${gap} dari Rank #2 (${nextAd.merchant_name} @ Rp ${nextAd.price.toLocaleString("id-ID")}) melebihi batas Rp ${gapThreshold} (indikasi pancingan pucuk/spoofing)`,
+                message: `Gap Trap Beli: Selisih Rp ${gap} dari Rank #2 (${nextAd.merchant_name} @ Rp ${nextAd.price.toLocaleString("id-ID")}) melebihi batas Rp ${outlierGap} (indikasi pancingan pucuk/spoofing)`,
               });
-            } else if (config.ignoreOutlierSpikes && gap >= (config.maxOutlierGapRp || 40) && adIndex < 3) {
+            }
+
+            if (!trapped && config.ignoreOutlierSpikes && gap >= outlierGap && adIndex < 3) {
               reasons.push({
                 code: "PRICE_OUTLIER",
                 message: `Selisih beli Rp ${gap} dari rank berikutnya (indikasi pancingan/spoofing)`,

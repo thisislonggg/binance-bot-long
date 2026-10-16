@@ -542,7 +542,8 @@ export function AutoPricingBotPanel({
 
   // Analisis Gap Trap antara Rank 1 dan Rank 2 sisi Beli (Live Orderbook)
   const buySideGaps = useMemo(() => {
-    const sorted = [...buyRefAds].sort((a, b) => b.price - a.price);
+    // Sama dengan filter bot: Rank 1 & 2 hanya dari merchant terverifikasi.
+    const sorted = buyRefAds.filter((a) => a.is_verified).sort((a, b) => b.price - a.price);
     if (sorted.length < 2) return null;
     const rank1 = sorted[0];
     const rank2 = sorted[1];
@@ -3727,7 +3728,7 @@ export function AutoPricingBotPanel({
                   </div>
 
                   <p className="text-[0.68rem] text-muted-foreground leading-relaxed">
-                    Abaikan otomatis kompetitor Rank 1 jika harganya melonjak Rp X di atas Rank 2. Mencegah bot Anda terpancing memasang harga tinggi di pucuk oleh kompetitor nakal/spoofer yang sengaja memancing lalu kabur.
+                    Hanya membandingkan merchant terverifikasi: abaikan Rank 1 terverifikasi jika harganya melonjak Rp X di atas Rank 2 terverifikasi. Merchant tidak terverifikasi tidak ikut dihitung. Mencegah bot Anda terpancing memasang harga tinggi di pucuk oleh kompetitor nakal/spoofer yang sengaja memancing lalu kabur.
                   </p>
 
                   <div className="space-y-1.5 pt-1 border-t border-border/40">
@@ -3776,13 +3777,13 @@ export function AutoPricingBotPanel({
                   {buySideGaps && (
                     <div className="rounded-md border border-border/60 bg-surface/70 p-2 space-y-1 text-[0.68rem]">
                       <div className="flex items-center justify-between text-muted-foreground">
-                        <span>Rank 1 Beli Saat Ini:</span>
+                        <span>Rank 1 Terverifikasi:</span>
                         <strong className="num text-foreground">
                           {fmtRp(buySideGaps.rank1.price)} (@{buySideGaps.rank1.merchant_name})
                         </strong>
                       </div>
                       <div className="flex items-center justify-between text-muted-foreground">
-                        <span>Rank 2 Beli Saat Ini:</span>
+                        <span>Rank 2 Terverifikasi:</span>
                         <strong className="num text-foreground">
                           {fmtRp(buySideGaps.rank2.price)} (@{buySideGaps.rank2.merchant_name})
                         </strong>
