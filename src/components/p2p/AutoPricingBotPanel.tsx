@@ -81,6 +81,7 @@ import {
 } from "@/lib/binance-merchant";
 import { getActiveP2pOrdersSummary } from "@/lib/payment-verifier";
 import { CommitNumberInput } from "./CommitNumberInput";
+import { getServerBotStatus } from "@/lib/server-bot/status";
 import { MerchantLevelDiagnostics } from "./MerchantLevelDiagnostics";
 import {
   computeCompetitorPricing,
@@ -221,6 +222,8 @@ export function AutoPricingBotPanel({
               merged.maxPriceBoundRp = prev.maxPriceBoundRp;
             }
             saveBotConfig(merged);
+            // Kirim balik hasil gabungan agar salinan server (dibaca bot server) sama persis dengan tab ini.
+            saveConfigToServerFn({ data: { sessionToken: effectiveToken, config: merged as Record<string, unknown> } }).catch(() => {});
             return merged;
           });
         }
@@ -686,7 +689,22 @@ export function AutoPricingBotPanel({
   const isRunnerLeaderRef = useRef(false);
   const [isRunnerLeader, setIsRunnerLeader] = useState(false);
   const [runnerHolder, setRunnerHolder] = useState<BotRunnerLease | null>(null);
-  const autoRunActive = Boolean(botsEnabled && config.enabled && config.autoPushToBinance);
+  // Bot server (server lokal yang berjalan terus): bila aktif, tab ini HANYA memantau.
+  const getServerBotStatusFn = useServerFn(getServerBotStatus);
+  const serverBotQuery = useQuery({
+    queryKey: ["server-bot-status"],
+    queryFn: () => getServerBotStatusFn({ data: { sessionToken: effectiveToken } }),
+    enabled: Boolean(effectiveToken),
+    refetchInterval: 10_000,
+    retry: 1,
+  });
+  const serverBot = serverBotQuery.data ?? null;
+  const serverBotActive = Boolean(serverBot?.active);
+  // Sebelum status server diketahui, jangan jalankan auto-push dari tab (cegah push ganda sesaat).
+  const serverStatusKnown = serverBotQuery.isSuccess || serverBotQuery.isError;
+  const autoRunActive = Boolean(
+    serverStatusKnown && !serverBotActive && botsEnabled && config.enabled && config.autoPushToBinance,
+  );
   const runnerRole: "leader" | "follower" | "idle" = !autoRunActive ? "idle" : isRunnerLeader ? "leader" : "follower";
   const onRunnerRoleChangeRef = useRef(onRunnerRoleChange);
   onRunnerRoleChangeRef.current = onRunnerRoleChange;
@@ -1343,6 +1361,37 @@ export function AutoPricingBotPanel({
           <div className="order-last flex w-full items-center gap-2 rounded-lg border border-ask/40 bg-ask/10 px-3 py-1.5 text-xs font-semibold text-ask">
             <Power className="size-3.5 shrink-0" />
             Saklar utama &quot;Semua Bot&quot; OFF: auto-push harga dihentikan. Push manual tetap bisa dipakai.
+          </div>
+        )}
+
+        {serverBotActive && serverBot && (
+          <div className="order-last w-full space-y-1.5 rounded-lg border border-bid/30 bg-bid/10 px-3 py-2 text-xs text-bid">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-semibold">
+                {serverBot.autoPushRunning
+                  ? "Bot berjalan otomatis di server. Tab ini boleh ditutup."
+                  : `Bot server siaga: ${serverBot.lastTickNote || "menunggu"}`}
+              </span>
+              <span className="text-[0.68rem] text-bid/80">
+                {serverBot.chatConnected ? "Chat Binance terhubung" : "Chat Binance belum terhubung"}
+                {serverBot.lastTickAt ? ` · cek terakhir ${new Date(serverBot.lastTickAt).toLocaleTimeString("id-ID")}` : ""}
+              </span>
+            </div>
+            {serverBot.autoPushRunning && serverBot.lastTickNote && (
+              <div className="text-[0.68rem] text-bid/80">Target server: {serverBot.lastTickNote}</div>
+            )}
+            {serverBot.events.length > 0 && (
+              <details className="text-[0.68rem] text-foreground/80">
+                <summary className="cursor-pointer text-bid">Aktivitas bot server ({serverBot.events.length})</summary>
+                <ul className="mt-1 max-h-48 space-y-0.5 overflow-auto">
+                  {serverBot.events.map((e, i) => (
+                    <li key={i} className={e.ok === false ? "text-ask" : ""}>
+                      <span className="text-muted-foreground">{new Date(e.t).toLocaleTimeString("id-ID")}</span> {e.message}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
           </div>
         )}
 

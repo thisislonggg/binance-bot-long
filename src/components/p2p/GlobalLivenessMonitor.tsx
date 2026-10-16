@@ -8,6 +8,7 @@ import {
   processLivenessChatMessage,
 } from "@/lib/liveness-verifier";
 import { getVerifierState } from "@/lib/payment-verifier";
+import { getServerBotStatus } from "@/lib/server-bot/status";
 
 const LOCAL_STORAGE_KEY = "binance_verified_liveness_orders_cache";
 
@@ -118,7 +119,16 @@ export function GlobalLivenessMonitor({ sessionToken }: { sessionToken?: string 
     refetchInterval: 15_000,
   });
 
-  const livenessEnabled = verifierQuery.data?.settings?.liveness_enabled !== false;
+  // Bila bot server aktif, server sendiri yang tersambung ke chat Binance: tab ini tidak perlu.
+  const serverBotQuery = useQuery({
+    queryKey: ["server-bot-status"],
+    queryFn: () => getServerBotStatus({ data: { sessionToken: sessionToken ?? undefined } }),
+    enabled: Boolean(sessionToken),
+    refetchInterval: 10_000,
+    retry: 1,
+  });
+  const serverHandlesChat = Boolean(serverBotQuery.data?.active);
+  const livenessEnabled = verifierQuery.data?.settings?.liveness_enabled !== false && !serverHandlesChat;
 
   // Watchdog: hanya MEMANTAU & memberi notifikasi. Keputusan auto-verify sepenuhnya di server
   // (getVerifierState), yang menegakkan syarat keamanan & sakelar pengaturan.

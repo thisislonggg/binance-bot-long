@@ -38,14 +38,16 @@ let inMemoryLastPushed: {
   sellStatus?: string;
 } = {};
 
-let inMemoryBotConfig: CompetitorFilterConfig | null = null;
+// Di globalThis: modul ini bisa termuat lebih dari sekali (chunk server function vs bot server),
+// dan semuanya harus melihat config yang sama bila Supabase tidak dipakai.
+const cfgGlobal = globalThis as typeof globalThis & { __p2pBotConfigMem?: CompetitorFilterConfig | null };
 
 /**
  * Mengambil konfigurasi bot P2P dari Supabase user_settings atau fallback in-memory/default/env.
  */
 export async function getBotConfigServer(): Promise<CompetitorFilterConfig> {
   const db = getSupabase();
-  let cfg = inMemoryBotConfig ? { ...inMemoryBotConfig } : { ...DEFAULT_BOT_CONFIG };
+  let cfg = cfgGlobal.__p2pBotConfigMem ? { ...cfgGlobal.__p2pBotConfigMem } : { ...DEFAULT_BOT_CONFIG };
 
   if (db) {
     try {
@@ -58,7 +60,7 @@ export async function getBotConfigServer(): Promise<CompetitorFilterConfig> {
       if (data?.value) {
         const parsed = JSON.parse(data.value);
         cfg = { ...cfg, ...parsed };
-        inMemoryBotConfig = { ...cfg };
+        cfgGlobal.__p2pBotConfigMem = { ...cfg };
       }
     } catch {
       // Abaikan jika database belum siap
@@ -80,9 +82,9 @@ export async function getBotConfigServer(): Promise<CompetitorFilterConfig> {
  * Menyimpan konfigurasi bot ke Supabase user_settings agar bisa dibaca background runner.
  */
 export async function saveBotConfigServer(config: Partial<CompetitorFilterConfig>): Promise<boolean> {
-  const existing = inMemoryBotConfig || (await getBotConfigServer());
+  const existing = cfgGlobal.__p2pBotConfigMem || (await getBotConfigServer());
   const merged = { ...existing, ...config };
-  inMemoryBotConfig = merged;
+  cfgGlobal.__p2pBotConfigMem = merged;
 
   const db = getSupabase();
   if (!db) return true;

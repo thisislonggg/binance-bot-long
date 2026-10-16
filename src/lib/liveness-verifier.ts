@@ -429,6 +429,17 @@ export const getBinanceChatCredentials = createServerFn({ method: "POST" })
     error?: string;
   }> => {
     await requireSession(data.sessionToken);
+    return getBinanceChatCredentialsInternal();
+  });
+
+/** Isi getBinanceChatCredentials tanpa cek sesi: dipanggil langsung oleh bot server. */
+export async function getBinanceChatCredentialsInternal(): Promise<{
+    ok: boolean;
+    chatWssUrl?: string;
+    listenKey?: string;
+    listenToken?: string;
+    error?: string;
+  }> {
 
     const apiKey = process.env["BINANCE_API_KEY"]?.trim();
     const apiSecret = process.env["BINANCE_API_SECRET"]?.trim();
@@ -497,7 +508,7 @@ export const getBinanceChatCredentials = createServerFn({ method: "POST" })
         error: err?.message || String(err),
       };
     }
-  });
+  }
 
 // ── Server Function: Proses Pesan Chat (Auto / Tempel / Webhook) ────────────
 const processLivenessChatMessageSchema = z.object({
@@ -527,6 +538,11 @@ export const processLivenessChatMessage = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => processLivenessChatMessageSchema.parse(data))
   .handler(async ({ data }): Promise<ProcessChatMessageResult> => {
     await requireSession(data.sessionToken);
+    return processLivenessChatInternal(data);
+  });
+
+/** Isi processLivenessChatMessage tanpa cek sesi: dipanggil langsung oleh bot server. */
+export async function processLivenessChatInternal(data: z.infer<typeof processLivenessChatMessageSchema>): Promise<ProcessChatMessageResult> {
 
     const parsed = parseLivenessChatMessage(data.chatText);
 
@@ -650,7 +666,7 @@ export const processLivenessChatMessage = createServerFn({ method: "POST" })
       record: newRecord,
       message: `✅ Order #${orderNumber}: buyer selesai liveness check.${autoVerifyNote}`,
     };
-  });
+  }
 
 // ── Server Function: Setel Status Liveness Manual (1-Click di Tabel Order) ──
 const setOrderLivenessStatusSchema = z.object({

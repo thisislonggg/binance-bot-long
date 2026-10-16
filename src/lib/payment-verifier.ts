@@ -124,6 +124,11 @@ export const getVerifierState = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => getVerifierStateSchema.parse(data))
   .handler(async ({ data }): Promise<VerifierState> => {
     await requireSession(data.sessionToken);
+    return getVerifierStateInternal();
+  });
+
+/** Isi getVerifierState tanpa cek sesi: dipanggil langsung oleh bot server. */
+export async function getVerifierStateInternal(): Promise<VerifierState> {
     const db = getSupabase();
 
     // Tanpa Supabase, pengaturan disimpan di memori proses (globalThis: modul bisa termuat dua kali).
@@ -311,7 +316,7 @@ export const getVerifierState = createServerFn({ method: "POST" })
       activeOrders,
       recentLogs: recentLogs.slice(0, 30),
     };
-  });
+  }
 
 // ── Server Function: Auto-Verifikasi Semua Order Aktif (1-Click) ─────────────
 const autoVerifyAllSchema = z.object({ sessionToken: z.string().optional() });
@@ -1263,6 +1268,11 @@ export const getActiveP2pOrdersSummary = createServerFn({ method: "POST" })
       };
     }
 
+    return getActiveOrdersSummaryInternal();
+  });
+
+/** Ringkasan order aktif (BUY & SELL) tanpa cek sesi: dipakai juga oleh bot server. */
+export async function getActiveOrdersSummaryInternal() {
     const allActive = await fetchActiveP2pSellOrdersInternal();
     const activeBuyOrders = allActive.filter((o) => o.tradeType === "BUY");
     const activeSellOrders = allActive.filter((o) => o.tradeType === "SELL");
@@ -1287,6 +1297,6 @@ export const getActiveP2pOrdersSummary = createServerFn({ method: "POST" })
       totalActiveSellUsdt,
       totalActiveSellIdr,
     };
-  });
+}
 
 

@@ -484,6 +484,43 @@ const inputSchema = z.object({
   have: z.object({ ads: z.string().max(20).optional(), news: z.string().max(20).optional(), history: z.string().max(20).optional() }).default({}),
 });
 
+/**
+ * Data pasar untuk bot server: orderbook live kedua sisi, data lintas platform, dan fair price.
+ * Memakai cache orderbook bersama yang sama dengan dashboard (tidak menambah request ke Binance).
+ */
+export async function getMarketDataInternal(): Promise<{
+  sellRefAds: Ad[];
+  buyRefAds: Ad[];
+  fairPrice: number;
+  indodaxSpotPrice: number;
+  isMock: boolean;
+  fetchedAt: number;
+}> {
+  const crossPlatform = await fetchCrossPlatform();
+  const dynamicBase =
+    crossPlatform["indodax_usdt_idr_spot"] || crossPlatform["coingecko_usdt_idr"] || crossPlatform["forex_usd_idr"] || 16850;
+  const [sellRefRaw, buyRefRaw] = await Promise.all([fetchP2pAds("BUY", dynamicBase), fetchP2pAds("SELL", dynamicBase)]);
+  const snapshot = buildSnapshot({
+    sellRefRaw,
+    buyRefRaw,
+    crossPlatform,
+    newsItems: [],
+    analyzedNews: [],
+    history: [],
+    capitalUsdt: 10_000,
+    buyFeeIdr: 30,
+  });
+  const isMock = [...sellRefRaw, ...buyRefRaw].some((a) => a.adv_no?.startsWith("mock_"));
+  return {
+    sellRefAds: snapshot.all_sell_ads ?? snapshot.top_sell_ref_ads,
+    buyRefAds: snapshot.all_buy_ads ?? snapshot.top_buy_ref_ads,
+    fairPrice: snapshot.fair_price || 0,
+    indodaxSpotPrice: crossPlatform["indodax_usdt_idr_spot"] || 0,
+    isMock,
+    fetchedAt: Date.now(),
+  };
+}
+
 export const getMarketSnapshot = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => inputSchema.parse(data))
   .handler(async ({ data }): Promise<SnapshotWire> => {

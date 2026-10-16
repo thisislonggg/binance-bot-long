@@ -571,6 +571,12 @@ export const getPnlSummary = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => getPnlInputSchema.parse(data))
   .handler(async ({ data }): Promise<PnlSummary> => {
     await requireSession(data.sessionToken);
+    return computePnlSummaryInternal();
+  },
+);
+
+/** Isi getPnlSummary tanpa cek sesi: dipanggil langsung oleh bot server. */
+export async function computePnlSummaryInternal(): Promise<PnlSummary> {
 
     const db = getSupabase();
     if (!db) return EMPTY_SUMMARY;
@@ -910,6 +916,5 @@ export const getPnlSummary = createServerFn({ method: "POST" })
     };
 
 
-  },
-);
+  }
 

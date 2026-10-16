@@ -57,11 +57,21 @@ function isValidWebhookSecret(provided: string | null): boolean {
   return diff === 0;
 }
 
-// Catatan: Cron background auto-pricing loop pada server telah dinonaktifkan permanen sesuai permintaan pengguna demi keamanan harga.
-// Auto-pricing sepenuhnya berjalan aman langsung dari dashboard browser pengguna.
+// Bot server (hanya server lokal yang berjalan terus, env SERVER_BOT=1): auto-push harga, auto-verify
+// liveness, dan auto-sync berjalan tanpa tab browser. Di Vercel/serverless env ini tidak diisi.
+let serverBotRequested = false;
+function startServerBotOnce(): void {
+  if (serverBotRequested || process.env["SERVER_BOT"] !== "1") return;
+  serverBotRequested = true;
+  void import("./lib/server-bot/runner")
+    .then((m) => m.startServerBot())
+    .catch((err) => console.error("[server-bot] gagal dimulai:", err));
+}
+startServerBotOnce();
 
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
+    startServerBotOnce(); // jaga-jaga bila modul entry dimuat malas (idempoten)
     try {
       const url = new URL(request.url);
       const cleanPath = url.pathname.replace(/\/+/g, "/");

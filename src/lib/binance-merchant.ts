@@ -58,10 +58,12 @@ export type MerchantApiResponse<T = unknown> = {
 // ── Rem Darurat Rate Limit Binance ───────────────────────────────────────────
 // HTTP 429 / kode -1003 = terlalu banyak request; HTTP 418 = IP sudah di-ban sementara.
 // Setelah sinyal itu, SEMUA request signed ditahan sampai jeda selesai agar ban tidak diperpanjang.
-let binanceRateLimitedUntil = 0;
+// Di globalThis: bot server & server function (chunk terpisah) harus berbagi rem yang sama.
+const rateLimitGlobal = globalThis as typeof globalThis & { __p2pBinanceRateLimit?: { until: number } };
+const rateLimit = (rateLimitGlobal.__p2pBinanceRateLimit ??= { until: 0 });
 
 function rateLimitedResponse<T>(): MerchantApiResponse<T> | null {
-  const waitMs = binanceRateLimitedUntil - Date.now();
+  const waitMs = rateLimit.until - Date.now();
   if (waitMs <= 0) return null;
   return {
     ok: false,
@@ -77,7 +79,7 @@ function noteRateLimit(resp: Response, json: Record<string, unknown>): boolean {
   const retryAfterSec = Number(resp.headers.get("retry-after"));
   const pauseMs =
     Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? retryAfterSec * 1000 : resp.status === 418 ? 120_000 : 60_000;
-  binanceRateLimitedUntil = Math.max(binanceRateLimitedUntil, Date.now() + pauseMs);
+  rateLimit.until = Math.max(rateLimit.until, Date.now() + pauseMs);
   console.warn(`[BinanceMerchant] Rate limit (HTTP ${resp.status}, code ${code}). Request ditahan ${pauseMs / 1000}s.`);
   return true;
 }
@@ -1142,7 +1144,7 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
         isLiveStockVerified = isStockUpdateRequested && Math.abs(live.stock - targetStock) <= 0.05;
       }
       if (isLivePriceVerified && (!isStockUpdateRequested || usedStockPreservedFallback || isLiveStockVerified)) break;
-      if (binanceRateLimitedUntil > Date.now()) break;
+      if (rateLimit.until > Date.now()) break;
     }
 
     // KASUS A: Binance berhasil menerima request (updateSucceeded === true)

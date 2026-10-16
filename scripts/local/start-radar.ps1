@@ -55,6 +55,9 @@ $env:NITRO_PORT = "$Port"
 # Hanya terima koneksi dari komputer ini; akses dari HP lewat "tailscale serve" (terenkripsi,
 # khusus perangkat di akun Tailscale Anda). Isi NITRO_HOST=0.0.0.0 di .env untuk membuka ke jaringan lokal.
 if (-not $env:NITRO_HOST) { $env:NITRO_HOST = "127.0.0.1" }
+# Bot server: auto-push, auto-verify & auto-sync berjalan tanpa tab browser. Isi SERVER_BOT=0 di .env
+# untuk kembali ke mode lama (bot dijalankan dari tab dashboard).
+if (-not $env:SERVER_BOT) { $env:SERVER_BOT = "1" }
 
 # PowerShell 5.1: dengan "Stop", baris stderr dari node/npm dianggap error fatal dan mematikan skrip.
 $ErrorActionPreference = "Continue"
@@ -72,7 +75,17 @@ if (-not (Test-Path $entry)) {
 Write-Log "Radar P2P berjalan di http://localhost:$Port"
 while ($true) {
   $started = Get-Date
+  # Modul bot server dimuat saat request pertama: kirim satu request "pemanasan" agar bot langsung aktif
+  # setelah boot/restart walau belum ada yang membuka dashboard.
+  $warmup = Start-Job -ArgumentList $Port -ScriptBlock {
+    param($p)
+    for ($i = 0; $i -lt 60; $i++) {
+      Start-Sleep -Seconds 2
+      try { Invoke-WebRequest "http://127.0.0.1:$p/" -UseBasicParsing -TimeoutSec 20 | Out-Null; break } catch {}
+    }
+  }
   & node $entry 2>&1 | ForEach-Object { Write-Log $_ }
+  Remove-Job $warmup -Force -ErrorAction SilentlyContinue
   $code = $LASTEXITCODE
   # Berhenti cepat berulang-ulang (mis. port dipakai) = jangan spam restart.
   $wait = if (((Get-Date) - $started).TotalSeconds -lt 10) { 30 } else { 5 }

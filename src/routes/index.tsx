@@ -66,6 +66,7 @@ import {
 import { cn } from "@/lib/utils";
 import { login } from "@/lib/auth";
 import { getBotMasterSwitch, setBotMasterSwitch } from "@/lib/bot-master-switch";
+import { getServerBotStatus } from "@/lib/server-bot/status";
 import {
   getBinanceFundingBalance,
   getBinanceSyncStatus,
@@ -376,6 +377,17 @@ function Dashboard() {
     onError: (err: any) => toast.error(`Gagal mengubah saklar utama: ${err.message}`),
   });
 
+  // Bot server aktif = auto-sync dijalankan server; tab tidak perlu ikut.
+  const getServerBotStatusFn = useServerFn(getServerBotStatus);
+  const serverBotStatusQuery = useQuery({
+    queryKey: ["server-bot-status"],
+    queryFn: () => getServerBotStatusFn({ data: { sessionToken: sessionToken ?? undefined } }),
+    enabled: Boolean(sessionToken),
+    refetchInterval: 10_000,
+    retry: 1,
+  });
+  const serverBotActive = Boolean(serverBotStatusQuery.data?.active);
+
   // Query Status Binance Sync
   const syncStatusQuery = useQuery({
     queryKey: ["binance-sync-status"],
@@ -600,7 +612,7 @@ function Dashboard() {
   const nextAutoSyncAtRef = useRef(0);
 
   useEffect(() => {
-    if (!autoSyncBinance || !botsEnabled || !syncStatusQuery.data?.available) return;
+    if (!autoSyncBinance || !botsEnabled || serverBotActive || !syncStatusQuery.data?.available) return;
 
     nextAutoSyncAtRef.current = Date.now() + BINANCE_SYNC_SECONDS * 1000;
     setSyncCountdown(BINANCE_SYNC_SECONDS);
@@ -617,7 +629,7 @@ function Dashboard() {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [autoSyncBinance, botsEnabled, syncStatusQuery.data?.available]);
+  }, [autoSyncBinance, botsEnabled, serverBotActive, syncStatusQuery.data?.available]);
 
   // Update histori saat snapshot baru masuk
   useEffect(() => {
