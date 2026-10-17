@@ -55,6 +55,7 @@ import {
 } from "@/lib/liveness-verifier";
 import { saveLocalVerifiedOrder } from "./GlobalLivenessMonitor";
 import { LivenessDiagnostics } from "./LivenessDiagnostics";
+import { ExpectedBalanceCard } from "./ExpectedBalanceCard";
 
 interface PaymentVerifierPanelProps {
   sessionToken?: string | null;
@@ -1282,7 +1283,9 @@ Completed`;
           )}
         </div>
 
-        {/* Kolom Kanan (1 Kolom): Input & Update Saldo Bank Manual/Emulator */}
+        {/* Kolom Kanan (1 Kolom): Perkiraan Saldo + Input & Update Saldo Bank Manual/Emulator */}
+        <div className="space-y-5">
+        <ExpectedBalanceCard sessionToken={sessionToken} />
         <div className="panel p-3.5 sm:p-4.5 space-y-4">
           <div className="border-b border-border/60 pb-2.5">
             <h3 className="text-sm font-bold text-foreground flex items-center gap-2 uppercase tracking-wide">
@@ -1355,6 +1358,7 @@ Completed`;
               💡 <strong>Tips Otomatis:</strong> Anda juga bisa menjalankan script background pembaca layar BRImo di PC agar input saldo ini berjalan otomatis 100% tanpa ketik manual.
             </p>
           </div>
+        </div>
         </div>
       </div>
 

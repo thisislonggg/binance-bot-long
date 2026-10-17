@@ -52,7 +52,7 @@ export type BinanceC2cOrder = {
 
 // ── Fetch halaman dari Binance C2C API dengan Paginasi Penuh ─────────────────
 
-async function fetchC2cOrdersForWindow(
+export async function fetchC2cOrdersForWindow(
   apiKey: string,
   apiSecret: string,
   tradeType: "BUY" | "SELL",
