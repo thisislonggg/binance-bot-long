@@ -5546,6 +5546,45 @@ export function AutoPricingBotPanel({
                         <span>Perhatian: Limit Bawah harus lebih kecil dari Limit Atas!</span>
                       </div>
                     )}
+
+                    {/* Mode stok tipis: harga ikut penjual ber-limit kecil */}
+                    <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-border/40">
+                      <div className="flex flex-col">
+                        <span className="text-xs font-semibold text-foreground">Harga Ikut Penjual Limit Kecil Saat Stok Tipis:</span>
+                        <span className="text-[0.65rem] text-muted-foreground">
+                          Jika nilai stok jual di bawah Limit Bawah, acuan harga diambil dari kompetitor yang min transaksinya ≤ kapasitas stok Anda.
+                        </span>
+                      </div>
+                      <Switch
+                        checked={config.lowStockSellPricingEnabled !== false}
+                        onCheckedChange={(v) => updateConfig({ lowStockSellPricingEnabled: v })}
+                      />
+                    </div>
+                    {config.lowStockSellPricingEnabled !== false && (
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[0.65rem] text-muted-foreground">Hanya naikkan harga (tidak pernah lebih murah dari acuan normal)</span>
+                        <Switch
+                          checked={config.lowStockSellOnlyRaise !== false}
+                          onCheckedChange={(v) => updateConfig({ lowStockSellOnlyRaise: v })}
+                        />
+                      </div>
+                    )}
+                    {pricingResult.lowStockSell && (
+                      <div
+                        className={`rounded-md border p-2 text-[0.65rem] leading-relaxed ${
+                          pricingResult.lowStockSell.applied
+                            ? "border-primary/40 bg-primary/10 text-foreground"
+                            : "border-border/60 bg-surface text-muted-foreground"
+                        }`}
+                      >
+                        <strong>
+                          Stok tipis aktif · {pricingResult.lowStockSell.stockUsdt.toLocaleString("id-ID", { maximumFractionDigits: 2 })} USDT
+                          (± Rp {pricingResult.lowStockSell.capacityIdr.toLocaleString("id-ID")})
+                        </strong>
+                        <br />
+                        {pricingResult.lowStockSell.reason}
+                      </div>
+                    )}
                   </div>
 
                   {/* 5. Live Summary Data Terkirim ke Binance */}

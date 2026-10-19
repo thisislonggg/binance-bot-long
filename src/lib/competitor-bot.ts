@@ -96,6 +96,8 @@ export type CompetitorFilterConfig = {
   autoPushToBinance: boolean;             // Otomatis push perubahan harga ke Binance P2P
   autoPushMinIntervalSec: number;         // Interval minimal push (detik, default 1)
   autoOnlineWhenStockAvailable?: boolean; // Nyalakan lagi iklan OFFLINE otomatis saat stok/kas tersedia kembali (default true)
+  lowStockSellPricingEnabled?: boolean;   // Stok tipis (nilai stok < limit bawah jual): harga jual ikut kompetitor ber-limit kecil (default true)
+  lowStockSellOnlyRaise?: boolean;        // Mode stok tipis hanya boleh MENAIKKAN harga jual, tidak pernah menurunkan (default true)
 };
 
 export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
@@ -318,6 +320,17 @@ export type CompetitorPricingResult = {
   evaluatedSellAds: EvaluatedAd[];
   qualifiedBuyAds: Ad[];
   evaluatedBuyAds: EvaluatedAd[];
+  /** Mode stok tipis sisi jual: ada saat nilai stok jual lebih kecil dari limit bawah iklan jual. */
+  lowStockSell?: {
+    /** true = acuan harga jual memakai kompetitor ber-limit kecil */
+    applied: boolean;
+    reason: string;
+    stockUsdt: number;
+    capacityIdr: number;
+    normalBasePrice: number;
+    smallBasePrice: number;
+    competitorCount: number;
+  };
   sellGuard: {
     triggered: boolean;
     reason?: string;
@@ -906,7 +919,7 @@ export function computeCompetitorPricing(input: {
   calculatedBuyFloor = Math.round(calculatedBuyFloor);
 
   // 1. Evaluasi dan Filter Merchant Kompetitor Jual & Beli dengan batas pengaman floor
-  const { qualified: qualifiedSell, evaluated: evaluatedSell } = evaluateCompetitorAds(
+  let { qualified: qualifiedSell, evaluated: evaluatedSell } = evaluateCompetitorAds(
     sellRefAds,
     config,
     "sell_ref",
@@ -920,10 +933,10 @@ export function computeCompetitorPricing(input: {
   );
 
   // 2. Pilih Target Merchant Sesuai Peringkat atau Agregasi Top N
-  const sellRankIdx = Math.min(Math.max(config.targetRank - 1, 0), Math.max(qualifiedSell.length - 1, 0));
+  let sellRankIdx = Math.min(Math.max(config.targetRank - 1, 0), Math.max(qualifiedSell.length - 1, 0));
   const buyRankIdx = Math.min(Math.max(config.targetRank - 1, 0), Math.max(qualifiedBuy.length - 1, 0));
 
-  const sellTargetMerchant = qualifiedSell[sellRankIdx] ?? null;
+  let sellTargetMerchant = qualifiedSell[sellRankIdx] ?? null;
   const buyTargetMerchant = qualifiedBuy[buyRankIdx] ?? null;
 
   const topNCount = Math.max(2, config.targetTopCount || 3);
@@ -1054,7 +1067,69 @@ export function computeCompetitorPricing(input: {
   // 1. Hitung Harga JUAL Dasar & Rekomendasi Terlebih Dahulu
   // Batas Atas Beli (Buy Ceiling) diturunkan langsung dari Harga Jual (Harga Jual Bot - Min Spread Guard),
   // sehingga Harga Jual harus dihitung dan diselesaikan terlebih dahulu.
+  // ── Mode Stok Tipis (Jual) ─────────────────────────────────────────────────
+  // Saat nilai stok jual < limit bawah iklan jual, limit bawah iklan diturunkan otomatis (lihat
+  // updateMerchantAdInternal) sehingga iklan kita hanya melayani pembeli bernominal kecil. Pembeli kecil
+  // tidak bisa memakai iklan kompetitor yang min transaksinya lebih besar dari kapasitas kita, jadi acuan
+  // harga diambil dari kompetitor yang juga melayani nominal kecil (min transaksi <= kapasitas stok kita).
+  let lowStockSell: CompetitorPricingResult["lowStockSell"];
+  const sellAdStockUsdt =
+    config.manualSellStockUsdt && config.manualSellStockUsdt > 0
+      ? config.manualSellStockUsdt
+      : Math.floor((Math.max(0, liveStockUsdt) / 1.0005) * 100) / 100;
+  const sellMinLimitIdr = config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0 ? config.manualSellMinLimitIdr : 0;
+  const sellCapacityIdr = Math.floor(sellAdStockUsdt * liveMarketAnchor);
+  if (
+    config.lowStockSellPricingEnabled !== false &&
+    !(config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0) &&
+    sellMinLimitIdr > 0 &&
+    sellCapacityIdr >= 1_000_000 && // di bawah ini iklan jual di-offline-kan (sisa stok remah)
+    sellCapacityIdr <= sellMinLimitIdr
+  ) {
+    const smallConfig: CompetitorFilterConfig = {
+      ...config,
+      minOrderLimitIdr: config.minOrderLimitIdr > 0 ? Math.min(config.minOrderLimitIdr, sellCapacityIdr) : sellCapacityIdr,
+      minMaxLimitIdr: 0,
+      minUsdtAmount: Math.min(config.minUsdtAmount, Math.floor(sellAdStockUsdt)),
+    };
+    const small = evaluateCompetitorAds(sellRefAds, smallConfig, "sell_ref", calculatedSellFloor);
+    const smallIdx = Math.min(Math.max(config.targetRank - 1, 0), Math.max(small.qualified.length - 1, 0));
+    const smallTarget = small.qualified[smallIdx] ?? null;
+    const normalBase = computeBasePrice("sell", qualifiedSell, sellRefAds, sellTargetMerchant, resolvedFallbackSell);
+    const smallBase = computeBasePrice("sell", small.qualified, sellRefAds, smallTarget, resolvedFallbackSell);
+    const onlyRaise = config.lowStockSellOnlyRaise !== false;
+    const fmt = (n: number) => `Rp ${n.toLocaleString("id-ID")}`;
+
+    let applied = false;
+    let reason: string;
+    if (small.qualified.length === 0 || smallBase.isFallback) {
+      reason = "Tidak ada kompetitor ber-limit kecil yang lolos filter, harga tetap mengikuti acuan normal.";
+    } else if (onlyRaise && !normalBase.isFallback && smallBase.basePrice < normalBase.basePrice) {
+      reason = `Kompetitor limit kecil (${fmt(smallBase.basePrice)}) lebih murah dari acuan normal (${fmt(normalBase.basePrice)}), harga tidak diturunkan.`;
+    } else {
+      applied = true;
+      reason = `Mengikuti kompetitor limit kecil: ${smallBase.desc} (acuan normal ${fmt(normalBase.basePrice)}).`;
+    }
+
+    if (applied) {
+      qualifiedSell = small.qualified;
+      evaluatedSell = small.evaluated;
+      sellRankIdx = smallIdx;
+      sellTargetMerchant = smallTarget;
+    }
+    lowStockSell = {
+      applied,
+      reason,
+      stockUsdt: sellAdStockUsdt,
+      capacityIdr: sellCapacityIdr,
+      normalBasePrice: normalBase.basePrice,
+      smallBasePrice: smallBase.basePrice,
+      competitorCount: small.qualified.length,
+    };
+  }
+
   const sellBase = computeBasePrice("sell", qualifiedSell, sellRefAds, sellTargetMerchant, resolvedFallbackSell);
+  if (lowStockSell?.applied) sellBase.desc = `Stok Tipis · ${sellBase.desc}`;
   const naturalSellTargetPrice = sellBase.isFallback
     ? sellBase.basePrice
     : sellBase.basePrice + config.sellOffsetRp;
@@ -1638,6 +1713,7 @@ export function computeCompetitorPricing(input: {
     evaluatedSellAds: evaluatedSell,
     qualifiedBuyAds: qualifiedBuy,
     evaluatedBuyAds: evaluatedBuy,
+    ...(lowStockSell ? { lowStockSell } : {}),
     sellGuard,
     buyGuard,
     spreadAbs,
@@ -1713,6 +1789,8 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (typeof merged.manualBuyPriceOverrideRp !== "number") merged.manualBuyPriceOverrideRp = 0;
     if (typeof merged.autoPushToBinance !== "boolean") merged.autoPushToBinance = false;
     if (typeof merged.autoOnlineWhenStockAvailable !== "boolean") merged.autoOnlineWhenStockAvailable = true;
+    if (typeof merged.lowStockSellPricingEnabled !== "boolean") merged.lowStockSellPricingEnabled = true;
+    if (typeof merged.lowStockSellOnlyRaise !== "boolean") merged.lowStockSellOnlyRaise = true;
     if (typeof merged.autoPushMinIntervalSec !== "number" || merged.autoPushMinIntervalSec < 1) merged.autoPushMinIntervalSec = 1;
     if (typeof merged.autoFollowNextWhenLimitReached !== "boolean") merged.autoFollowNextWhenLimitReached = true;
     if (typeof merged.ownMerchantNickname !== "string") merged.ownMerchantNickname = "";
