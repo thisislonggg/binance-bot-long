@@ -45,6 +45,11 @@ export type CompetitorFilterConfig = {
   maxOutlierGapRp: number;        // Batas selisih lonjakan harga ekstrem (default: 40 Rp)
   buyGapTrapEnabled: boolean;     // Filter Anti-Pancingan Pucuk Beli (Gap Trap): abaikan Rank 1 jika melonjak >= threshold dari Rank 2
   buyGapTrapThresholdRp: number;  // Batas toleransi lonjakan gap beli dari rank di bawahnya (default: 20 Rp)
+  gapTrapStackDepth?: number;     // Gap Trap: cek celah hingga N iklan teratas (pancingan bertumpuk), default 3
+  sellGapTrapEnabled?: boolean;   // Gap Trap Jual: abaikan iklan jual termurah terverifikasi yang jauh di bawah sisanya (default true)
+  sellGapTrapThresholdRp?: number; // Batas selisih Gap Trap Jual (default 20 Rp)
+  sellGapFillEnabled?: boolean;   // Isi Celah Jual: naikkan harga jual sampai tepat di bawah iklan berikutnya tanpa turun peringkat (default true)
+  sellGapFillMaxRp?: number;      // Maksimal kenaikan harga dari Isi Celah per USDT (default 30 Rp)
   spotDumpProtectionEnabled: boolean; // Proteksi Dump Pasar Spot (Indodax Spot Lead-Indicator): tahan harga beli jika melebihi spot Indodax + buffer
   spotDumpBufferRp: number;       // Toleransi buffer di atas harga spot Indodax (default: 15 Rp)
   priceWarGuardEnabled?: boolean; // Deteksi war antar bot: tahan harga saat kompetitor saling overcut beruntun
@@ -133,6 +138,11 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   maxOutlierGapRp: 40,
   buyGapTrapEnabled: true,
   buyGapTrapThresholdRp: 20,
+  gapTrapStackDepth: 3,
+  sellGapTrapEnabled: true,
+  sellGapTrapThresholdRp: 20,
+  sellGapFillEnabled: true,
+  sellGapFillMaxRp: 30,
   spotDumpProtectionEnabled: false,
   spotDumpBufferRp: 15,
   priceWarGuardEnabled: true,
@@ -320,6 +330,16 @@ export type CompetitorPricingResult = {
   evaluatedSellAds: EvaluatedAd[];
   qualifiedBuyAds: Ad[];
   evaluatedBuyAds: EvaluatedAd[];
+  /** Gap Trap yang sedang terpicu per sisi (null = tidak ada pancingan). */
+  gapTrapBuy: GapTrapDetection | null;
+  gapTrapSell: GapTrapDetection | null;
+  /** Isi Celah Jual: harga dinaikkan sampai tepat di bawah iklan berikutnya di orderbook (peringkat tetap). */
+  sellGapFill?: {
+    fromPrice: number;
+    toPrice: number;
+    nextPrice: number;
+    nextMerchant: string;
+  };
   /** Mode stok tipis sisi jual: ada saat nilai stok jual lebih kecil dari limit bawah iklan jual. */
   lowStockSell?: {
     /** true = acuan harga jual memakai kompetitor ber-limit kecil */
@@ -395,6 +415,58 @@ const EWALLET_KEYWORDS = [
   "sakuku",
 ];
 
+/** Iklan milik sendiri (nomor iklan beli/jual atau nickname merchant sendiri). */
+export function isOwnAdFor(ad: Ad, config: CompetitorFilterConfig): boolean {
+  const normalizeId = (s: unknown) => String(s || "").trim().replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
+  const cleanBuyAdvNo = normalizeId(config.merchantBuyAdvNo);
+  const cleanSellAdvNo = normalizeId(config.merchantSellAdvNo);
+  const cleanAdAdvNo = normalizeId(ad.adv_no);
+  const ownNickname = (config.ownMerchantNickname || "").trim().toLowerCase();
+  const adMerchantName = (ad.merchant_name || "").trim().toLowerCase();
+  const matches = (own: string) => own && (cleanAdAdvNo === own || own.includes(cleanAdAdvNo) || cleanAdAdvNo.includes(own));
+  if (cleanAdAdvNo && (matches(cleanBuyAdvNo) || matches(cleanSellAdvNo))) return true;
+  return Boolean(
+    ownNickname && adMerchantName && (adMerchantName === ownNickname || adMerchantName.includes(ownNickname) || ownNickname.includes(adMerchantName)),
+  );
+}
+
+export type GapTrapDetection = {
+  /** Iklan pancingan (di atas celah) yang diabaikan bot. */
+  trapped: Ad[];
+  /** Iklan wajar pertama di bawah celah. */
+  firstLegit: Ad;
+  gap: number;
+  threshold: number;
+};
+
+/**
+ * Gap Trap: cari celah harga >= threshold di antara `depth` iklan teratas yang TERVERIFIKASI (iklan sendiri
+ * tidak dihitung). Semua iklan di atas celah pertama itu = pancingan, termasuk pancingan bertumpuk
+ * (mis. 2 iklan di Rp 17.960 & 17.959 sementara pasar wajar di Rp 17.935).
+ * Sisi beli: urutan harga tertinggi dulu. Sisi jual: urutan harga termurah dulu.
+ */
+export function detectGapTrap(
+  ads: Ad[],
+  config: CompetitorFilterConfig,
+  side: "buy" | "sell",
+): GapTrapDetection | null {
+  const enabled = side === "buy" ? config.buyGapTrapEnabled !== false : config.sellGapTrapEnabled !== false;
+  if (!enabled) return null;
+  const rawThreshold = side === "buy" ? config.buyGapTrapThresholdRp : config.sellGapTrapThresholdRp;
+  const threshold = rawThreshold && rawThreshold > 0 ? rawThreshold : 20;
+  const depth = Math.min(5, Math.max(1, Math.round(config.gapTrapStackDepth || 3)));
+  const verified = ads
+    .filter((a) => a.is_verified && a.price > 0 && !isOwnAdFor(a, config))
+    .sort((a, b) => (side === "buy" ? b.price - a.price : a.price - b.price));
+  for (let i = 0; i < Math.min(depth, verified.length - 1); i++) {
+    const cur = verified[i]!;
+    const next = verified[i + 1]!;
+    const gap = side === "buy" ? cur.price - next.price : next.price - cur.price;
+    if (gap >= threshold) return { trapped: verified.slice(0, i + 1), firstLegit: next, gap, threshold };
+  }
+  return null;
+}
+
 /**
  * Filter daftar iklan kompetitor berdasarkan konfigurasi penyaringan merchant
  */
@@ -407,9 +479,10 @@ export function evaluateCompetitorAds(
     ignoreMerchantBlacklist?: boolean;
     ignoreFloor?: boolean;
   },
-): { qualified: Ad[]; evaluated: EvaluatedAd[] } {
+): { qualified: Ad[]; evaluated: EvaluatedAd[]; gapTrap: GapTrapDetection | null } {
   const evaluated: EvaluatedAd[] = [];
   const qualified: Ad[] = [];
+  const pending: { ad: Ad; reasons: DisqualificationReason[] }[] = [];
 
   // Urutan iklan kompetitor:
   // Untuk sell_ref (kompetitor yang menjual ke pembeli): harga terendah paling kompetitif (ascending)
@@ -420,9 +493,6 @@ export function evaluateCompetitorAds(
 
   const scanLimit = config.scanAdLimit && config.scanAdLimit > 0 ? config.scanAdLimit : 100;
   const adsToScan = sortedAds.slice(0, scanLimit);
-  // Gap Trap sisi beli hanya membandingkan merchant TERVERIFIKASI (Rank 1 vs Rank 2 versi terverifikasi).
-  const verifiedSorted = sortedAds.filter((a) => a.is_verified);
-
   let currentRank = 1;
 
   for (const ad of adsToScan) {
@@ -699,23 +769,8 @@ export function evaluateCompetitorAds(
             const outlierGap = config.maxOutlierGapRp || 40;
             let trapped = false;
 
-            if (gapTrapActive) {
-              // Rank 1 & Rank 2 dihitung HANYA dari merchant terverifikasi; merchant tidak terverifikasi
-              // tidak ikut dibandingkan dan tidak pernah kena Gap Trap.
-              const verifiedNext = verifiedSorted[1];
-              if (ad.is_verified && verifiedSorted[0] === ad && verifiedNext) {
-                const gapThreshold =
-                  config.buyGapTrapThresholdRp && config.buyGapTrapThresholdRp > 0 ? config.buyGapTrapThresholdRp : 20;
-                const verifiedGap = ad.price - verifiedNext.price;
-                if (verifiedGap >= gapThreshold) {
-                  trapped = true;
-                  reasons.push({
-                    code: "PRICE_OUTLIER",
-                    message: `Gap Trap Beli: Selisih Rp ${verifiedGap} dari Rank #2 terverifikasi (${verifiedNext.merchant_name} @ Rp ${verifiedNext.price.toLocaleString("id-ID")}) melebihi batas Rp ${gapThreshold} (indikasi pancingan pucuk/spoofing)`,
-                  });
-                }
-              }
-            } else if (gap >= outlierGap && adIndex === 0) {
+            // Gap Trap (bila aktif) dinilai setelah semua filter lain, lihat bagian akhir fungsi ini.
+            if (!gapTrapActive && gap >= outlierGap && adIndex === 0) {
               trapped = true;
               reasons.push({
                 code: "PRICE_OUTLIER",
@@ -747,8 +802,32 @@ export function evaluateCompetitorAds(
       }
     }
 
-    const isQualified = reasons.length === 0;
-    if (isQualified) {
+    pending.push({ ad, reasons });
+  }
+
+  // ── Gap Trap ───────────────────────────────────────────────────────────────
+  // Pancingan = harga yang jauh dari pasar TERVERIFIKASI secara keseluruhan, jadi dibandingkan dengan semua
+  // merchant terverifikasi (bukan hanya yang lolos filter: daftar itu jarang sehingga celah wajar antar
+  // merchant besar akan salah dianggap pancingan).
+  const isBuyRef = side === "buy_ref";
+  const gapTrap = detectGapTrap(sortedAds, config, isBuyRef ? "buy" : "sell");
+  if (gapTrap) {
+    const trappedSet = new Set(gapTrap.trapped);
+    const stacked = gapTrap.trapped.length > 1 ? ` (pancingan bertumpuk: ${gapTrap.trapped.length} iklan)` : "";
+    const legit = `${gapTrap.firstLegit.merchant_name} @ Rp ${gapTrap.firstLegit.price.toLocaleString("id-ID")}`;
+    for (const p of pending) {
+      if (!trappedSet.has(p.ad)) continue;
+      p.reasons.push({
+        code: "PRICE_OUTLIER",
+        message: isBuyRef
+          ? `Gap Trap Beli: celah Rp ${gapTrap.gap} di atas harga wajar terverifikasi (${legit}) melebihi batas Rp ${gapTrap.threshold}${stacked}`
+          : `Gap Trap Jual: celah Rp ${gapTrap.gap} di bawah harga wajar terverifikasi (${legit}) melebihi batas Rp ${gapTrap.threshold}${stacked}`,
+      });
+    }
+  }
+
+  for (const { ad, reasons } of pending) {
+    if (reasons.length === 0) {
       qualified.push(ad);
       evaluated.push({
         ad,
@@ -765,7 +844,7 @@ export function evaluateCompetitorAds(
     }
   }
 
-  return { qualified, evaluated };
+  return { qualified, evaluated, gapTrap };
 }
 
 /**
@@ -919,13 +998,13 @@ export function computeCompetitorPricing(input: {
   calculatedBuyFloor = Math.round(calculatedBuyFloor);
 
   // 1. Evaluasi dan Filter Merchant Kompetitor Jual & Beli dengan batas pengaman floor
-  let { qualified: qualifiedSell, evaluated: evaluatedSell } = evaluateCompetitorAds(
+  let { qualified: qualifiedSell, evaluated: evaluatedSell, gapTrap: gapTrapSell } = evaluateCompetitorAds(
     sellRefAds,
     config,
     "sell_ref",
     calculatedSellFloor,
   );
-  const { qualified: qualifiedBuy, evaluated: evaluatedBuy } = evaluateCompetitorAds(
+  const { qualified: qualifiedBuy, evaluated: evaluatedBuy, gapTrap: gapTrapBuy } = evaluateCompetitorAds(
     buyRefAds,
     config,
     "buy_ref",
@@ -1114,6 +1193,7 @@ export function computeCompetitorPricing(input: {
     if (applied) {
       qualifiedSell = small.qualified;
       evaluatedSell = small.evaluated;
+      gapTrapSell = small.gapTrap;
       sellRankIdx = smallIdx;
       sellTargetMerchant = smallTarget;
     }
@@ -1279,6 +1359,31 @@ export function computeCompetitorPricing(input: {
   // Kunci Mutlak: Harga jual TIDAK BOLEH pernah berada di bawah calculatedSellFloor
   if (calculatedSellFloor > 0 && recommendedSellPrice < calculatedSellFloor) {
     recommendedSellPrice = calculatedSellFloor;
+  }
+
+  // ── Isi Celah Jual (Gap Fill) ──────────────────────────────────────────────
+  // Pembeli melihat SEMUA iklan, urut termurah. Selama tidak ada iklan lain di antara harga kita dan iklan
+  // berikutnya yang lebih mahal, menaikkan harga sampai tepat di bawah iklan itu tidak mengubah posisi kita.
+  let sellGapFill: CompetitorPricingResult["sellGapFill"];
+  if (
+    config.sellGapFillEnabled !== false &&
+    !(config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0) &&
+    recommendedSellPrice > 0
+  ) {
+    const base = recommendedSellPrice;
+    const nextAbove = (sellRefAds || [])
+      .filter((a) => !isOwnAd(a) && a.price > base)
+      .sort((a, b) => a.price - b.price)[0];
+    const maxRaise = config.sellGapFillMaxRp && config.sellGapFillMaxRp > 0 ? config.sellGapFillMaxRp : 30;
+    if (nextAbove) {
+      let target = Math.min(nextAbove.price - 1, base + maxRaise);
+      if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) target = Math.min(target, config.maxPriceBoundRp);
+      if (target > base) {
+        recommendedSellPrice = target;
+        sellGapFill = { fromPrice: base, toPrice: target, nextPrice: nextAbove.price, nextMerchant: nextAbove.merchant_name };
+        activeSellDesc = `${activeSellDesc} · Isi Celah +Rp ${target - base}`;
+      }
+    }
   }
 
   // 3. Hitung dan Terapkan Batas Pengaman BELI (Buy Ceiling Guard) dari Harga Pasar Kompetitor Murni
@@ -1714,6 +1819,9 @@ export function computeCompetitorPricing(input: {
     qualifiedBuyAds: qualifiedBuy,
     evaluatedBuyAds: evaluatedBuy,
     ...(lowStockSell ? { lowStockSell } : {}),
+    ...(sellGapFill ? { sellGapFill } : {}),
+    gapTrapBuy,
+    gapTrapSell,
     sellGuard,
     buyGuard,
     spreadAbs,
@@ -1791,6 +1899,11 @@ export function loadBotConfig(): CompetitorFilterConfig {
     if (typeof merged.autoOnlineWhenStockAvailable !== "boolean") merged.autoOnlineWhenStockAvailable = true;
     if (typeof merged.lowStockSellPricingEnabled !== "boolean") merged.lowStockSellPricingEnabled = true;
     if (typeof merged.lowStockSellOnlyRaise !== "boolean") merged.lowStockSellOnlyRaise = true;
+    if (typeof merged.gapTrapStackDepth !== "number" || merged.gapTrapStackDepth < 1) merged.gapTrapStackDepth = 3;
+    if (typeof merged.sellGapTrapEnabled !== "boolean") merged.sellGapTrapEnabled = true;
+    if (typeof merged.sellGapTrapThresholdRp !== "number" || merged.sellGapTrapThresholdRp < 5) merged.sellGapTrapThresholdRp = 20;
+    if (typeof merged.sellGapFillEnabled !== "boolean") merged.sellGapFillEnabled = true;
+    if (typeof merged.sellGapFillMaxRp !== "number" || merged.sellGapFillMaxRp < 1) merged.sellGapFillMaxRp = 30;
     if (typeof merged.autoPushMinIntervalSec !== "number" || merged.autoPushMinIntervalSec < 1) merged.autoPushMinIntervalSec = 1;
     if (typeof merged.autoFollowNextWhenLimitReached !== "boolean") merged.autoFollowNextWhenLimitReached = true;
     if (typeof merged.ownMerchantNickname !== "string") merged.ownMerchantNickname = "";

@@ -547,24 +547,8 @@ export function AutoPricingBotPanel({
 
   const hasAnyGuardTriggered = sellGuard.triggered || buyGuard.triggered || buyWarActive || sellWarActive;
 
-  // Analisis Gap Trap antara Rank 1 dan Rank 2 sisi Beli (Live Orderbook)
-  const buySideGaps = useMemo(() => {
-    // Sama dengan filter bot: Rank 1 & 2 hanya dari merchant terverifikasi.
-    const sorted = buyRefAds.filter((a) => a.is_verified).sort((a, b) => b.price - a.price);
-    if (sorted.length < 2) return null;
-    const rank1 = sorted[0];
-    const rank2 = sorted[1];
-    const gap = rank1.price - rank2.price;
-    const threshold = config.buyGapTrapThresholdRp || 20;
-    const isTrap = config.buyGapTrapEnabled !== false && gap >= threshold;
-    return {
-      rank1,
-      rank2,
-      gap,
-      threshold,
-      isTrap,
-    };
-  }, [buyRefAds, config.buyGapTrapEnabled, config.buyGapTrapThresholdRp]);
+  // Gap Trap live: hasil yang sama persis dipakai bot (terverifikasi & lolos filter, hingga N iklan teratas)
+  const gapTraps = { buy: pricingResult.gapTrapBuy, sell: pricingResult.gapTrapSell };
 
   const handleCopy = (price: number, side: "buy" | "sell") => {
     navigator.clipboard.writeText(String(Math.round(price)));
@@ -1595,14 +1579,14 @@ export function AutoPricingBotPanel({
               ) : null}
 
               {/* Indikator Gap Trap jika terdeteksi */}
-              {buySideGaps?.isTrap && (
+              {gapTraps.buy && (
                 <div className="flex items-center justify-between text-amber-400 font-semibold text-[0.68rem] bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1">
                   <span className="flex items-center gap-1">
                     <ShieldAlert className="size-3 text-amber-400 shrink-0" />
-                    <span>Gap Trap Terpicu (+Rp {buySideGaps.gap} &ge; Rp {buySideGaps.threshold}):</span>
+                    <span>Gap Trap Terpicu (celah Rp {gapTraps.buy.gap} &ge; Rp {gapTraps.buy.threshold}):</span>
                   </span>
                   <span className="font-bold text-sky-400">
-                    Abaikan Rank 1 &rarr; Bidik Rank #{buyRankUsed}
+                    Abaikan {gapTraps.buy.trapped.length} iklan teratas &rarr; Bidik Rank #{buyRankUsed}
                   </span>
                 </div>
               )}
@@ -3780,12 +3764,12 @@ export function AutoPricingBotPanel({
                   </div>
 
                   <p className="text-[0.68rem] text-muted-foreground leading-relaxed">
-                    Hanya membandingkan merchant terverifikasi: abaikan Rank 1 terverifikasi jika harganya melonjak Rp X di atas Rank 2 terverifikasi. Merchant tidak terverifikasi tidak ikut dihitung. Mencegah bot Anda terpancing memasang harga tinggi di pucuk oleh kompetitor nakal/spoofer yang sengaja memancing lalu kabur.
+                    Hanya membandingkan merchant terverifikasi: abaikan iklan beli teratas (termasuk pancingan bertumpuk) yang harganya melonjak Rp X di atas harga wajar terverifikasi berikutnya. Merchant tidak terverifikasi tidak ikut dihitung. Mencegah bot Anda terpancing memasang harga tinggi di pucuk oleh kompetitor nakal/spoofer yang sengaja memancing lalu kabur.
                   </p>
 
                   <div className="space-y-1.5 pt-1 border-t border-border/40">
                     <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground font-medium">Batas Toleransi Selisih Gap (Rank 1 vs 2):</span>
+                      <span className="text-muted-foreground font-medium">Batas Selisih Gap Beli:</span>
                       <div className="flex items-center gap-1">
                         <span className="text-xs font-semibold">Rp</span>
                         <CommitNumberInput
@@ -3825,44 +3809,134 @@ export function AutoPricingBotPanel({
                     </div>
                   </div>
 
-                  {/* Monitor Live Gap Orderbook */}
-                  {buySideGaps && (
-                    <div className="rounded-md border border-border/60 bg-surface/70 p-2 space-y-1 text-[0.68rem]">
-                      <div className="flex items-center justify-between text-muted-foreground">
-                        <span>Rank 1 Terverifikasi:</span>
-                        <strong className="num text-foreground">
-                          {fmtRp(buySideGaps.rank1.price)} (@{buySideGaps.rank1.merchant_name})
-                        </strong>
-                      </div>
-                      <div className="flex items-center justify-between text-muted-foreground">
-                        <span>Rank 2 Terverifikasi:</span>
-                        <strong className="num text-foreground">
-                          {fmtRp(buySideGaps.rank2.price)} (@{buySideGaps.rank2.merchant_name})
-                        </strong>
-                      </div>
-                      <div className="flex items-center justify-between border-t border-border/40 pt-1 font-semibold">
-                        <span>Selisih Lonjakan Gap:</span>
-                        <span
-                          className={`num font-bold ${
-                            buySideGaps.isTrap ? "text-amber-400 font-extrabold" : "text-bid"
+                  {/* Kedalaman: pancingan bertumpuk */}
+                  <div className="flex items-center justify-between gap-2 pt-1 border-t border-border/40">
+                    <div className="flex flex-col">
+                      <span className="text-muted-foreground font-medium">Cek Pancingan Bertumpuk:</span>
+                      <span className="text-[0.62rem] text-muted-foreground">
+                        Celah dicari hingga N iklan teratas, jadi 2–3 iklan pancingan berderet tetap tertangkap.
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      {[1, 2, 3, 4, 5].map((n) => (
+                        <button
+                          key={n}
+                          type="button"
+                          onClick={() => updateConfig({ gapTrapStackDepth: n })}
+                          className={`rounded px-1.5 py-0.5 text-[0.62rem] font-semibold transition-colors ${
+                            (config.gapTrapStackDepth || 3) === n
+                              ? "bg-primary text-primary-foreground shadow-xs"
+                              : "bg-surface-2 text-muted-foreground hover:bg-surface-3 hover:text-foreground"
                           }`}
                         >
-                          Rp {buySideGaps.gap} {buySideGaps.isTrap ? `(>= Rp ${buySideGaps.threshold})` : `(< Rp ${buySideGaps.threshold})`}
+                          {n}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Gap Trap sisi jual */}
+                  <div className="space-y-1.5 pt-1 border-t border-border/40">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex flex-col">
+                        <span className="text-muted-foreground font-medium">Gap Trap Jual (Anti-Banting Harga):</span>
+                        <span className="text-[0.62rem] text-muted-foreground">
+                          Abaikan iklan jual termurah terverifikasi yang jauh di bawah harga wajar.
                         </span>
                       </div>
-                      {buySideGaps.isTrap ? (
-                        <div className="text-amber-400 font-semibold pt-0.5 flex items-center gap-1">
-                          <ShieldAlert className="size-3 shrink-0" />
-                          <span>Pancingan terdeteksi! Bot otomatis membidik Rank 2 (+Rp {config.buyOffsetRp || 1}).</span>
+                      <Switch
+                        checked={config.sellGapTrapEnabled !== false}
+                        onCheckedChange={(val) => updateConfig({ sellGapTrapEnabled: val })}
+                        className="scale-90 data-[state=checked]:bg-bid"
+                      />
+                    </div>
+                    {config.sellGapTrapEnabled !== false && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Batas selisih jual:</span>
+                        <div className="flex items-center gap-1">
+                          <span className="text-xs font-semibold">Rp</span>
+                          <CommitNumberInput
+                            min={5}
+                            step={5}
+                            value={config.sellGapTrapThresholdRp || 20}
+                            onChange={(e) => updateConfig({ sellGapTrapThresholdRp: Math.max(5, Number(e.target.value)) })}
+                            className="h-6.5 w-20 text-xs bg-surface text-right font-bold"
+                          />
                         </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Isi celah jual */}
+                  <div className="space-y-1.5 pt-1 border-t border-border/40">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex flex-col">
+                        <span className="text-muted-foreground font-medium">Isi Celah Harga Jual:</span>
+                        <span className="text-[0.62rem] text-muted-foreground">
+                          Naikkan harga jual sampai tepat di bawah iklan berikutnya di orderbook. Posisi Anda di mata pembeli tidak berubah.
+                        </span>
+                      </div>
+                      <Switch
+                        checked={config.sellGapFillEnabled !== false}
+                        onCheckedChange={(val) => updateConfig({ sellGapFillEnabled: val })}
+                        className="scale-90 data-[state=checked]:bg-bid"
+                      />
+                    </div>
+                    {config.sellGapFillEnabled !== false && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Kenaikan maksimal:</span>
+                        <div className="flex items-center gap-1">
+                          <span className="text-xs font-semibold">Rp</span>
+                          <CommitNumberInput
+                            min={1}
+                            step={5}
+                            value={config.sellGapFillMaxRp || 30}
+                            onChange={(e) => updateConfig({ sellGapFillMaxRp: Math.max(1, Number(e.target.value)) })}
+                            className="h-6.5 w-20 text-xs bg-surface text-right font-bold"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Monitor live */}
+                  <div className="rounded-md border border-border/60 bg-surface/70 p-2 space-y-1.5 text-[0.68rem]">
+                    {([
+                      ["Beli", gapTraps.buy, config.buyGapTrapEnabled !== false, "di atas"],
+                      ["Jual", gapTraps.sell, config.sellGapTrapEnabled !== false, "di bawah"],
+                    ] as const).map(([label, trap, enabled, dir]) => (
+                      <div key={label} className="flex items-start justify-between gap-2">
+                        <span className="text-muted-foreground shrink-0">{label}:</span>
+                        {!enabled ? (
+                          <span className="text-muted-foreground">OFF</span>
+                        ) : trap ? (
+                          <span className="text-right text-amber-400 font-semibold">
+                            <ShieldAlert className="inline size-3 mr-0.5 -mt-0.5" />
+                            {trap.trapped.length} iklan diabaikan ({trap.trapped.map((a) => `@${a.merchant_name} ${fmtRp(a.price)}`).join(", ")}), celah Rp {trap.gap} {dir} {fmtRp(trap.firstLegit.price)}
+                          </span>
+                        ) : (
+                          <span className="text-bid font-medium">
+                            <CheckCircle2 className="inline size-3 mr-0.5 -mt-0.5" />
+                            Rapat & wajar
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                    <div className="flex items-start justify-between gap-2 border-t border-border/40 pt-1.5">
+                      <span className="text-muted-foreground shrink-0">Isi celah:</span>
+                      {config.sellGapFillEnabled === false ? (
+                        <span className="text-muted-foreground">OFF</span>
+                      ) : pricingResult.sellGapFill ? (
+                        <span className="text-right text-bid font-semibold">
+                          {fmtRp(pricingResult.sellGapFill.fromPrice)} &rarr; {fmtRp(pricingResult.sellGapFill.toPrice)} (+Rp{" "}
+                          {pricingResult.sellGapFill.toPrice - pricingResult.sellGapFill.fromPrice}/USDT, di bawah @
+                          {pricingResult.sellGapFill.nextMerchant} {fmtRp(pricingResult.sellGapFill.nextPrice)})
+                        </span>
                       ) : (
-                        <div className="text-bid font-medium pt-0.5 flex items-center gap-1">
-                          <CheckCircle2 className="size-3 shrink-0" />
-                          <span>Kondisi gap pasar rapat & wajar.</span>
-                        </div>
+                        <span className="text-muted-foreground">Tidak ada celah (iklan berikutnya rapat)</span>
                       )}
                     </div>
-                  )}
+                  </div>
                 </div>
 
                 {/* 2. PROTEKSI DUMP PASAR SPOT (INDODAX SPOT LEAD-INDICATOR) */}
