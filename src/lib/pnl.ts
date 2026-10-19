@@ -172,7 +172,7 @@ export type DailyPnl = {
 
 export type PnlSummary = {
   configured: boolean;
-  /** 30 hari terakhir (WIB), urut lama -> baru, termasuk hari tanpa transaksi. Hari terakhir = hari ini. */
+  /** Minimal 30 hari terakhir & sejak tgl 1 bulan lalu (WIB), urut lama -> baru, termasuk hari tanpa transaksi. Hari terakhir = hari ini. */
   daily: DailyPnl[];
   today_profit_idr: number;
   yesterday_profit_idr: number;
@@ -840,11 +840,17 @@ export async function computePnlSummaryInternal(): Promise<PnlSummary> {
       }
     }
 
-    // ── Rekap harian 30 hari terakhir (WIB) untuk grafik & perbandingan periode ──
+    // ── Rekap harian (WIB) untuk grafik & perbandingan periode: minimal 30 hari, dan selalu
+    //    mencakup sejak tanggal 1 bulan lalu (untuk "Bulan ini" vs "Bulan lalu"). ──
     const DAY_MS = 24 * 60 * 60 * 1000;
     const wibDate = (ms: number) => new Date(ms + WIB_OFFSET_MS).toISOString().slice(0, 10);
+    const todayWib = wibDate(startOfTodayMs);
+    const [ty, tm] = todayWib.split("-").map(Number) as [number, number];
+    const firstOfLastMonth = new Date(Date.UTC(ty, tm - 2, 1)).toISOString().slice(0, 10);
+    let dailyDays = 30;
+    while (wibDate(startOfTodayMs - (dailyDays - 1) * DAY_MS) > firstOfLastMonth) dailyDays++;
     const dailyMap = new Map<string, DailyPnl>();
-    for (let i = 29; i >= 0; i--) {
+    for (let i = dailyDays - 1; i >= 0; i--) {
       const date = wibDate(startOfTodayMs - i * DAY_MS);
       dailyMap.set(date, { date, profit_idr: 0, sells: 0, sell_usdt: 0, sell_idr: 0, fees_idr: 0, buys: 0, buy_usdt: 0, buy_idr: 0 });
     }

@@ -17,6 +17,20 @@ const compactRp = (n: number) => {
 };
 const dayLabel = (date: string, opts: Intl.DateTimeFormatOptions) =>
   new Date(`${date}T00:00:00+07:00`).toLocaleDateString("id-ID", { timeZone: "Asia/Jakarta", ...opts });
+/** "2026-10" -> "Oktober" */
+const monthName = (key: string) => dayLabel(`${key}-01`, { month: "long" });
+const prevMonthKey = (key: string) => {
+  const [y, m] = key.split("-").map(Number) as [number, number];
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
+};
+const daysInMonth = (key: string) => {
+  const [y, m] = key.split("-").map(Number) as [number, number];
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+};
+const pctChange = (now: number, before: number) => (before !== 0 ? ((now - before) / Math.abs(before)) * 100 : null);
+
+type Scope = "today" | "month";
+const SCOPE_KEY = "profit_report_scope";
 
 type Period = { label: string; profit: number; sells: number; sellUsdt: number; sellIdr: number; fees: number; days: number | null };
 
@@ -77,9 +91,31 @@ function DayTooltip({ active, payload }: { active?: boolean; payload?: { payload
   );
 }
 
+function ChangeBadge({ pct }: { pct: number | null }) {
+  if (pct === null) return null;
+  return (
+    <span className={cn("font-semibold", pct >= 0 ? "text-bid" : "text-ask")}>
+      {pct >= 0 ? "▲" : "▼"} {Math.abs(pct).toLocaleString("id-ID", { maximumFractionDigits: 0 })}%{" "}
+    </span>
+  );
+}
+
 export function ProfitReport({ pnl }: { pnl: PnlSummary | undefined }) {
   const colors = useThemeColors();
-  const daily = pnl?.daily ?? [];
+  const allDaily = useMemo(() => pnl?.daily ?? [], [pnl]);
+  const daily = useMemo(() => allDaily.slice(-30), [allDaily]);
+  const [scope, setScope] = useState<Scope>("today");
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(SCOPE_KEY) === "month") setScope("month");
+    } catch {}
+  }, []);
+  const changeScope = (next: Scope) => {
+    setScope(next);
+    try {
+      localStorage.setItem(SCOPE_KEY, next);
+    } catch {}
+  };
 
   const view = useMemo(() => {
     if (!pnl || daily.length === 0) return null;
@@ -105,9 +141,46 @@ export function ProfitReport({ pnl }: { pnl: PnlSummary | undefined }) {
     const best = active.reduce<DailyPnl | null>((b, d) => (!b || d.profit_idr > b.profit_idr ? d : b), null);
     const profitableDays = daily.filter((d) => d.profit_idr > 0).length;
     const avg30 = daily.reduce((s, d) => s + d.profit_idr, 0) / daily.length;
-    const delta = yesterday && yesterday.profit_idr !== 0 ? ((today.profit_idr - yesterday.profit_idr) / Math.abs(yesterday.profit_idr)) * 100 : null;
-    return { today, yesterday, periods, best, profitableDays, avg30, delta };
-  }, [pnl, daily]);
+    const delta = yesterday ? pctChange(today.profit_idr, yesterday.profit_idr) : null;
+
+    // Bulan berjalan vs bulan lalu (periode tanggal yang sama agar perbandingannya adil)
+    const monthKey = today.date.slice(0, 7);
+    const lastKey = prevMonthKey(monthKey);
+    const dayOfMonth = Number(today.date.slice(8, 10));
+    const monthDays = allDaily.filter((d) => d.date.startsWith(monthKey));
+    const lastMonthDays = allDaily.filter((d) => d.date.startsWith(lastKey));
+    const month = {
+      ...sumDays(`Bulan ini (${monthName(monthKey)})`, monthDays),
+      buys: monthDays.reduce((s, d) => s + d.buys, 0),
+      buyUsdt: monthDays.reduce((s, d) => s + d.buy_usdt, 0),
+    };
+    // Bulan lalu hanya dipakai bila datanya lengkap sejak tanggal 1.
+    const lastMonthComplete = lastMonthDays.length > 0 && lastMonthDays[0]!.date.endsWith("-01");
+    const lastMonth = lastMonthComplete ? sumDays(`Bulan lalu (${monthName(lastKey)})`, lastMonthDays) : null;
+    const lastSamePeriod = lastMonthComplete
+      ? sumDays("", lastMonthDays.filter((d) => Number(d.date.slice(8, 10)) <= dayOfMonth))
+      : null;
+    const monthBest = monthDays
+      .filter((d) => d.sells > 0)
+      .reduce<DailyPnl | null>((b, d) => (!b || d.profit_idr > b.profit_idr ? d : b), null);
+    const monthInfo = {
+      name: monthName(monthKey),
+      lastName: monthName(lastKey),
+      dayOfMonth,
+      totalDays: daysInMonth(monthKey),
+      days: monthDays,
+      stats: month,
+      lastMonth,
+      lastSamePeriod,
+      best: monthBest,
+      profitableDays: monthDays.filter((d) => d.profit_idr > 0).length,
+      avg: monthDays.length ? month.profit / monthDays.length : 0,
+      delta: lastSamePeriod ? pctChange(month.profit, lastSamePeriod.profit) : null,
+    };
+    // Baris tabel: sisipkan sebelum "Sepanjang waktu"
+    periods.splice(periods.length - 1, 0, month, ...(lastMonth ? [lastMonth] : []));
+    return { today, yesterday, periods, best, profitableDays, avg30, delta, monthInfo };
+  }, [pnl, daily, allDaily]);
 
   if (!pnl) {
     return <div className="panel p-6 text-center text-sm text-muted-foreground">Memuat laporan keuntungan…</div>;
@@ -115,15 +188,73 @@ export function ProfitReport({ pnl }: { pnl: PnlSummary | undefined }) {
   if (!view) {
     return <div className="panel p-6 text-center text-sm text-muted-foreground">Belum ada data transaksi untuk laporan.</div>;
   }
-  const { today, yesterday, periods, best, profitableDays, avg30, delta } = view;
+  const { today, yesterday, periods, best, profitableDays, avg30, delta, monthInfo: mo } = view;
   const todayMargin = today.sell_usdt > 0 ? today.profit_idr / today.sell_usdt : 0;
-  const tickDates = new Set(daily.filter((_, i) => i % 5 === 4 || i === daily.length - 1).map((d) => d.date));
+  const isMonth = scope === "month";
+  const chartDays = isMonth ? mo.days : daily;
+  const tickDates = new Set(chartDays.filter((_, i) => i % 5 === 4 || i === chartDays.length - 1).map((d) => d.date));
+  const monthMargin = mo.stats.sellUsdt > 0 ? mo.stats.profit / mo.stats.sellUsdt : 0;
+  const projection = mo.avg * mo.totalDays;
 
   return (
     <div className="space-y-3">
       <div className="grid gap-3 lg:grid-cols-5">
         {/* ── Laba hari ini ── */}
         <div className="panel space-y-3 p-4 lg:col-span-2">
+          <div className="flex rounded-lg bg-surface-2/60 p-0.5 text-xs" role="tablist" aria-label="Periode laba">
+            {([["today", "Hari ini"], ["month", "Bulan ini"]] as const).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={scope === id}
+                onClick={() => changeScope(id)}
+                className={cn(
+                  "flex-1 rounded-md px-3 py-1.5 font-medium transition-colors",
+                  scope === id ? "bg-surface text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {isMonth ? (
+            <>
+              <div>
+                <div className="text-xs font-medium text-muted-foreground">
+                  Laba bulan {mo.name} · tanggal 1–{mo.dayOfMonth} dari {mo.totalDays} hari
+                </div>
+                <div className={cn("mt-1 text-4xl font-semibold tracking-tight sm:text-5xl", mo.stats.profit >= 0 ? "text-bid" : "text-ask")}>
+                  {signedRp(mo.stats.profit)}
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {mo.lastSamePeriod ? (
+                    <>
+                      <ChangeBadge pct={mo.delta} />
+                      vs 1–{mo.dayOfMonth} {mo.lastName} ({signedRp(mo.lastSamePeriod.profit)})
+                    </>
+                  ) : (
+                    `Sejak 1 ${mo.name}`
+                  )}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <MiniStat label="Transaksi jual" value={mo.stats.sells.toLocaleString("id-ID")} hint={`${mo.stats.buys} transaksi beli`} />
+                <MiniStat label="USDT terjual" value={usdt(mo.stats.sellUsdt)} hint={`${usdt(mo.stats.buyUsdt)} dibeli`} />
+                <MiniStat label="Omset jual" value={rp(mo.stats.sellIdr)} />
+                <MiniStat label="Margin / USDT" value={mo.stats.sellUsdt > 0 ? signedRp(monthMargin) : "—"} hint="Laba bersih per USDT" />
+                <MiniStat label="Rata-rata / hari" value={signedRp(mo.avg)} hint={`${mo.profitableDays} dari ${mo.dayOfMonth} hari untung`} />
+                <MiniStat label="Proyeksi akhir bulan" value={signedRp(projection)} hint="Jika rata-rata harian bertahan" />
+                <MiniStat label="Fee dibayar" value={rp(mo.stats.fees)} />
+                <MiniStat
+                  label="Hari terbaik"
+                  value={mo.best ? signedRp(mo.best.profit_idr) : "—"}
+                  {...(mo.best ? { hint: dayLabel(mo.best.date, { weekday: "long", day: "numeric" }) } : {})}
+                />
+              </div>
+            </>
+          ) : (
+            <>
           <div>
             <div className="text-xs font-medium text-muted-foreground">Laba hari ini</div>
             <div className={cn("mt-1 text-4xl font-semibold tracking-tight sm:text-5xl", today.profit_idr >= 0 ? "text-bid" : "text-ask")}>
@@ -152,20 +283,31 @@ export function ProfitReport({ pnl }: { pnl: PnlSummary | undefined }) {
             <MiniStat label="Laba / transaksi" value={today.sells > 0 ? signedRp(today.profit_idr / today.sells) : "—"} />
             <MiniStat label="Fee dibayar" value={rp(today.fees_idr)} />
           </div>
+            </>
+          )}
         </div>
 
         {/* ── Grafik laba harian ── */}
         <div className="panel p-4 lg:col-span-3">
           <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-            <div className="text-sm font-semibold text-foreground">Laba harian · 30 hari</div>
+            <div className="text-sm font-semibold text-foreground">Laba harian · {isMonth ? `bulan ${mo.name}` : "30 hari"}</div>
             <div className="text-[0.7rem] text-muted-foreground">
-              Rata-rata {signedRp(avg30)}/hari · {profitableDays} dari 30 hari untung
-              {best ? ` · terbaik ${signedRp(best.profit_idr)} (${dayLabel(best.date, { day: "numeric", month: "short" })})` : ""}
+              {isMonth ? (
+                <>
+                  Total {signedRp(mo.stats.profit)} · rata-rata {signedRp(mo.avg)}/hari
+                  {mo.lastMonth ? ` · ${mo.lastName} penuh ${signedRp(mo.lastMonth.profit)}` : ""}
+                </>
+              ) : (
+                <>
+                  Rata-rata {signedRp(avg30)}/hari · {profitableDays} dari 30 hari untung
+                  {best ? ` · terbaik ${signedRp(best.profit_idr)} (${dayLabel(best.date, { day: "numeric", month: "short" })})` : ""}
+                </>
+              )}
             </div>
           </div>
           <div className="mt-3 h-56">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={daily} margin={{ top: 8, right: 4, bottom: 0, left: 0 }} barCategoryGap={2}>
+              <BarChart data={chartDays} margin={{ top: 8, right: 4, bottom: 0, left: 0 }} barCategoryGap={2}>
                 <CartesianGrid vertical={false} stroke={colors.grid} strokeWidth={1} />
                 <XAxis
                   dataKey="date"
@@ -185,7 +327,7 @@ export function ProfitReport({ pnl }: { pnl: PnlSummary | undefined }) {
                 <ReferenceLine y={0} stroke={colors.muted} strokeWidth={1} />
                 <Tooltip content={<DayTooltip />} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
                 <Bar dataKey="profit_idr" maxBarSize={24} radius={[4, 4, 0, 0]} isAnimationActive={false}>
-                  {daily.map((d) => (
+                  {chartDays.map((d) => (
                     <Cell
                       key={d.date}
                       fill={d.profit_idr >= 0 ? colors.bid : colors.ask}
