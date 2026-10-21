@@ -345,16 +345,16 @@ async function autoPushTick(): Promise<void> {
   const cleanSellAdvNo = config.merchantSellAdvNo?.trim().replace(/^#/, "");
   const hasActiveSellOrder = hasActiveOrderOn(cleanSellAdvNo);
 
-  // Iklan jual eceran: stok dibagi, eceran diisi dulu (harganya lebih tinggi), sisanya untuk iklan utama.
+  // Iklan jual eceran: sama seperti iklan utama, otomatis memasang SEMUA stok tersedia (atau stok manual).
   const retailAdvNo = config.merchantRetailSellAdvNo?.trim().replace(/^#/, "") || "";
   const retailActive = Boolean(config.retailSellEnabled && retailAdvNo && retailAdvNo !== cleanSellAdvNo && pricing.retailSell);
-  const manualMain = config.manualSellStockUsdt && config.manualSellStockUsdt > 0 ? config.manualSellStockUsdt : 0;
-  const retailAlloc = retailActive
-    ? Math.floor(Math.min(config.retailSellStockUsdt && config.retailSellStockUsdt > 0 ? config.retailSellStockUsdt : 1000, Math.max(0, totalSellStockUsdt - manualMain)) * 100) / 100
-    : 0;
-  const maxAvailableSellStockUsdt = Math.max(0, Math.floor((totalSellStockUsdt - retailAlloc) * 100) / 100);
+  const retailStockUsdt =
+    config.retailSellManualStockUsdt && config.retailSellManualStockUsdt > 0
+      ? Math.min(config.retailSellManualStockUsdt, totalSellStockUsdt)
+      : totalSellStockUsdt;
+  const maxAvailableSellStockUsdt = totalSellStockUsdt;
   const ctx: TickContext = { config, pricing, recommendedBuyPrice, recommendedSellPrice, fairPrice: market.fairPrice, maxAvailableSellStockUsdt, hasActiveSellOrder };
-  s.status.lastTickNote = `Beli Rp ${Math.round(recommendedBuyPrice).toLocaleString("id-ID")} · Jual Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")}${retailActive && pricing.retailSell ? ` · Eceran Rp ${pricing.retailSell.price.toLocaleString("id-ID")}` : ""}`;
+  s.status.lastTickNote = `Beli Rp ${Math.round(recommendedBuyPrice).toLocaleString("id-ID")} · Jual Rp ${Math.round(recommendedSellPrice).toLocaleString("id-ID")}${retailActive ? ` · Eceran Rp ${(Math.round(recommendedSellPrice) + (pricing.retailSell?.markupRp ?? 0)).toLocaleString("id-ID")}` : ""}`;
 
   const minIntervalMs = Math.max(1, config.autoPushMinIntervalSec ?? 1) * 1000;
   if (now - s.lastPushTime < minIntervalMs) return;
@@ -432,17 +432,7 @@ async function autoPushTick(): Promise<void> {
     const stockChanged = !hasActiveSellOrder && s.lastPushedStock.sell !== stock;
     // Iklan sedang OFFLINE karena stok habis: tunggu stok berubah, jangan OFFLINE-kan berulang tiap detik.
     const waitingForStock = s.offlinedAtStock.sell !== undefined && s.offlinedAtStock.sell === (stock ?? 0);
-    if (retailActive && stock === undefined && !hasActiveSellOrder) {
-      // Seluruh stok terpakai iklan eceran: iklan utama di-OFFLINE-kan (bukan update harga saja, agar
-      // stok lama di iklan utama tidak ikut dijual dobel).
-      if (s.offlinedAtStock.sell !== 0) {
-        const res = await toggleMerchantAdStatusInternal(config.merchantSellAdvNo.trim(), "OFFLINE").catch(() => null);
-        if (res?.ok) {
-          s.offlinedAtStock.sell = 0;
-          log("push", "Seluruh stok jual dialokasikan ke iklan eceran: iklan jual utama di-OFFLINE-kan sampai stok bertambah.", true);
-        }
-      }
-    } else if ((priceChanged || stockChanged) && !waitingForStock) {
+    if ((priceChanged || stockChanged) && !waitingForStock) {
       s.lastPushTime = Date.now();
       // Jeda 1 detik setelah push beli agar request tidak bertabrakan di Binance SAPI.
       if (buyTriggered) await new Promise((r) => setTimeout(r, 1000));
@@ -458,16 +448,17 @@ async function autoPushTick(): Promise<void> {
   if (retailActive && pricing.retailSell && Date.now() >= s.retail.retryAt) {
     const r = pricing.retailSell;
     const sellFloor = Math.max(pricing.sellGuard.floorPrice || 0, config.manualSellFloorRp || 0, config.minPriceBoundRp || 0);
-    let rounded = Math.round(r.price);
+    // Harga utama (termasuk saat ditahan karena war) + markup, tetap di atas batas bawah modal.
+    let rounded = Math.round(recommendedSellPrice) + r.markupRp;
     const last = s.retail.lastPrice;
     if (last && last > 10_000) {
       if (rounded > last + maxStep) rounded = last + maxStep;
       else if (rounded < last - maxStep) rounded = last - maxStep;
     }
-    // Tidak pernah lebih murah dari iklan utama (termasuk saat harga utama ditahan karena war) & batas modal.
-    rounded = Math.max(rounded, Math.round(recommendedSellPrice), sellFloor);
+    rounded = Math.max(rounded, sellFloor);
+    if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0 && rounded > config.maxPriceBoundRp) rounded = Math.max(config.maxPriceBoundRp, sellFloor);
     const retailHasActive = hasActiveOrderOn(retailAdvNo);
-    const stock = retailAlloc;
+    const stock = retailStockUsdt;
     const priceChanged = s.retail.lastPrice !== rounded;
     const stockChanged = !retailHasActive && s.retail.lastStock !== stock;
     const waiting = s.retail.offlinedAtStock !== undefined && s.retail.offlinedAtStock === stock;
@@ -483,7 +474,14 @@ async function autoPushTick(): Promise<void> {
           side: "sell",
           price: rounded,
           ...(!retailHasActive
-            ? { amount: stock, minSingleTransAmount: r.minLimitIdr, maxSingleTransAmount: Math.max(r.minLimitIdr + 10_000, Math.min(r.maxLimitIdr, Math.floor(stock * rounded))) }
+            ? {
+                amount: stock,
+                minSingleTransAmount: r.minLimitIdr,
+                maxSingleTransAmount: Math.max(
+                  r.minLimitIdr + 10_000,
+                  r.maxLimitIdr > 0 ? Math.min(r.maxLimitIdr, Math.floor(stock * rounded)) : Math.floor(stock * rounded),
+                ),
+              }
             : {}),
           ...(sellFloor > 0 ? { floorPrice: sellFloor } : {}),
           hasActiveOrders: retailHasActive,
@@ -514,12 +512,12 @@ async function autoPushTick(): Promise<void> {
   if (retailActive) {
     s.retail.wasActive = true;
   } else if (s.retail.wasActive) {
-    // Iklan eceran baru saja dimatikan: OFFLINE-kan sekali, stok kembali ke iklan utama.
+    // Iklan eceran baru saja dimatikan: OFFLINE-kan sekali.
     s.retail.wasActive = false;
     s.retail = { fail: 0, retryAt: 0, wasActive: false };
     if (retailAdvNo) {
       const res = await toggleMerchantAdStatusInternal(retailAdvNo, "OFFLINE").catch(() => null);
-      log("push", res?.ok ? "Iklan eceran dimatikan: iklan di-OFFLINE-kan, stok kembali ke iklan utama." : "Iklan eceran dimatikan, tetapi gagal meng-OFFLINE-kan iklannya.", Boolean(res?.ok));
+      log("push", res?.ok ? "Iklan eceran dimatikan: iklan di-OFFLINE-kan." : "Iklan eceran dimatikan, tetapi gagal meng-OFFLINE-kan iklannya.", Boolean(res?.ok));
     }
   }
 }

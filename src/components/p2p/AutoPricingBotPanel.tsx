@@ -766,6 +766,76 @@ export function AutoPricingBotPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRunActive, effectiveToken]);
 
+  // ── Iklan jual eceran: harga = harga jual utama + markup, stok = semua stok tersedia (atau manual) ──
+  const retailAdvNo = (config.merchantRetailSellAdvNo || "").trim();
+  const retailMarkupRp = Number.isFinite(config.retailSellMarkupRp) ? Math.round(config.retailSellMarkupRp as number) : 10;
+  const retailFloor = Math.max(sellGuard.floorPrice || 0, config.manualSellFloorRp || 0, config.minPriceBoundRp || 0);
+  const retailPrice = (() => {
+    let p = Math.round(recommendedSellPrice) + retailMarkupRp;
+    if (retailFloor > 0) p = Math.max(p, retailFloor);
+    if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) p = Math.min(p, Math.max(config.maxPriceBoundRp, retailFloor));
+    return p;
+  })();
+  const retailStock =
+    config.retailSellManualStockUsdt && config.retailSellManualStockUsdt > 0
+      ? Math.min(config.retailSellManualStockUsdt, maxAvailableSellStockUsdt || config.retailSellManualStockUsdt)
+      : maxAvailableSellStockUsdt;
+  const retailMinLimit = Math.max(50_000, config.retailSellMinLimitIdr && config.retailSellMinLimitIdr > 0 ? config.retailSellMinLimitIdr : 50_000);
+  const retailMaxLimit =
+    config.retailSellMaxLimitIdr && config.retailSellMaxLimitIdr > 0
+      ? config.retailSellMaxLimitIdr
+      : retailStock > 0 && retailPrice > 0
+        ? Math.floor(retailStock * retailPrice)
+        : 0;
+  const [isPushingRetail, setIsPushingRetail] = useState(false);
+  const [isTogglingRetail, setIsTogglingRetail] = useState(false);
+
+  const handlePushRetail = async () => {
+    if (!retailAdvNo) return;
+    setIsPushingRetail(true);
+    try {
+      const res = await pushPriceFn({
+        data: {
+          sessionToken: effectiveToken,
+          advNo: retailAdvNo,
+          side: "sell",
+          price: retailPrice,
+          ...(retailStock > 0 ? { amountUsdt: retailStock } : {}),
+          minLimitIdr: retailMinLimit,
+          ...(retailMaxLimit > 0 ? { maxLimitIdr: retailMaxLimit } : {}),
+          ...(retailFloor > 0 ? { floorPrice: retailFloor } : {}),
+        },
+      });
+      setLastPushLog(res);
+      if (res.ok) toast.success(`Eceran: ${res.message}`);
+      else toast.error(`Eceran: ${res.message}`, { duration: 9000 });
+      return res;
+    } catch (err: any) {
+      toast.error(`Push iklan eceran gagal: ${err?.message || String(err)}`);
+    } finally {
+      setIsPushingRetail(false);
+    }
+    return undefined;
+  };
+
+  const toggleRetailAd = async (on: boolean) => {
+    updateConfig({ retailSellEnabled: on });
+    if (!retailAdvNo) return;
+    setIsTogglingRetail(true);
+    try {
+      if (on) {
+        const pushed = await handlePushRetail();
+        if (pushed?.ok === false) return;
+      }
+      const res = (await toggleStatusFn({ data: { sessionToken: effectiveToken, advNo: retailAdvNo, advStatus: on ? "ONLINE" : "OFFLINE" } })) as { ok: boolean; message?: string; code?: unknown };
+      if (res.ok) toast.success(on ? "Iklan eceran ONLINE." : "Iklan eceran OFFLINE.");
+      else toast.error(`Gagal ${on ? "menyalakan" : "mematikan"} iklan eceran: ${res.message || res.code}`);
+      ownAdsQuery.refetch();
+    } finally {
+      setIsTogglingRetail(false);
+    }
+  };
+
   const handlePushPrice = async (
     side: "buy" | "sell",
     overridePrice?: number,
@@ -5704,103 +5774,6 @@ export function AutoPricingBotPanel({
                       </div>
                     )}
 
-                    {/* Iklan jual eceran (iklan kedua, limit kecil) */}
-                    <div className="space-y-1.5 pt-1.5 border-t border-border/40">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex flex-col">
-                          <span className="text-xs font-semibold text-foreground">Iklan Eceran (Iklan Jual Kedua):</span>
-                          <span className="text-[0.65rem] text-muted-foreground">
-                            Iklan jual cadangan Anda dipakai untuk pembeli kecil. Harga ikut penjual limit kecil, tidak pernah lebih murah dari iklan utama. Stok eceran diisi dulu, sisanya untuk iklan utama. Dijalankan oleh bot server.
-                          </span>
-                        </div>
-                        <Switch
-                          checked={Boolean(config.retailSellEnabled)}
-                          disabled={!config.merchantRetailSellAdvNo}
-                          onCheckedChange={(v) => updateConfig({ retailSellEnabled: v })}
-                        />
-                      </div>
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-[0.65rem] text-muted-foreground shrink-0">Iklan eceran:</span>
-                        {showRetailPicker || !config.merchantRetailSellAdvNo ? (
-                          <select
-                            value={config.merchantRetailSellAdvNo || ""}
-                            onFocus={() => setShowRetailPicker(true)}
-                            onClick={() => setShowRetailPicker(true)}
-                            onChange={(e) => {
-                              updateConfig({ merchantRetailSellAdvNo: e.target.value, ...(e.target.value ? {} : { retailSellEnabled: false }) });
-                              setShowRetailPicker(false);
-                            }}
-                            className="h-7 min-w-0 flex-1 rounded-md border border-border bg-surface px-2 text-[0.68rem] text-foreground"
-                          >
-                            <option value="">{ownAdsQuery.isFetching ? "Memuat iklan…" : "Pilih iklan jual cadangan"}</option>
-                            {ownSellAds.map((a) => (
-                              <option key={a.advNo} value={String(a.advNo)}>
-                                #…{String(a.advNo).slice(-6)} · Rp {Number(a.price).toLocaleString("id-ID")} · limit{" "}
-                                {Number(a.minSingleTransAmount ?? 0).toLocaleString("id-ID")}–{Number(a.maxSingleTransAmount ?? 0).toLocaleString("id-ID")}
-                                {Number(a.advStatus) === 1 ? " · online" : " · offline"}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => setShowRetailPicker(true)}
-                            className="num text-[0.68rem] font-semibold text-foreground hover:text-primary"
-                            title="Ganti iklan eceran"
-                          >
-                            #…{config.merchantRetailSellAdvNo.slice(-6)} (ganti)
-                          </button>
-                        )}
-                      </div>
-                      {config.merchantRetailSellAdvNo && (
-                        <div className="grid grid-cols-3 gap-2">
-                          <div className="space-y-0.5">
-                            <span className="text-[0.6rem] text-muted-foreground">Stok (USDT)</span>
-                            <CommitNumberInput
-                              min={1}
-                              value={config.retailSellStockUsdt || 1000}
-                              onChange={(e) => updateConfig({ retailSellStockUsdt: Math.max(1, Number(e.target.value) || 1000) })}
-                              className="h-7 text-xs bg-surface font-mono text-right"
-                            />
-                          </div>
-                          <div className="space-y-0.5">
-                            <span className="text-[0.6rem] text-muted-foreground">Limit bawah</span>
-                            <CommitNumberInput
-                              min={50000}
-                              value={config.retailSellMinLimitIdr || 50000}
-                              onChange={(e) => updateConfig({ retailSellMinLimitIdr: Math.max(50_000, Number(e.target.value) || 50_000) })}
-                              className="h-7 text-xs bg-surface font-mono text-right"
-                            />
-                          </div>
-                          <div className="space-y-0.5">
-                            <span className="text-[0.6rem] text-muted-foreground">Limit atas</span>
-                            <CommitNumberInput
-                              min={0}
-                              value={config.retailSellMaxLimitIdr && config.retailSellMaxLimitIdr > 0 ? config.retailSellMaxLimitIdr : ""}
-                              onChange={(e) => {
-                                const v = Number(e.target.value);
-                                updateConfig({ retailSellMaxLimitIdr: Number.isFinite(v) && v > 0 ? v : 0 });
-                              }}
-                              placeholder={String(config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0 ? config.manualSellMinLimitIdr : 10_000_000)}
-                              className="h-7 text-xs bg-surface font-mono text-right"
-                            />
-                          </div>
-                        </div>
-                      )}
-                      {pricingResult.retailSell && (
-                        <div className="rounded-md border border-primary/40 bg-primary/10 p-2 text-[0.65rem] leading-relaxed text-foreground">
-                          <strong className="num">Harga eceran: {fmtRp2(pricingResult.retailSell.price)}</strong>
-                          {pricingResult.retailSell.price > recommendedSellPrice && (
-                            <span className="num text-bid"> (+Rp {pricingResult.retailSell.price - Math.round(recommendedSellPrice)} dari iklan utama)</span>
-                          )}
-                          <br />
-                          <span className="text-muted-foreground">
-                            {pricingResult.retailSell.desc} · {pricingResult.retailSell.competitorCount} kompetitor limit ≤ Rp{" "}
-                            {pricingResult.retailSell.maxLimitIdr.toLocaleString("id-ID")}
-                          </span>
-                        </div>
-                      )}
-                    </div>
                   </div>
 
                   {/* 5. Live Summary Data Terkirim ke Binance */}
@@ -5841,6 +5814,222 @@ export function AutoPricingBotPanel({
                   >
                     <Send className={`size-3.5 ${isPushingSell ? "animate-pulse" : ""}`} />
                     <span>{isPushingSell ? "Mengirim ke Binance..." : "Push Harga, All Stok, & Limit Jual ke Binance"}</span>
+                  </Button>
+                </div>
+
+                {/* Iklan Jual Eceran (Maker Sell kedua) */}
+                <div className="rounded-xl border border-ask/40 bg-ask/5 p-3.5 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <span className="size-2 rounded-full bg-ask" />
+                      <span className="text-xs font-bold text-ask uppercase tracking-wider">Iklan Jual Eceran (Maker Sell 2)</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Badge
+                        variant="outline"
+                        className={`text-[0.62rem] font-bold ${config.retailSellEnabled ? "border-bid/40 bg-bid/10 text-bid" : "border-border text-muted-foreground"}`}
+                      >
+                        {config.retailSellEnabled ? "ON" : "OFF"}
+                      </Badge>
+                      <Switch
+                        checked={Boolean(config.retailSellEnabled)}
+                        disabled={!retailAdvNo || isTogglingRetail}
+                        onCheckedChange={(v) => void toggleRetailAd(v)}
+                        aria-label="Iklan eceran ON/OFF"
+                      />
+                    </div>
+                  </div>
+
+                  {/* 1. Nomor Iklan advNo */}
+                  <div className="space-y-1">
+                    <Label className="text-xs font-semibold text-foreground">Nomor Iklan Jual Eceran (advNo)</Label>
+                    <Input
+                      type="text"
+                      value={config.merchantRetailSellAdvNo || ""}
+                      onChange={(e) => updateConfig({ merchantRetailSellAdvNo: e.target.value.trim() })}
+                      placeholder="Nomor iklan jual kedua Anda"
+                      className="h-8 text-xs font-mono bg-surface font-semibold"
+                    />
+                    <select
+                      value=""
+                      onFocus={() => setShowRetailPicker(true)}
+                      onClick={() => setShowRetailPicker(true)}
+                      onChange={(e) => e.target.value && updateConfig({ merchantRetailSellAdvNo: e.target.value })}
+                      className="h-7 w-full rounded-md border border-border bg-surface px-2 text-[0.68rem] text-muted-foreground"
+                    >
+                      <option value="">{ownAdsQuery.isFetching ? "Memuat iklan…" : "Atau pilih dari iklan jual Anda…"}</option>
+                      {ownSellAds.map((a) => (
+                        <option key={a.advNo} value={String(a.advNo)}>
+                          #…{String(a.advNo).slice(-6)} · Rp {Number(a.price).toLocaleString("id-ID")} · limit{" "}
+                          {Number(a.minSingleTransAmount ?? 0).toLocaleString("id-ID")}–{Number(a.maxSingleTransAmount ?? 0).toLocaleString("id-ID")}
+                          {Number(a.advStatus) === 1 ? " · online" : " · offline"}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[0.65rem] text-muted-foreground">
+                      Harus berbeda dari iklan jual utama. Harga, stok, dan limit iklan ini akan diatur oleh bot.
+                    </p>
+                  </div>
+
+                  {/* 2. Harga jual eceran */}
+                  <div className="space-y-2 rounded-lg border border-ask/25 bg-surface/70 p-2.5">
+                    <Label className="text-xs font-bold text-ask flex items-center gap-1">
+                      <Sliders className="size-3.5" /> Setting Harga Jual Eceran
+                    </Label>
+                    <div className="flex items-center justify-between gap-2 text-[0.68rem]">
+                      <span className="text-muted-foreground font-semibold">Harga jual utama + </span>
+                      <div className="relative w-28">
+                        <CommitNumberInput
+                          value={retailMarkupRp}
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            updateConfig({ retailSellMarkupRp: Number.isFinite(v) ? Math.round(v) : 10 });
+                          }}
+                          className="h-7 text-xs font-bold bg-surface text-foreground font-mono pr-9 text-right"
+                        />
+                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[0.62rem] text-muted-foreground font-semibold">Rp</span>
+                      </div>
+                    </div>
+                    <div className="flex gap-1 flex-wrap">
+                      {[5, 10, 15, 20, 30].map((v) => (
+                        <button
+                          key={v}
+                          type="button"
+                          onClick={() => updateConfig({ retailSellMarkupRp: v })}
+                          className={`rounded px-1.5 py-0.5 text-[0.62rem] font-semibold transition-colors ${
+                            retailMarkupRp === v ? "bg-primary text-primary-foreground" : "bg-surface-2 text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          +{v}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex justify-between items-center text-muted-foreground text-[0.68rem] border-t border-border/50 pt-1.5">
+                      <span>
+                        {fmtRp2(recommendedSellPrice)} + Rp {retailMarkupRp} =
+                      </span>
+                      <strong className="num text-ask font-bold">{fmtRp2(retailPrice)}</strong>
+                    </div>
+                    <p className="text-[0.62rem] text-muted-foreground leading-tight">
+                      🛡️ Ikut batas bawah jual aman iklan utama ({retailFloor > 0 ? fmtRp(retailFloor) : "auto"}). Harga ikut bergerak setiap harga utama berubah.
+                    </p>
+                  </div>
+
+                  {/* 3. Stok USDT (semua stok tersedia, sama seperti iklan utama) */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
+                        <Wallet className="size-3.5 text-ask" />
+                        <span>Stok USDT Eceran (Max Available All)</span>
+                      </Label>
+                      {maxAvailableSellStockUsdt > 0 && (
+                        <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[0.6rem] font-bold">
+                          Max. available: {maxAvailableSellStockUsdt.toLocaleString("id-ID")} USDT All
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="relative">
+                      <CommitNumberInput
+                        decimal
+                        step="any"
+                        value={config.retailSellManualStockUsdt && config.retailSellManualStockUsdt > 0 ? config.retailSellManualStockUsdt : ""}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          updateConfig({ retailSellManualStockUsdt: Number.isFinite(val) && val > 0 ? val : 0 });
+                        }}
+                        placeholder={
+                          maxAvailableSellStockUsdt > 0
+                            ? `Otomatis All: ${maxAvailableSellStockUsdt} USDT (Max Available)`
+                            : "0 USDT (Tidak ada saldo)"
+                        }
+                        className="h-8 text-xs font-mono bg-surface font-semibold pr-14"
+                      />
+                      <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[0.68rem] text-muted-foreground font-semibold">USDT</span>
+                    </div>
+                    <p className="text-[0.65rem] text-muted-foreground leading-relaxed">
+                      {config.retailSellManualStockUsdt && config.retailSellManualStockUsdt > 0
+                        ? `Menggunakan stok manual: ${config.retailSellManualStockUsdt} USDT. Kosongkan untuk otomatis pakai semua stok.`
+                        : "✓ Sama seperti iklan utama: otomatis memasang semua stok tersedia (Max. available)."}
+                    </p>
+                  </div>
+
+                  {/* 4. Limit transaksi */}
+                  <div className="space-y-1.5 rounded-lg border border-border/70 bg-surface/60 p-2.5">
+                    <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
+                      <Coins className="size-3.5 text-primary" /> Batas Limit Transaksi Eceran (IDR)
+                    </Label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <span className="text-[0.65rem] text-muted-foreground font-semibold">Limit Bawah (Min IDR):</span>
+                        <CommitNumberInput
+                          min={0}
+                          value={config.retailSellMinLimitIdr && config.retailSellMinLimitIdr > 0 ? config.retailSellMinLimitIdr : ""}
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            updateConfig({ retailSellMinLimitIdr: Number.isFinite(v) && v > 0 ? Math.max(50_000, v) : 0 });
+                          }}
+                          placeholder="Default: 50.000"
+                          className="h-7 text-xs bg-surface font-mono text-right"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <span className="text-[0.65rem] text-muted-foreground font-semibold">Limit Atas (Max IDR):</span>
+                        <CommitNumberInput
+                          min={0}
+                          value={config.retailSellMaxLimitIdr && config.retailSellMaxLimitIdr > 0 ? config.retailSellMaxLimitIdr : ""}
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            updateConfig({ retailSellMaxLimitIdr: Number.isFinite(v) && v > 0 ? v : 0 });
+                          }}
+                          placeholder={retailMaxLimit > 0 ? String(retailMaxLimit) : "Auto Stok"}
+                          className="h-7 text-xs bg-surface font-mono text-right"
+                        />
+                      </div>
+                    </div>
+                    {Boolean(config.retailSellMaxLimitIdr && config.retailSellMaxLimitIdr > 0 && retailMinLimit >= config.retailSellMaxLimitIdr) && (
+                      <div className="text-[0.62rem] text-destructive flex items-center gap-1 font-semibold">
+                        <AlertTriangle className="size-3 shrink-0" />
+                        <span>Perhatian: Limit Bawah harus lebih kecil dari Limit Atas!</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 5. Ringkasan yang dikirim */}
+                  <div className="rounded bg-surface/80 p-2.5 border border-border/60 space-y-1 text-xs">
+                    <div className="flex justify-between text-muted-foreground text-[0.68rem]">
+                      <span>Harga Kirim Binance:</span>
+                      <strong className="num text-foreground">{fmtRp2(retailPrice)}</strong>
+                    </div>
+                    <div className="flex justify-between text-muted-foreground text-[0.68rem]">
+                      <span>All Stok USDT Siap Jual:</span>
+                      <strong className="num text-ask">
+                        {retailStock > 0
+                          ? `${retailStock} USDT${config.retailSellManualStockUsdt && config.retailSellManualStockUsdt > 0 ? " (Manual)" : " (Max Available All)"}`
+                          : "0 USDT"}
+                      </strong>
+                    </div>
+                    <div className="flex justify-between text-muted-foreground text-[0.68rem]">
+                      <span>Rentang Limit Transaksi:</span>
+                      <strong className="num text-foreground">
+                        Rp {retailMinLimit.toLocaleString("id-ID")} - {retailMaxLimit > 0 ? fmtRp(retailMaxLimit) : "Auto"}
+                      </strong>
+                    </div>
+                    <div className="flex justify-between text-muted-foreground text-[0.68rem]">
+                      <span>Status Bot Eceran:</span>
+                      <strong className={config.retailSellEnabled ? "text-bid" : "text-muted-foreground"}>
+                        {config.retailSellEnabled ? "ON · ikut auto-push" : "OFF · iklan offline"}
+                      </strong>
+                    </div>
+                  </div>
+
+                  <Button
+                    type="button"
+                    onClick={() => void handlePushRetail()}
+                    disabled={isPushingRetail || !retailAdvNo}
+                    className="w-full h-8 text-xs font-semibold bg-ask text-ask-foreground hover:bg-ask/90 gap-1.5 shadow-sm"
+                  >
+                    <Send className={`size-3.5 ${isPushingRetail ? "animate-pulse" : ""}`} />
+                    <span>{isPushingRetail ? "Mengirim ke Binance..." : "Push Harga, All Stok, & Limit Eceran ke Binance"}</span>
                   </Button>
                 </div>
               </div>

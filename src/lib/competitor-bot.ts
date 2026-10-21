@@ -101,9 +101,10 @@ export type CompetitorFilterConfig = {
   autoPushToBinance: boolean;             // Otomatis push perubahan harga ke Binance P2P
   autoPushMinIntervalSec: number;         // Interval minimal push (detik, default 1)
   autoOnlineWhenStockAvailable?: boolean; // Nyalakan lagi iklan OFFLINE otomatis saat stok/kas tersedia kembali (default true)
-  retailSellEnabled?: boolean;            // Iklan JUAL eceran kedua (limit kecil, harga ikut penjual limit kecil)
+  retailSellEnabled?: boolean;            // Iklan JUAL eceran kedua: ON/OFF (bot menyalakan / mematikan iklannya)
   merchantRetailSellAdvNo?: string;       // Nomor iklan jual eceran (iklan jual cadangan milik sendiri)
-  retailSellStockUsdt?: number;           // Alokasi stok USDT untuk iklan eceran (sisanya untuk iklan utama), default 1000
+  retailSellMarkupRp?: number;            // Harga eceran = harga jual iklan utama + Rp X (default 10)
+  retailSellManualStockUsdt?: number;     // Stok iklan eceran manual (0 = otomatis semua stok tersedia, sama seperti iklan utama)
   retailSellMinLimitIdr?: number;         // Limit bawah iklan eceran (default Rp 50.000)
   retailSellMaxLimitIdr?: number;         // Limit atas iklan eceran (default = limit bawah iklan utama, atau Rp 10 jt)
   lowStockSellPricingEnabled?: boolean;   // Stok tipis (nilai stok < limit bawah jual): harga jual ikut kompetitor ber-limit kecil (default true)
@@ -150,7 +151,8 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   sellGapFillMaxRp: 30,
   retailSellEnabled: false,
   merchantRetailSellAdvNo: "",
-  retailSellStockUsdt: 1000,
+  retailSellMarkupRp: 10,
+  retailSellManualStockUsdt: 0,
   retailSellMinLimitIdr: 50_000,
   retailSellMaxLimitIdr: 0,
   spotDumpProtectionEnabled: false,
@@ -340,13 +342,12 @@ export type CompetitorPricingResult = {
   evaluatedSellAds: EvaluatedAd[];
   qualifiedBuyAds: Ad[];
   evaluatedBuyAds: EvaluatedAd[];
-  /** Harga iklan jual eceran (hanya bila iklan eceran aktif). */
+  /** Harga iklan jual eceran = harga jual utama + markup (hanya bila iklan eceran ON). */
   retailSell?: {
     price: number;
-    basePrice: number;
-    desc: string;
-    competitorCount: number;
-    targetMerchant: string | null;
+    mainPrice: number;
+    markupRp: number;
+    /** 0 = otomatis dari kapasitas stok */
     maxLimitIdr: number;
     minLimitIdr: number;
   };
@@ -1358,56 +1359,20 @@ export function computeCompetitorPricing(input: {
     }
   }
 
-  // ── Iklan Jual Eceran (iklan kedua, limit kecil) ───────────────────────────
-  // Melayani pembeli bernominal kecil yang tidak bisa memakai iklan utama (limit bawah besar). Acuannya
-  // kompetitor yang juga melayani nominal kecil (min transaksi <= limit atas eceran), dan harganya tidak
-  // pernah lebih murah dari iklan utama.
+  // ── Iklan Jual Eceran (iklan jual kedua) ───────────────────────────────────
+  // Harga = harga jual iklan utama + markup yang diatur pengguna, tetap di atas batas bawah modal.
   let retailSell: CompetitorPricingResult["retailSell"];
   if (config.retailSellEnabled && config.merchantRetailSellAdvNo?.trim() && recommendedSellPrice > 0) {
-    const retailMax =
-      config.retailSellMaxLimitIdr && config.retailSellMaxLimitIdr > 0
-        ? config.retailSellMaxLimitIdr
-        : config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0
-          ? config.manualSellMinLimitIdr
-          : 10_000_000;
-    const retailMin = Math.max(50_000, config.retailSellMinLimitIdr && config.retailSellMinLimitIdr > 0 ? config.retailSellMinLimitIdr : 50_000);
-    const retailStock = config.retailSellStockUsdt && config.retailSellStockUsdt > 0 ? config.retailSellStockUsdt : 1_000;
-    const retailConfig: CompetitorFilterConfig = {
-      ...config,
-      minOrderLimitIdr: config.minOrderLimitIdr > 0 ? Math.min(config.minOrderLimitIdr, retailMax) : retailMax,
-      minMaxLimitIdr: 0,
-      minUsdtAmount: Math.min(config.minUsdtAmount, Math.floor(retailStock)),
-    };
-    const retail = evaluateCompetitorAds(sellRefAds, retailConfig, "sell_ref", calculatedSellFloor);
-    const rIdx = Math.min(Math.max(config.targetRank - 1, 0), Math.max(retail.qualified.length - 1, 0));
-    const rTarget = retail.qualified[rIdx] ?? null;
-    const rBase = retail.qualified.length
-      ? computeBasePrice("sell", retail.qualified, sellRefAds, rTarget, recommendedSellPrice)
-      : { basePrice: recommendedSellPrice, desc: "", isFallback: true };
-    let price = rBase.isFallback ? recommendedSellPrice : rBase.basePrice + config.sellOffsetRp;
-    let desc = rBase.isFallback ? "Ikut iklan utama (tidak ada kompetitor limit kecil yang lolos filter)" : `Limit kecil · ${rBase.desc}`;
-    // Anti-lonjakan: maksimal +50 di atas kompetitor limit kecil terbaik.
-    const bestSmall = retail.qualified[0]?.price ?? 0;
-    if (bestSmall > 0) price = Math.min(price, Math.max(calculatedSellFloor, bestSmall + 50));
+    const markupRp = Number.isFinite(config.retailSellMarkupRp) ? Math.round(config.retailSellMarkupRp as number) : 10;
+    let price = recommendedSellPrice + markupRp;
     if (calculatedSellFloor > 0) price = Math.max(price, calculatedSellFloor);
-    if (price < recommendedSellPrice) {
-      price = recommendedSellPrice;
-      desc = `${desc} → disamakan dengan iklan utama (tidak boleh lebih murah)`;
-    }
-    const rFill = gapFillSell(price);
-    if (rFill) {
-      price = rFill.toPrice;
-      desc = `${desc} · Isi Celah +Rp ${rFill.toPrice - rFill.fromPrice}`;
-    }
     if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) price = Math.min(price, Math.max(config.maxPriceBoundRp, calculatedSellFloor));
     retailSell = {
       price: Math.round(price),
-      basePrice: rBase.basePrice,
-      desc,
-      competitorCount: retail.qualified.length,
-      targetMerchant: rBase.isFallback ? null : (rTarget?.merchant_name ?? null),
-      maxLimitIdr: retailMax,
-      minLimitIdr: retailMin,
+      mainPrice: Math.round(recommendedSellPrice),
+      markupRp,
+      maxLimitIdr: config.retailSellMaxLimitIdr && config.retailSellMaxLimitIdr > 0 ? config.retailSellMaxLimitIdr : 0,
+      minLimitIdr: Math.max(50_000, config.retailSellMinLimitIdr && config.retailSellMinLimitIdr > 0 ? config.retailSellMinLimitIdr : 50_000),
     };
   }
 
