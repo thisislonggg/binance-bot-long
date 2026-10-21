@@ -54,6 +54,8 @@ export type Ad = {
   user_grade?: number;
   badges?: string[];
   is_pro?: boolean;
+  /** Nomor merchant Binance (untuk profil merchant). */
+  merchant_no?: string;
 };
 
 export type HistoryPoint = { ts: string; fair_price: number };
@@ -248,6 +250,7 @@ export function parseAds(rawAds: any[]): Ad[] {
         (m: any) => m?.tradeMethodName ?? m?.identifier ?? "?",
       ),
       merchant_name: cleanMerchantName,
+      ...(seller.userNo ? { merchant_no: String(seller.userNo) } : {}),
       user_type: seller.userType ?? "user",
       is_verified: isVerified,
       completion_rate: completionRate,

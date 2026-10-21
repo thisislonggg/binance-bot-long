@@ -30,6 +30,7 @@ const AD_FIELDS = [
   "user_grade",
   "badges",
   "is_pro",
+  "merchant_no",
 ] as const satisfies readonly (keyof Ad)[];
 
 /** Field opsional: null di tuple berarti "tidak ada" (bukan nilai null). */
@@ -41,6 +42,7 @@ const OPTIONAL_FIELDS = new Set<string>([
   "user_grade",
   "badges",
   "is_pro",
+  "merchant_no",
 ]);
 
 type AdTuple = (string | number | boolean | string[] | null)[];

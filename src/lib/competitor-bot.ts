@@ -101,6 +101,11 @@ export type CompetitorFilterConfig = {
   autoPushToBinance: boolean;             // Otomatis push perubahan harga ke Binance P2P
   autoPushMinIntervalSec: number;         // Interval minimal push (detik, default 1)
   autoOnlineWhenStockAvailable?: boolean; // Nyalakan lagi iklan OFFLINE otomatis saat stok/kas tersedia kembali (default true)
+  retailSellEnabled?: boolean;            // Iklan JUAL eceran kedua (limit kecil, harga ikut penjual limit kecil)
+  merchantRetailSellAdvNo?: string;       // Nomor iklan jual eceran (iklan jual cadangan milik sendiri)
+  retailSellStockUsdt?: number;           // Alokasi stok USDT untuk iklan eceran (sisanya untuk iklan utama), default 1000
+  retailSellMinLimitIdr?: number;         // Limit bawah iklan eceran (default Rp 50.000)
+  retailSellMaxLimitIdr?: number;         // Limit atas iklan eceran (default = limit bawah iklan utama, atau Rp 10 jt)
   lowStockSellPricingEnabled?: boolean;   // Stok tipis (nilai stok < limit bawah jual): harga jual ikut kompetitor ber-limit kecil (default true)
   lowStockSellOnlyRaise?: boolean;        // Mode stok tipis hanya boleh MENAIKKAN harga jual, tidak pernah menurunkan (default true)
 };
@@ -143,6 +148,11 @@ export const DEFAULT_BOT_CONFIG: CompetitorFilterConfig = {
   sellGapTrapThresholdRp: 20,
   sellGapFillEnabled: true,
   sellGapFillMaxRp: 30,
+  retailSellEnabled: false,
+  merchantRetailSellAdvNo: "",
+  retailSellStockUsdt: 1000,
+  retailSellMinLimitIdr: 50_000,
+  retailSellMaxLimitIdr: 0,
   spotDumpProtectionEnabled: false,
   spotDumpBufferRp: 15,
   priceWarGuardEnabled: true,
@@ -330,6 +340,16 @@ export type CompetitorPricingResult = {
   evaluatedSellAds: EvaluatedAd[];
   qualifiedBuyAds: Ad[];
   evaluatedBuyAds: EvaluatedAd[];
+  /** Harga iklan jual eceran (hanya bila iklan eceran aktif). */
+  retailSell?: {
+    price: number;
+    basePrice: number;
+    desc: string;
+    competitorCount: number;
+    targetMerchant: string | null;
+    maxLimitIdr: number;
+    minLimitIdr: number;
+  };
   /** Gap Trap yang sedang terpicu per sisi (null = tidak ada pancingan). */
   gapTrapBuy: GapTrapDetection | null;
   gapTrapSell: GapTrapDetection | null;
@@ -420,11 +440,12 @@ export function isOwnAdFor(ad: Ad, config: CompetitorFilterConfig): boolean {
   const normalizeId = (s: unknown) => String(s || "").trim().replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
   const cleanBuyAdvNo = normalizeId(config.merchantBuyAdvNo);
   const cleanSellAdvNo = normalizeId(config.merchantSellAdvNo);
+  const cleanRetailAdvNo = normalizeId(config.merchantRetailSellAdvNo);
   const cleanAdAdvNo = normalizeId(ad.adv_no);
   const ownNickname = (config.ownMerchantNickname || "").trim().toLowerCase();
   const adMerchantName = (ad.merchant_name || "").trim().toLowerCase();
   const matches = (own: string) => own && (cleanAdAdvNo === own || own.includes(cleanAdAdvNo) || cleanAdAdvNo.includes(own));
-  if (cleanAdAdvNo && (matches(cleanBuyAdvNo) || matches(cleanSellAdvNo))) return true;
+  if (cleanAdAdvNo && (matches(cleanBuyAdvNo) || matches(cleanSellAdvNo) || matches(cleanRetailAdvNo))) return true;
   return Boolean(
     ownNickname && adMerchantName && (adMerchantName === ownNickname || adMerchantName.includes(ownNickname) || ownNickname.includes(adMerchantName)),
   );
@@ -499,28 +520,7 @@ export function evaluateCompetitorAds(
     const reasons: DisqualificationReason[] = [];
 
     // 0. Filter Iklan Milik Sendiri (Own Ad - agar bot tidak bersaing dengan diri sendiri)
-    const normalizeId = (s: unknown) => String(s || "").trim().replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
-    const cleanBuyAdvNo = normalizeId(config.merchantBuyAdvNo);
-    const cleanSellAdvNo = normalizeId(config.merchantSellAdvNo);
-    const cleanAdAdvNo = normalizeId(ad.adv_no);
-    const ownNickname = (config.ownMerchantNickname || "").trim().toLowerCase();
-    const adMerchantName = (ad.merchant_name || "").trim().toLowerCase();
-
-    const isAdvMatch = Boolean(
-      cleanAdAdvNo &&
-      (
-        (cleanBuyAdvNo && (cleanAdAdvNo === cleanBuyAdvNo || cleanBuyAdvNo.includes(cleanAdAdvNo) || cleanAdAdvNo.includes(cleanBuyAdvNo))) ||
-        (cleanSellAdvNo && (cleanAdAdvNo === cleanSellAdvNo || cleanSellAdvNo.includes(cleanAdAdvNo) || cleanAdAdvNo.includes(cleanSellAdvNo)))
-      )
-    );
-
-    const isNickMatch = Boolean(
-      ownNickname &&
-      adMerchantName &&
-      (adMerchantName === ownNickname || adMerchantName.includes(ownNickname) || ownNickname.includes(adMerchantName))
-    );
-
-    if (isAdvMatch || isNickMatch) {
+    if (isOwnAdFor(ad, config)) {
       reasons.push({
         code: "OWN_AD",
         message: "Iklan milik sendiri (diabaikan dari daftar kompetitor agar bot tidak memotong harga sendiri)",
@@ -916,34 +916,8 @@ export function computeCompetitorPricing(input: {
     ? fallbackBuyPrice
     : (liveMarketAnchor - halfSpread);
 
-  // Helper cek apakah iklan milik sendiri
-  const normalizeId = (s: unknown) => String(s || "").trim().replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
-  const cleanBuyAdvNo = normalizeId(config.merchantBuyAdvNo);
-  const cleanSellAdvNo = normalizeId(config.merchantSellAdvNo);
-  const ownNickname = (config.ownMerchantNickname || "").trim().toLowerCase();
-
-  const isOwnAd = (ad: Ad) => {
-    const cleanAdAdvNo = normalizeId(ad.adv_no);
-    const adMerchantName = (ad.merchant_name || "").trim().toLowerCase();
-
-    if (
-      cleanAdAdvNo &&
-      (
-        (cleanBuyAdvNo && (cleanAdAdvNo === cleanBuyAdvNo || cleanBuyAdvNo.includes(cleanAdAdvNo) || cleanAdAdvNo.includes(cleanBuyAdvNo))) ||
-        (cleanSellAdvNo && (cleanAdAdvNo === cleanSellAdvNo || cleanSellAdvNo.includes(cleanAdAdvNo) || cleanAdAdvNo.includes(cleanSellAdvNo)))
-      )
-    ) {
-      return true;
-    }
-    if (
-      ownNickname &&
-      adMerchantName &&
-      (adMerchantName === ownNickname || adMerchantName.includes(ownNickname) || ownNickname.includes(adMerchantName))
-    ) {
-      return true;
-    }
-    return false;
-  };
+  // Helper cek apakah iklan milik sendiri (iklan beli, jual utama, jual eceran, atau nickname sendiri)
+  const isOwnAd = (ad: Ad) => isOwnAdFor(ad, config);
 
   // ── Hitung Batas Pengaman JUAL (Sell Floor Guard) & BELI (Buy Floor) di Awal ──
   // Floor Jual Otomatis: HANYA dihitung jika ADA data modal HPP stok riil (> 0).
@@ -1364,26 +1338,77 @@ export function computeCompetitorPricing(input: {
   // ── Isi Celah Jual (Gap Fill) ──────────────────────────────────────────────
   // Pembeli melihat SEMUA iklan, urut termurah. Selama tidak ada iklan lain di antara harga kita dan iklan
   // berikutnya yang lebih mahal, menaikkan harga sampai tepat di bawah iklan itu tidak mengubah posisi kita.
-  let sellGapFill: CompetitorPricingResult["sellGapFill"];
-  if (
-    config.sellGapFillEnabled !== false &&
-    !(config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0) &&
-    recommendedSellPrice > 0
-  ) {
-    const base = recommendedSellPrice;
+  const gapFillSell = (base: number): CompetitorPricingResult["sellGapFill"] => {
+    if (config.sellGapFillEnabled === false || base <= 0) return undefined;
     const nextAbove = (sellRefAds || [])
       .filter((a) => !isOwnAd(a) && a.price > base)
       .sort((a, b) => a.price - b.price)[0];
+    if (!nextAbove) return undefined;
     const maxRaise = config.sellGapFillMaxRp && config.sellGapFillMaxRp > 0 ? config.sellGapFillMaxRp : 30;
-    if (nextAbove) {
-      let target = Math.min(nextAbove.price - 1, base + maxRaise);
-      if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) target = Math.min(target, config.maxPriceBoundRp);
-      if (target > base) {
-        recommendedSellPrice = target;
-        sellGapFill = { fromPrice: base, toPrice: target, nextPrice: nextAbove.price, nextMerchant: nextAbove.merchant_name };
-        activeSellDesc = `${activeSellDesc} · Isi Celah +Rp ${target - base}`;
-      }
+    let target = Math.min(nextAbove.price - 1, base + maxRaise);
+    if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) target = Math.min(target, config.maxPriceBoundRp);
+    return target > base ? { fromPrice: base, toPrice: target, nextPrice: nextAbove.price, nextMerchant: nextAbove.merchant_name } : undefined;
+  };
+  let sellGapFill: CompetitorPricingResult["sellGapFill"];
+  if (!(config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0)) {
+    sellGapFill = gapFillSell(recommendedSellPrice);
+    if (sellGapFill) {
+      recommendedSellPrice = sellGapFill.toPrice;
+      activeSellDesc = `${activeSellDesc} · Isi Celah +Rp ${sellGapFill.toPrice - sellGapFill.fromPrice}`;
     }
+  }
+
+  // ── Iklan Jual Eceran (iklan kedua, limit kecil) ───────────────────────────
+  // Melayani pembeli bernominal kecil yang tidak bisa memakai iklan utama (limit bawah besar). Acuannya
+  // kompetitor yang juga melayani nominal kecil (min transaksi <= limit atas eceran), dan harganya tidak
+  // pernah lebih murah dari iklan utama.
+  let retailSell: CompetitorPricingResult["retailSell"];
+  if (config.retailSellEnabled && config.merchantRetailSellAdvNo?.trim() && recommendedSellPrice > 0) {
+    const retailMax =
+      config.retailSellMaxLimitIdr && config.retailSellMaxLimitIdr > 0
+        ? config.retailSellMaxLimitIdr
+        : config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0
+          ? config.manualSellMinLimitIdr
+          : 10_000_000;
+    const retailMin = Math.max(50_000, config.retailSellMinLimitIdr && config.retailSellMinLimitIdr > 0 ? config.retailSellMinLimitIdr : 50_000);
+    const retailStock = config.retailSellStockUsdt && config.retailSellStockUsdt > 0 ? config.retailSellStockUsdt : 1_000;
+    const retailConfig: CompetitorFilterConfig = {
+      ...config,
+      minOrderLimitIdr: config.minOrderLimitIdr > 0 ? Math.min(config.minOrderLimitIdr, retailMax) : retailMax,
+      minMaxLimitIdr: 0,
+      minUsdtAmount: Math.min(config.minUsdtAmount, Math.floor(retailStock)),
+    };
+    const retail = evaluateCompetitorAds(sellRefAds, retailConfig, "sell_ref", calculatedSellFloor);
+    const rIdx = Math.min(Math.max(config.targetRank - 1, 0), Math.max(retail.qualified.length - 1, 0));
+    const rTarget = retail.qualified[rIdx] ?? null;
+    const rBase = retail.qualified.length
+      ? computeBasePrice("sell", retail.qualified, sellRefAds, rTarget, recommendedSellPrice)
+      : { basePrice: recommendedSellPrice, desc: "", isFallback: true };
+    let price = rBase.isFallback ? recommendedSellPrice : rBase.basePrice + config.sellOffsetRp;
+    let desc = rBase.isFallback ? "Ikut iklan utama (tidak ada kompetitor limit kecil yang lolos filter)" : `Limit kecil · ${rBase.desc}`;
+    // Anti-lonjakan: maksimal +50 di atas kompetitor limit kecil terbaik.
+    const bestSmall = retail.qualified[0]?.price ?? 0;
+    if (bestSmall > 0) price = Math.min(price, Math.max(calculatedSellFloor, bestSmall + 50));
+    if (calculatedSellFloor > 0) price = Math.max(price, calculatedSellFloor);
+    if (price < recommendedSellPrice) {
+      price = recommendedSellPrice;
+      desc = `${desc} → disamakan dengan iklan utama (tidak boleh lebih murah)`;
+    }
+    const rFill = gapFillSell(price);
+    if (rFill) {
+      price = rFill.toPrice;
+      desc = `${desc} · Isi Celah +Rp ${rFill.toPrice - rFill.fromPrice}`;
+    }
+    if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0) price = Math.min(price, Math.max(config.maxPriceBoundRp, calculatedSellFloor));
+    retailSell = {
+      price: Math.round(price),
+      basePrice: rBase.basePrice,
+      desc,
+      competitorCount: retail.qualified.length,
+      targetMerchant: rBase.isFallback ? null : (rTarget?.merchant_name ?? null),
+      maxLimitIdr: retailMax,
+      minLimitIdr: retailMin,
+    };
   }
 
   // 3. Hitung dan Terapkan Batas Pengaman BELI (Buy Ceiling Guard) dari Harga Pasar Kompetitor Murni
@@ -1820,6 +1845,7 @@ export function computeCompetitorPricing(input: {
     evaluatedBuyAds: evaluatedBuy,
     ...(lowStockSell ? { lowStockSell } : {}),
     ...(sellGapFill ? { sellGapFill } : {}),
+    ...(retailSell ? { retailSell } : {}),
     gapTrapBuy,
     gapTrapSell,
     sellGuard,

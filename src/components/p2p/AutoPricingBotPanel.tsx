@@ -83,6 +83,8 @@ import { getActiveP2pOrdersSummary } from "@/lib/payment-verifier";
 import { CommitNumberInput } from "./CommitNumberInput";
 import { getServerBotStatus } from "@/lib/server-bot/status";
 import { MerchantLevelDiagnostics } from "./MerchantLevelDiagnostics";
+import { MerchantProfileDialog, type MerchantProfileTarget } from "./MerchantProfileDialog";
+import { getMerchantAdsList } from "@/lib/binance-merchant";
 import {
   computeCompetitorPricing,
   DEFAULT_BOT_CONFIG,
@@ -549,6 +551,23 @@ export function AutoPricingBotPanel({
 
   // Gap Trap live: hasil yang sama persis dipakai bot (terverifikasi & lolos filter, hingga N iklan teratas)
   const gapTraps = { buy: pricingResult.gapTrapBuy, sell: pricingResult.gapTrapSell };
+
+  // Profil merchant kompetitor (dialog dari tabel Radar)
+  const [profileTarget, setProfileTarget] = useState<MerchantProfileTarget | null>(null);
+
+  // Iklan jual milik sendiri (untuk memilih iklan eceran)
+  const [showRetailPicker, setShowRetailPicker] = useState(false);
+  const ownAdsQuery = useQuery({
+    queryKey: ["own-merchant-ads"],
+    queryFn: () => getMerchantAdsList({ data: { sessionToken: sessionToken ?? undefined, page: 1, rows: 50 } }),
+    enabled: Boolean(sessionToken) && (showRetailPicker || Boolean(config.retailSellEnabled)),
+    staleTime: 30_000,
+  });
+  const ownSellAds = (ownAdsQuery.data?.ok && Array.isArray(ownAdsQuery.data.data) ? ownAdsQuery.data.data : []).filter(
+    (a) =>
+      String(a.tradeType).toUpperCase() === "SELL" &&
+      String(a.advNo).replace(/^#/, "") !== (config.merchantSellAdvNo || "").trim().replace(/^#/, ""),
+  );
 
   const handleCopy = (price: number, side: "buy" | "sell") => {
     navigator.clipboard.writeText(String(Math.round(price)));
@@ -2352,7 +2371,18 @@ export function AutoPricingBotPanel({
                         >
                           <td className="p-2">
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="font-semibold text-foreground">{item.ad.merchant_name}</span>
+                              {item.ad.merchant_no ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setProfileTarget({ merchantNo: item.ad.merchant_no!, name: item.ad.merchant_name })}
+                                  className="font-semibold text-foreground underline decoration-dotted decoration-muted-foreground/50 underline-offset-2 hover:text-primary"
+                                  title="Lihat profil & semua iklan merchant ini"
+                                >
+                                  {item.ad.merchant_name}
+                                </button>
+                              ) : (
+                                <span className="font-semibold text-foreground">{item.ad.merchant_name}</span>
+                              )}
                               {item.ad.merchant_level === "block" && (
                                 <span className="inline-flex items-center gap-0.5 rounded bg-purple-500/20 border border-purple-500/50 px-1 py-0.2 text-[0.6rem] font-bold text-purple-300 shadow-xs" title="Block Merchant (Diamond Badge / Block Trade Zone)">
                                   💎 Block
@@ -2449,6 +2479,19 @@ export function AutoPricingBotPanel({
                           </td>
                           <td className="p-2 text-center">
                             <div className="flex items-center justify-center gap-1">
+                              {/* Profil merchant */}
+                              {item.ad.merchant_no && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  type="button"
+                                  onClick={() => setProfileTarget({ merchantNo: item.ad.merchant_no!, name: item.ad.merchant_name })}
+                                  className="h-6 w-6 p-0 text-xs text-muted-foreground hover:text-primary hover:bg-primary/10"
+                                  title="Lihat profil & semua iklan merchant ini"
+                                >
+                                  <Eye className="size-3" />
+                                </Button>
+                              )}
                               {/* Tombol Blacklist 1-klik */}
                               <Button
                                 variant="ghost"
@@ -2500,6 +2543,7 @@ export function AutoPricingBotPanel({
                   )}
                 </tbody>
               </table>
+              <MerchantProfileDialog target={profileTarget} sessionToken={sessionToken} onClose={() => setProfileTarget(null)} />
             </div>
           </div>
         )}
@@ -5659,6 +5703,104 @@ export function AutoPricingBotPanel({
                         {pricingResult.lowStockSell.reason}
                       </div>
                     )}
+
+                    {/* Iklan jual eceran (iklan kedua, limit kecil) */}
+                    <div className="space-y-1.5 pt-1.5 border-t border-border/40">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex flex-col">
+                          <span className="text-xs font-semibold text-foreground">Iklan Eceran (Iklan Jual Kedua):</span>
+                          <span className="text-[0.65rem] text-muted-foreground">
+                            Iklan jual cadangan Anda dipakai untuk pembeli kecil. Harga ikut penjual limit kecil, tidak pernah lebih murah dari iklan utama. Stok eceran diisi dulu, sisanya untuk iklan utama. Dijalankan oleh bot server.
+                          </span>
+                        </div>
+                        <Switch
+                          checked={Boolean(config.retailSellEnabled)}
+                          disabled={!config.merchantRetailSellAdvNo}
+                          onCheckedChange={(v) => updateConfig({ retailSellEnabled: v })}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[0.65rem] text-muted-foreground shrink-0">Iklan eceran:</span>
+                        {showRetailPicker || !config.merchantRetailSellAdvNo ? (
+                          <select
+                            value={config.merchantRetailSellAdvNo || ""}
+                            onFocus={() => setShowRetailPicker(true)}
+                            onClick={() => setShowRetailPicker(true)}
+                            onChange={(e) => {
+                              updateConfig({ merchantRetailSellAdvNo: e.target.value, ...(e.target.value ? {} : { retailSellEnabled: false }) });
+                              setShowRetailPicker(false);
+                            }}
+                            className="h-7 min-w-0 flex-1 rounded-md border border-border bg-surface px-2 text-[0.68rem] text-foreground"
+                          >
+                            <option value="">{ownAdsQuery.isFetching ? "Memuat iklan…" : "Pilih iklan jual cadangan"}</option>
+                            {ownSellAds.map((a) => (
+                              <option key={a.advNo} value={String(a.advNo)}>
+                                #…{String(a.advNo).slice(-6)} · Rp {Number(a.price).toLocaleString("id-ID")} · limit{" "}
+                                {Number(a.minSingleTransAmount ?? 0).toLocaleString("id-ID")}–{Number(a.maxSingleTransAmount ?? 0).toLocaleString("id-ID")}
+                                {Number(a.advStatus) === 1 ? " · online" : " · offline"}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setShowRetailPicker(true)}
+                            className="num text-[0.68rem] font-semibold text-foreground hover:text-primary"
+                            title="Ganti iklan eceran"
+                          >
+                            #…{config.merchantRetailSellAdvNo.slice(-6)} (ganti)
+                          </button>
+                        )}
+                      </div>
+                      {config.merchantRetailSellAdvNo && (
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="space-y-0.5">
+                            <span className="text-[0.6rem] text-muted-foreground">Stok (USDT)</span>
+                            <CommitNumberInput
+                              min={1}
+                              value={config.retailSellStockUsdt || 1000}
+                              onChange={(e) => updateConfig({ retailSellStockUsdt: Math.max(1, Number(e.target.value) || 1000) })}
+                              className="h-7 text-xs bg-surface font-mono text-right"
+                            />
+                          </div>
+                          <div className="space-y-0.5">
+                            <span className="text-[0.6rem] text-muted-foreground">Limit bawah</span>
+                            <CommitNumberInput
+                              min={50000}
+                              value={config.retailSellMinLimitIdr || 50000}
+                              onChange={(e) => updateConfig({ retailSellMinLimitIdr: Math.max(50_000, Number(e.target.value) || 50_000) })}
+                              className="h-7 text-xs bg-surface font-mono text-right"
+                            />
+                          </div>
+                          <div className="space-y-0.5">
+                            <span className="text-[0.6rem] text-muted-foreground">Limit atas</span>
+                            <CommitNumberInput
+                              min={0}
+                              value={config.retailSellMaxLimitIdr && config.retailSellMaxLimitIdr > 0 ? config.retailSellMaxLimitIdr : ""}
+                              onChange={(e) => {
+                                const v = Number(e.target.value);
+                                updateConfig({ retailSellMaxLimitIdr: Number.isFinite(v) && v > 0 ? v : 0 });
+                              }}
+                              placeholder={String(config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0 ? config.manualSellMinLimitIdr : 10_000_000)}
+                              className="h-7 text-xs bg-surface font-mono text-right"
+                            />
+                          </div>
+                        </div>
+                      )}
+                      {pricingResult.retailSell && (
+                        <div className="rounded-md border border-primary/40 bg-primary/10 p-2 text-[0.65rem] leading-relaxed text-foreground">
+                          <strong className="num">Harga eceran: {fmtRp2(pricingResult.retailSell.price)}</strong>
+                          {pricingResult.retailSell.price > recommendedSellPrice && (
+                            <span className="num text-bid"> (+Rp {pricingResult.retailSell.price - Math.round(recommendedSellPrice)} dari iklan utama)</span>
+                          )}
+                          <br />
+                          <span className="text-muted-foreground">
+                            {pricingResult.retailSell.desc} · {pricingResult.retailSell.competitorCount} kompetitor limit ≤ Rp{" "}
+                            {pricingResult.retailSell.maxLimitIdr.toLocaleString("id-ID")}
+                          </span>
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   {/* 5. Live Summary Data Terkirim ke Binance */}
