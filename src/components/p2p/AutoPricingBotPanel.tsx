@@ -5740,7 +5740,7 @@ export function AutoPricingBotPanel({
                       <div className="flex flex-col">
                         <span className="text-xs font-semibold text-foreground">Harga Ikut Penjual Limit Kecil Saat Stok Tipis:</span>
                         <span className="text-[0.65rem] text-muted-foreground">
-                          Jika nilai stok jual di bawah Limit Bawah, acuan harga diambil dari kompetitor yang min transaksinya ≤ kapasitas stok Anda.
+                          Jika nilai stok jual di bawah Limit Bawah, acuan harga diambil dari kompetitor yang min transaksinya ≤ kapasitas stok Anda. Tidak berlaku saat Iklan Eceran ON (iklan utama di-offline-kan, stok dijual lewat iklan eceran).
                         </span>
                       </div>
                       <Switch
@@ -5868,6 +5868,11 @@ export function AutoPricingBotPanel({
                     </select>
                     <p className="text-[0.65rem] text-muted-foreground">
                       Harus berbeda dari iklan jual utama. Harga, stok, dan limit iklan ini akan diatur oleh bot.
+                    </p>
+                    <p className="text-[0.65rem] text-muted-foreground">
+                      Saat ON: bila nilai stok di bawah Limit Bawah iklan utama
+                      {config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0 ? ` (${fmtRp(config.manualSellMinLimitIdr)})` : ""}, iklan utama di-OFFLINE-kan
+                      (harga & limitnya tidak diubah) dan stok dijual lewat iklan eceran. Iklan utama ONLINE lagi saat stok cukup.
                     </p>
                   </div>
 

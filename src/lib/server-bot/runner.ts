@@ -61,6 +61,8 @@ type State = {
   pushFail: { buy: number; sell: number };
   pushRetryAt: { buy: number; sell: number };
   buyAdOfflined: boolean;
+  /** Iklan jual utama di-OFFLINE-kan karena nilai stok < limit bawahnya (stok dijual lewat iklan eceran). */
+  mainSellParked: boolean;
   /** Stok saat iklan di-OFFLINE-kan otomatis (stok habis/remah): jangan push ulang sampai stok berubah. */
   offlinedAtStock: { buy?: number | undefined; sell?: number | undefined };
   war: { buy: typeof EMPTY_WAR_SIDE; sell: typeof EMPTY_WAR_SIDE };
@@ -98,6 +100,7 @@ const st = (): State =>
     pushFail: { buy: 0, sell: 0 },
     pushRetryAt: { buy: 0, sell: 0 },
     buyAdOfflined: false,
+    mainSellParked: false,
     offlinedAtStock: {},
     war: { buy: EMPTY_WAR_SIDE, sell: EMPTY_WAR_SIDE },
     retail: { fail: 0, retryAt: 0, wasActive: false },
@@ -432,15 +435,43 @@ async function autoPushTick(): Promise<void> {
     const stockChanged = !hasActiveSellOrder && s.lastPushedStock.sell !== stock;
     // Iklan sedang OFFLINE karena stok habis: tunggu stok berubah, jangan OFFLINE-kan berulang tiap detik.
     const waitingForStock = s.offlinedAtStock.sell !== undefined && s.offlinedAtStock.sell === (stock ?? 0);
-    if ((priceChanged || stockChanged) && !waitingForStock) {
-      s.lastPushTime = Date.now();
-      // Jeda 1 detik setelah push beli agar request tidak bertabrakan di Binance SAPI.
-      if (buyTriggered) await new Promise((r) => setTimeout(r, 1000));
-      const res = await pushSide("sell", rounded, ctx).catch((err) => {
-        log("error", `Push jual gagal: ${err instanceof Error ? err.message : String(err)}`, false);
-        return undefined;
-      });
-      recordPushResult("sell", res, stock, !hasActiveSellOrder);
+    // Iklan eceran ON: iklan utama TIDAK dikecilkan limit bawahnya saat stok tipis. Bila nilai stok tidak
+    // cukup untuk limit bawah iklan utama, iklan utama di-OFFLINE-kan dan stok dijual lewat iklan eceran.
+    const mainMinLimit = config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0 ? config.manualSellMinLimitIdr : 0;
+    const mainStockIdr = Math.floor((stock ?? 0) * rounded);
+    const parkMain = retailActive && !hasActiveSellOrder && mainMinLimit > 0 && mainStockIdr < mainMinLimit;
+    if (parkMain) {
+      if (!s.mainSellParked) {
+        const res = await toggleMerchantAdStatusInternal(config.merchantSellAdvNo.trim(), "OFFLINE").catch(() => null);
+        if (res?.ok) {
+          s.mainSellParked = true;
+          log(
+            "push",
+            `Stok jual ± Rp ${mainStockIdr.toLocaleString("id-ID")} di bawah limit bawah iklan utama (Rp ${mainMinLimit.toLocaleString("id-ID")}): iklan utama di-OFFLINE-kan, stok dijual lewat iklan eceran.`,
+            true,
+          );
+        }
+      }
+    } else {
+      const unpark = s.mainSellParked;
+      if (unpark) {
+        s.mainSellParked = false;
+        delete s.lastPushedStock.sell; // paksa push stok & limit penuh
+      }
+      if ((unpark || priceChanged || stockChanged) && !waitingForStock) {
+        s.lastPushTime = Date.now();
+        // Jeda 1 detik setelah push beli agar request tidak bertabrakan di Binance SAPI.
+        if (buyTriggered) await new Promise((r) => setTimeout(r, 1000));
+        const res = await pushSide("sell", rounded, ctx).catch((err) => {
+          log("error", `Push jual gagal: ${err instanceof Error ? err.message : String(err)}`, false);
+          return undefined;
+        });
+        recordPushResult("sell", res, stock, !hasActiveSellOrder);
+        if (unpark && res?.ok) {
+          const on = await toggleMerchantAdStatusInternal(config.merchantSellAdvNo.trim(), "ONLINE").catch(() => null);
+          log("push", on?.ok ? "Stok cukup lagi untuk limit iklan utama: iklan utama ONLINE kembali." : "Stok cukup lagi, tetapi gagal menyalakan iklan utama.", Boolean(on?.ok));
+        }
+      }
     }
   }
 

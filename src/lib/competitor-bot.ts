@@ -1135,6 +1135,8 @@ export function computeCompetitorPricing(input: {
   const sellCapacityIdr = Math.floor(sellAdStockUsdt * liveMarketAnchor);
   if (
     config.lowStockSellPricingEnabled !== false &&
+    // Iklan eceran ON: stok tipis dijual lewat iklan eceran, harga iklan utama tidak diubah.
+    !(config.retailSellEnabled && config.merchantRetailSellAdvNo?.trim()) &&
     !(config.manualSellPriceOverrideRp && config.manualSellPriceOverrideRp > 0) &&
     sellMinLimitIdr > 0 &&
     sellCapacityIdr >= 1_000_000 && // di bawah ini iklan jual di-offline-kan (sisa stok remah)
