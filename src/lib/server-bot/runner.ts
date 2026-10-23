@@ -340,10 +340,27 @@ async function autoPushTick(): Promise<void> {
   const recommendedBuyPrice = applyPriceWarHold(pricing.recommendedBuyPrice, s.war.buy, "up");
   const recommendedSellPrice = applyPriceWarHold(pricing.recommendedSellPrice, s.war.sell, "down");
 
-  const totalSellStockUsdt = stockUsdt > 0 ? Math.max(0, Math.floor((stockUsdt / 1.0005) * 100) / 100) : 0;
+  // Stok yang bisa dipasang di iklan jual = saldo BEBAS Funding. USDT yang dibekukan Binance (escrow order
+  // berjalan / banding) tidak bisa dijual lagi, jadi tidak ikut dipasang.
+  const sellableUsdt = isFundingLive ? Math.max(0, funding!.free ?? funding!.usdt ?? 0) : stockUsdt;
+  const totalSellStockUsdt = sellableUsdt > 0 ? Math.max(0, Math.floor((sellableUsdt / 1.0005) * 100) / 100) : 0;
+  // Order BANDING tidak dianggap order berjalan: banding bisa berlangsung berjam-jam dan stoknya sudah
+  // dibekukan Binance, jadi stok & limit iklan tetap diperbarui dengan saldo bebas.
+  const isAppeal = (o: { orderStatus?: string; rawOrderStatus?: number }) => /APPEAL/i.test(o.orderStatus ?? "") || o.rawOrderStatus === 5;
+  const appealOrders = (orders?.activeSellOrders ?? []).filter(isAppeal);
+  if (appealOrders.length > 0) {
+    const frozen = appealOrders.reduce((sum, o) => sum + (o.amountUsdt || 0), 0);
+    logOnce(
+      `appeal-${appealOrders.map((o) => o.orderNumber).join(",")}`,
+      "push",
+      `${appealOrders.length} order jual sedang BANDING (${frozen.toLocaleString("id-ID")} USDT dibekukan Binance). Iklan tetap diperbarui memakai saldo bebas ${totalSellStockUsdt.toLocaleString("id-ID")} USDT.`,
+    );
+  }
   const hasActiveOrderOn = (advNo: string | undefined) => {
     const clean = advNo?.trim().replace(/^#/, "");
-    return Boolean(clean && (orders?.activeSellOrders ?? []).some((o) => o.advNo && o.advNo.trim().replace(/^#/, "") === clean));
+    return Boolean(
+      clean && (orders?.activeSellOrders ?? []).some((o) => !isAppeal(o) && o.advNo && o.advNo.trim().replace(/^#/, "") === clean),
+    );
   };
   const cleanSellAdvNo = config.merchantSellAdvNo?.trim().replace(/^#/, "");
   const hasActiveSellOrder = hasActiveOrderOn(cleanSellAdvNo);

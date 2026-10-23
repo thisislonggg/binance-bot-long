@@ -131,6 +131,8 @@ interface AutoPricingBotPanelProps {
   bankBalanceIdr?: number;
   initialCapitalIdr?: number;
   liveStockUsdt?: number;
+  /** Saldo USDT bebas (tanpa yang dibekukan untuk order berjalan / banding): stok yang bisa dipasang di iklan jual. */
+  sellableStockUsdt?: number;
   stockCapitalIdr?: number;
   sessionToken?: string | null;
   indodaxSpotPrice?: number;
@@ -162,6 +164,7 @@ export function AutoPricingBotPanel({
   bankBalanceIdr = 0,
   initialCapitalIdr = 0,
   liveStockUsdt = 0,
+  sellableStockUsdt,
   stockCapitalIdr = 0,
   sessionToken,
   indodaxSpotPrice = 0,
@@ -416,9 +419,12 @@ export function AutoPricingBotPanel({
   const activeSellOrdersList = activeOrdersQuery.data?.activeSellOrders || [];
 
   const cleanSellAdvNo = config.merchantSellAdvNo?.trim().replace(/^#/, "");
+  // Order BANDING tidak menahan update stok (stoknya sudah dibekukan Binance, banding bisa berjam-jam).
+  const appealSellOrders = activeSellOrdersList.filter((o) => /APPEAL/i.test(o.orderStatus ?? "") || o.rawOrderStatus === 5);
   const hasActiveSellOrder = Boolean(
     cleanSellAdvNo &&
     activeSellOrdersList.some((o) => {
+      if (appealSellOrders.includes(o)) return false;
       if (o.advNo) {
         return o.advNo.trim().replace(/^#/, "") === cleanSellAdvNo;
       }
@@ -616,16 +622,19 @@ export function AutoPricingBotPanel({
 
   // Kalkulasi Max Available Stok Jual persis sesuai kalkulator "Max. available: ... USDT All" di Binance P2P
   // Binance memotong maker reserved fee (0.05%) saat posting iklan sell dari Funding Wallet
+  // Stok iklan jual = saldo bebas (USDT yang dibekukan untuk order berjalan / banding tidak bisa dijual).
+  const sellableUsdt = sellableStockUsdt ?? liveStockUsdt;
   const maxAvailableSellStockUsdt = useMemo(() => {
-    if (!liveStockUsdt || liveStockUsdt <= 0) return 0;
-    const safeAvailable = Math.floor((liveStockUsdt / 1.0005) * 100) / 100;
+    if (!sellableUsdt || sellableUsdt <= 0) return 0;
+    const safeAvailable = Math.floor((sellableUsdt / 1.0005) * 100) / 100;
     return Math.max(0, safeAvailable);
-  }, [liveStockUsdt]);
+  }, [sellableUsdt]);
 
   const reservedFeeSellUsdt = useMemo(() => {
-    if (!liveStockUsdt || liveStockUsdt <= 0) return 0;
-    return Math.max(0, Math.round((liveStockUsdt - maxAvailableSellStockUsdt) * 100) / 100);
-  }, [liveStockUsdt, maxAvailableSellStockUsdt]);
+    if (!sellableUsdt || sellableUsdt <= 0) return 0;
+    return Math.max(0, Math.round((sellableUsdt - maxAvailableSellStockUsdt) * 100) / 100);
+  }, [sellableUsdt, maxAvailableSellStockUsdt]);
+  const frozenUsdt = Math.max(0, Math.round(((liveStockUsdt || 0) - (sellableUsdt || 0)) * 100) / 100);
 
   const handleApplySellOnly = () => {
     const effectiveStock =
@@ -5659,6 +5668,18 @@ export function AutoPricingBotPanel({
                         USDT
                       </span>
                     </div>
+                    {(appealSellOrders.length > 0 || frozenUsdt >= 1) && (
+                      <div className="flex items-start gap-1 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[0.62rem] text-amber-400">
+                        <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+                        <span>
+                          {appealSellOrders.length > 0
+                            ? `${appealSellOrders.length} order sedang BANDING · `
+                            : ""}
+                          {frozenUsdt.toLocaleString("id-ID")} USDT dibekukan Binance. Iklan memakai saldo bebas{" "}
+                          {maxAvailableSellStockUsdt.toLocaleString("id-ID")} USDT.
+                        </span>
+                      </div>
+                    )}
                     <p className="text-[0.65rem] text-muted-foreground leading-relaxed">
                       {config.manualSellStockUsdt && config.manualSellStockUsdt > 0
                         ? `Menggunakan stok manual: ${config.manualSellStockUsdt} USDT. Kosongkan untuk otomatis pakai Max. available dari Binance.`

@@ -1130,6 +1130,7 @@ function Dashboard() {
               bankBalanceIdr={freeCashIdr}
               initialCapitalIdr={initialCapital}
               liveStockUsdt={stockUsdt}
+              sellableStockUsdt={isFundingLive ? Math.max(0, fb!.free ?? fb!.usdt ?? 0) : stockUsdt}
               stockCapitalIdr={stockCapitalIdr}
               sessionToken={sessionToken ?? undefined}
               indodaxSpotPrice={s.cross_platform?.indodax_usdt_idr_spot || 0}
