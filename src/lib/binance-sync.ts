@@ -61,8 +61,10 @@ export async function fetchC2cOrdersForWindow(
 ): Promise<BinanceC2cOrder[]> {
   const allOrders: BinanceC2cOrder[] = [];
   let page = 1;
-  const rows = 100;
-  const maxPages = 20; // safety limit hingga 2000 order per sisi per window
+  // Binance mengembalikan MAKSIMAL 50 order per halaman walau diminta lebih. Dengan rows=100 dan berhenti saat
+  // hasil < 100, hanya 50 order pertama per window yang terbaca (order lain tidak tersinkron).
+  const rows = 50;
+  const maxPages = 60; // safety limit hingga 3000 order per sisi per window
 
   // Dukungan proxy atau custom base URL jika server hosting berada di region terblokir (US)
   const baseUrl =
@@ -113,7 +115,8 @@ export async function fetchC2cOrdersForWindow(
     const list = (Array.isArray(json.data) ? json.data : Array.isArray(json) ? json : []) as BinanceC2cOrder[];
     allOrders.push(...list);
 
-    if (list.length < rows) {
+    const total = Number(json.total);
+    if (list.length < rows || (Number.isFinite(total) && total > 0 && allOrders.length >= total)) {
       break; // Halaman terakhir tercapai
     }
     page++;
