@@ -520,6 +520,33 @@ export const getMerchantAdsList = createServerFn({ method: "POST" })
 // Jalur pengambilan detail iklan yang terakhir berhasil (per instance server). Dicoba duluan pada
 // panggilan berikutnya, sehingga satu fetch detail biasanya cukup 1 request alih-alih sampai 6.
 let preferredAdDetailPath: number | null = null;
+// Hasil tiap jalur pada panggilan fetchAdDetailRobustly terakhir. Tanpa ini, API Key ditolak / IP belum
+// di-whitelist / advNo usang semuanya tampil sebagai "iklan tidak ditemukan" sehingga penyebabnya tersembunyi.
+let lastAdDetailTrace: string[] = [];
+
+function adDetailFailureNote(): string {
+  if (lastAdDetailTrace.length === 0) return "";
+  return ` Respon Binance: ${lastAdDetailTrace.join(" | ")}`;
+}
+
+// Ringkas daftar iklan dari respon list ("#advNo SELL, ...") agar advNo yang salah langsung terlihat.
+function summarizeAdList(data: unknown): string {
+  const list = Array.isArray(data)
+    ? data
+    : data && typeof data === "object" && Array.isArray((data as Record<string, unknown>)["data"])
+    ? ((data as Record<string, unknown>)["data"] as unknown[])
+    : null;
+  if (!list) return "OK tapi format daftar tidak dikenali";
+  if (list.length === 0) return "OK, akun tidak punya iklan";
+  const items = list
+    .slice(0, 6)
+    .map((item) => {
+      const ad = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+      return `#${String(ad["advNo"] ?? "?")} ${String(ad["tradeType"] ?? "")}`.trim();
+    })
+    .join(", ");
+  return `OK, iklan di akun: ${items}${list.length > 6 ? ` (+${list.length - 6} lagi)` : ""}`;
+}
 
 async function fetchAdDetailRobustly(
   advNo: string,
@@ -633,6 +660,7 @@ async function fetchAdDetailRobustly(
       ? [preferredAdDetailPath, ...paths.map((_, i) => i).filter((i) => i !== preferredAdDetailPath)]
       : paths.map((_, i) => i);
 
+  lastAdDetailTrace = [];
   for (const i of order) {
     try {
       const { ad, res } = await paths[i]!();
@@ -640,9 +668,16 @@ async function fetchAdDetailRobustly(
         preferredAdDetailPath = i;
         return ad;
       }
+      const outcome = !res.ok
+        ? `${res.message || res.error} [${res.code}]`
+        : i >= 3
+        ? summarizeAdList(res.data)
+        : "OK tapi data iklan kosong";
+      lastAdDetailTrace.push(`jalur ${i}: ${outcome}`);
       if (isFatalBinanceError(res)) return null; // rate limit / jaringan: jangan bombardir jalur lain
-    } catch {
+    } catch (err) {
       // Lanjut ke jalur berikutnya
+      lastAdDetailTrace.push(`jalur ${i}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -741,7 +776,7 @@ export async function updateMerchantAdInternal(data: UpdateAdInternalParams): Pr
         ok: false,
         code: "ADV_NOT_FOUND",
         error: `Iklan #${cleanAdvNo} tidak ditemukan pada akun Binance API Key Anda.`,
-        message: `Iklan #${cleanAdvNo} tidak ditemukan di akun Binance Anda. Pastikan API Key benar dan Anda memiliki iklan P2P aktif.`,
+        message: `Iklan #${cleanAdvNo} tidak ditemukan di akun Binance Anda. Pastikan API Key benar dan Anda memiliki iklan P2P aktif.${adDetailFailureNote()}`,
         timestamp: Date.now(),
       };
     }
@@ -1485,7 +1520,7 @@ export const getMerchantAdDetail = createServerFn({ method: "POST" })
         ok: false,
         code: "ADV_NOT_FOUND",
         error: `Iklan #${cleanAdvNo} tidak ditemukan di akun Binance Anda.`,
-        message: `Iklan #${cleanAdvNo} tidak ditemukan. Pastikan nomor advNo benar.`,
+        message: `Iklan #${cleanAdvNo} tidak ditemukan. Pastikan nomor advNo benar.${adDetailFailureNote()}`,
       };
     }
 
