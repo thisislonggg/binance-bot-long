@@ -61,7 +61,7 @@ type State = {
   pushFail: { buy: number; sell: number };
   pushRetryAt: { buy: number; sell: number };
   buyAdOfflined: boolean;
-  /** Iklan jual utama di-OFFLINE-kan karena nilai stok < limit bawahnya (stok dijual lewat iklan eceran). */
+  /** Iklan jual utama dibiarkan apa adanya karena nilai stok < limit bawahnya (stok dijual lewat iklan eceran). */
   mainSellParked: boolean;
   /** Stok saat iklan di-OFFLINE-kan otomatis (stok habis/remah): jangan push ulang sampai stok berubah. */
   offlinedAtStock: { buy?: number | undefined; sell?: number | undefined };
@@ -452,22 +452,20 @@ async function autoPushTick(): Promise<void> {
     const stockChanged = !hasActiveSellOrder && s.lastPushedStock.sell !== stock;
     // Iklan sedang OFFLINE karena stok habis: tunggu stok berubah, jangan OFFLINE-kan berulang tiap detik.
     const waitingForStock = s.offlinedAtStock.sell !== undefined && s.offlinedAtStock.sell === (stock ?? 0);
-    // Iklan eceran ON: iklan utama TIDAK dikecilkan limit bawahnya saat stok tipis. Bila nilai stok tidak
-    // cukup untuk limit bawah iklan utama, iklan utama di-OFFLINE-kan dan stok dijual lewat iklan eceran.
+    // Iklan eceran ON: iklan utama TIDAK disentuh saat stok tipis. Bila nilai stok tidak cukup untuk limit
+    // bawah iklan utama, harga, stok, limit, dan status iklan utama dibiarkan apa adanya (tetap ONLINE);
+    // hanya iklan eceran yang diperbarui.
     const mainMinLimit = config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0 ? config.manualSellMinLimitIdr : 0;
     const mainStockIdr = Math.floor((stock ?? 0) * rounded);
-    const parkMain = retailActive && !hasActiveSellOrder && mainMinLimit > 0 && mainStockIdr < mainMinLimit;
+    const parkMain = retailActive && mainMinLimit > 0 && mainStockIdr < mainMinLimit;
     if (parkMain) {
       if (!s.mainSellParked) {
-        const res = await toggleMerchantAdStatusInternal(config.merchantSellAdvNo.trim(), "OFFLINE").catch(() => null);
-        if (res?.ok) {
-          s.mainSellParked = true;
-          log(
-            "push",
-            `Stok jual ± Rp ${mainStockIdr.toLocaleString("id-ID")} di bawah limit bawah iklan utama (Rp ${mainMinLimit.toLocaleString("id-ID")}): iklan utama di-OFFLINE-kan, stok dijual lewat iklan eceran.`,
-            true,
-          );
-        }
+        s.mainSellParked = true;
+        log(
+          "push",
+          `Stok jual ± Rp ${mainStockIdr.toLocaleString("id-ID")} di bawah limit bawah iklan utama (Rp ${mainMinLimit.toLocaleString("id-ID")}): iklan utama dibiarkan apa adanya, stok dijual lewat iklan eceran.`,
+          true,
+        );
       }
     } else {
       const unpark = s.mainSellParked;
@@ -484,10 +482,7 @@ async function autoPushTick(): Promise<void> {
           return undefined;
         });
         recordPushResult("sell", res, stock, !hasActiveSellOrder);
-        if (unpark && res?.ok) {
-          const on = await toggleMerchantAdStatusInternal(config.merchantSellAdvNo.trim(), "ONLINE").catch(() => null);
-          log("push", on?.ok ? "Stok cukup lagi untuk limit iklan utama: iklan utama ONLINE kembali." : "Stok cukup lagi, tetapi gagal menyalakan iklan utama.", Boolean(on?.ok));
-        }
+        if (unpark && res?.ok) log("push", "Stok cukup lagi untuk limit iklan utama: iklan utama kembali diatur bot.", true);
       }
     }
   }

@@ -777,6 +777,14 @@ export function AutoPricingBotPanel({
 
   // ── Iklan jual eceran: harga = harga jual utama + markup, stok = semua stok tersedia (atau manual) ──
   const retailAdvNo = (config.merchantRetailSellAdvNo || "").trim();
+  const cleanRetailAdvNo = retailAdvNo.replace(/^#/, "");
+  const retailActive = Boolean(config.retailSellEnabled && cleanRetailAdvNo && cleanRetailAdvNo !== cleanSellAdvNo);
+  const retailHasActiveOrder = Boolean(
+    cleanRetailAdvNo &&
+      activeSellOrdersList.some(
+        (o) => !appealSellOrders.includes(o) && o.advNo && o.advNo.trim().replace(/^#/, "") === cleanRetailAdvNo,
+      ),
+  );
   const retailMarkupRp = Number.isFinite(config.retailSellMarkupRp) ? Math.round(config.retailSellMarkupRp as number) : 10;
   const retailFloor = Math.max(sellGuard.floorPrice || 0, config.manualSellFloorRp || 0, config.minPriceBoundRp || 0);
   const retailPrice = (() => {
@@ -829,6 +837,7 @@ export function AutoPricingBotPanel({
 
   const toggleRetailAd = async (on: boolean) => {
     updateConfig({ retailSellEnabled: on });
+    retailPushRef.current = { fail: 0, retryAt: 0 };
     if (!retailAdvNo) return;
     setIsTogglingRetail(true);
     try {
@@ -1112,6 +1121,14 @@ export function AutoPricingBotPanel({
   // Backoff per sisi setelah push gagal (5s, 10s, 20s ... maks 60s) agar retry tidak membanjiri Binance SAPI.
   const pushFailRef = useRef<{ buy: number; sell: number }>({ buy: 0, sell: 0 });
   const pushRetryAtRef = useRef<{ buy: number; sell: number }>({ buy: 0, sell: 0 });
+  // Iklan jual utama sedang dibiarkan apa adanya (stok tipis, dijual lewat iklan eceran).
+  const mainSellFrozenRef = useRef(false);
+  // Auto-push iklan eceran: harga/stok terakhir yang dikonfirmasi Binance + backoff, sama seperti iklan utama.
+  const isPushingRetailRef = useRef(false);
+  const retailPushRef = useRef<{ lastPrice?: number; lastStock?: number; fail: number; retryAt: number; offlinedAtStock?: number }>({
+    fail: 0,
+    retryAt: 0,
+  });
 
   const recordPushResult = (
     side: "buy" | "sell",
@@ -1168,6 +1185,7 @@ export function AutoPricingBotPanel({
     if (now - lastPushTimeRef.current < minIntervalMs) return;
 
     let buyTriggered = false;
+    let sellTriggered = false;
 
     if (
       config.merchantBuyAdvNo &&
@@ -1317,11 +1335,29 @@ export function AutoPricingBotPanel({
           ? maxAvailableSellStockUsdt
           : undefined;
 
+      // Iklan eceran ON: iklan utama TIDAK disentuh saat stok tipis. Bila nilai stok tidak cukup untuk limit
+      // bawah iklan utama, harga, stok, limit, dan status iklan utama dibiarkan apa adanya (tetap ONLINE);
+      // hanya iklan eceran yang diperbarui.
+      const mainSellMinLimit = config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0 ? config.manualSellMinLimitIdr : 0;
+      const mainSellStockIdr = Math.floor((currentSellStock ?? 0) * roundedSellPrice);
+      const mainSellFrozen = retailActive && mainSellMinLimit > 0 && mainSellStockIdr < mainSellMinLimit;
+      if (mainSellFrozen && !mainSellFrozenRef.current) {
+        mainSellFrozenRef.current = true;
+        toast.info(
+          `Stok jual ± Rp ${mainSellStockIdr.toLocaleString("id-ID")} di bawah limit bawah iklan utama (Rp ${mainSellMinLimit.toLocaleString("id-ID")}): iklan utama dibiarkan apa adanya, stok dijual lewat iklan eceran.`,
+          { id: "auto-push-sell" },
+        );
+      } else if (!mainSellFrozen && mainSellFrozenRef.current) {
+        mainSellFrozenRef.current = false;
+        delete lastPushedStockRef.current.sell; // paksa push stok & limit penuh
+      }
+
       const sellPriceChanged = lastPushedPricesRef.current.sell !== roundedSellPrice;
       // PENTING: Jika ada pesanan aktif (hasActiveSellOrder), JANGAN picu push hanya karena perubahan stok!
       const sellStockChanged = !hasActiveSellOrder && lastPushedStockRef.current.sell !== currentSellStock;
 
-      if (sellPriceChanged || sellStockChanged) {
+      if (!mainSellFrozen && (sellPriceChanged || sellStockChanged)) {
+        sellTriggered = true;
         lastPushTimeRef.current = now;
         const recordStock = !hasActiveSellOrder;
         const pushSell = () =>
@@ -1338,6 +1374,100 @@ export function AutoPricingBotPanel({
         } else {
           pushSell();
         }
+      }
+    }
+
+    // ── Iklan JUAL ECERAN: harga = harga jual utama + markup, stok = semua stok tersedia (atau manual) ──
+    // Dijalankan di siklus tanpa push lain agar request tidak bertabrakan di Binance SAPI.
+    if (
+      retailActive &&
+      !buyTriggered &&
+      !sellTriggered &&
+      !isPushingRetailRef.current &&
+      recommendedSellPrice > 0 &&
+      now >= retailPushRef.current.retryAt
+    ) {
+      const retail = retailPushRef.current;
+      let roundedRetailPrice = retailPrice;
+      if (retail.lastPrice && retail.lastPrice > 10_000) {
+        const maxStep = Math.max(50, (config.maxPriceStepRp || 30) * 2);
+        if (roundedRetailPrice > retail.lastPrice + maxStep) roundedRetailPrice = retail.lastPrice + maxStep;
+        else if (roundedRetailPrice < retail.lastPrice - maxStep) roundedRetailPrice = retail.lastPrice - maxStep;
+      }
+      roundedRetailPrice = Math.max(roundedRetailPrice, retailFloor);
+      if (config.maxPriceBoundRp && config.maxPriceBoundRp > 0 && roundedRetailPrice > config.maxPriceBoundRp) {
+        roundedRetailPrice = Math.max(config.maxPriceBoundRp, retailFloor);
+      }
+      const stock = retailStock;
+      const priceChanged = retail.lastPrice !== roundedRetailPrice;
+      const stockChanged = !retailHasActiveOrder && retail.lastStock !== stock;
+      const waiting = retail.offlinedAtStock !== undefined && retail.offlinedAtStock === stock;
+
+      if ((priceChanged || stockChanged) && !waiting) {
+        lastPushTimeRef.current = now;
+        isPushingRetailRef.current = true;
+        const fail = () => {
+          retail.fail += 1;
+          retail.retryAt = Date.now() + Math.min(60_000, 5_000 * 2 ** (retail.fail - 1));
+        };
+        const run = async () => {
+          if (stock <= 0 && !retailHasActiveOrder) {
+            const res = (await toggleStatusFn({
+              data: { sessionToken: effectiveToken, advNo: retailAdvNo, advStatus: "OFFLINE" },
+            })) as { ok: boolean };
+            if (res.ok) retail.offlinedAtStock = stock;
+            else fail();
+            return;
+          }
+          const fiatCap = Math.floor(stock * roundedRetailPrice);
+          const res = await pushPriceFn({
+            data: {
+              sessionToken: effectiveToken,
+              advNo: retailAdvNo,
+              side: "sell",
+              price: roundedRetailPrice,
+              ...(!retailHasActiveOrder
+                ? {
+                    amountUsdt: stock,
+                    minLimitIdr: retailMinLimit,
+                    maxLimitIdr: Math.max(
+                      retailMinLimit + 10_000,
+                      config.retailSellMaxLimitIdr && config.retailSellMaxLimitIdr > 0
+                        ? Math.min(config.retailSellMaxLimitIdr, fiatCap)
+                        : fiatCap,
+                    ),
+                  }
+                : {}),
+              ...(retailFloor > 0 ? { floorPrice: retailFloor } : {}),
+              hasActiveOrders: retailHasActiveOrder,
+              priceOnly: retailHasActiveOrder,
+              ...(runnerIdRef.current ? { runnerId: runnerIdRef.current } : {}),
+            },
+          });
+          if (!res.ok) {
+            fail();
+            toast.error(`Eceran: ${res.message}`, { id: "auto-push-retail", duration: 9000 });
+            return;
+          }
+          retail.fail = 0;
+          retail.retryAt = 0;
+          toast.success(`Eceran: ${res.message}`, { id: "auto-push-retail" });
+          if (typeof res.code === "string" && res.code.startsWith("AUTO_OFFLINED")) {
+            retail.offlinedAtStock = stock;
+            return;
+          }
+          delete retail.offlinedAtStock;
+          retail.lastPrice = res.price;
+          if (!retailHasActiveOrder) retail.lastStock = stock;
+        };
+        run()
+          .catch((err: unknown) => {
+            fail();
+            toast.error(`Push iklan eceran gagal: ${err instanceof Error ? err.message : String(err)}`, { id: "auto-push-retail" });
+          })
+          .finally(() => {
+            isPushingRetailRef.current = false;
+          });
       }
     }
   };
@@ -5761,7 +5891,7 @@ export function AutoPricingBotPanel({
                       <div className="flex flex-col">
                         <span className="text-xs font-semibold text-foreground">Harga Ikut Penjual Limit Kecil Saat Stok Tipis:</span>
                         <span className="text-[0.65rem] text-muted-foreground">
-                          Jika nilai stok jual di bawah Limit Bawah, acuan harga diambil dari kompetitor yang min transaksinya ≤ kapasitas stok Anda. Tidak berlaku saat Iklan Eceran ON (iklan utama di-offline-kan, stok dijual lewat iklan eceran).
+                          Jika nilai stok jual di bawah Limit Bawah, acuan harga diambil dari kompetitor yang min transaksinya ≤ kapasitas stok Anda. Tidak berlaku saat Iklan Eceran ON (iklan utama dibiarkan apa adanya, stok dijual lewat iklan eceran).
                         </span>
                       </div>
                       <Switch
@@ -5892,8 +6022,8 @@ export function AutoPricingBotPanel({
                     </p>
                     <p className="text-[0.65rem] text-muted-foreground">
                       Saat ON: bila nilai stok di bawah Limit Bawah iklan utama
-                      {config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0 ? ` (${fmtRp(config.manualSellMinLimitIdr)})` : ""}, iklan utama di-OFFLINE-kan
-                      (harga & limitnya tidak diubah) dan stok dijual lewat iklan eceran. Iklan utama ONLINE lagi saat stok cukup.
+                      {config.manualSellMinLimitIdr && config.manualSellMinLimitIdr > 0 ? ` (${fmtRp(config.manualSellMinLimitIdr)})` : ""}, iklan utama dibiarkan
+                      apa adanya (harga, stok, limit tidak diubah, tetap ONLINE) dan hanya iklan eceran yang diperbarui. Iklan utama diatur bot lagi saat stok cukup.
                     </p>
                   </div>
 
